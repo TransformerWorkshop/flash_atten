@@ -1,0 +1,81 @@
+# do sim/run_batch.do
+# do compile.do
+# transcript on
+# 
+# if {[file exists rtl/sync_fifo.v] && [file exists tb/tb_gemu.v]} {
+#     set rtl_dir rtl
+#     set tb_dir tb
+# } elseif {[file exists ../rtl/sync_fifo.v] && [file exists ../tb/tb_gemu.v]} {
+#     set rtl_dir ../rtl
+#     set tb_dir ../tb
+# } else {
+#     echo "Cannot find rtl/tb directories from current working directory: [pwd]"
+#     quit -code 1
+# }
+# tb
+# 
+# if {[file exists work]} {
+#     vdel -lib work -all
+# }
+# vlib work
+# vmap work work
+# QuestaSim-64 vmap 2021.1 Lib Mapping Utility 2021.01 Jan 19 2021
+# vmap work work 
+# Modifying modelsim.ini
+# 
+# if {[catch {
+#     vlog -sv \
+#         [file join $rtl_dir sync_fifo.v] \
+#         [file join $rtl_dir gemu.v] \
+#         [file join $tb_dir tb_gemu.v]
+# }]} {
+#     echo "Compile failed"
+#     quit -code 1
+# }
+# QuestaSim-64 vlog 2021.1 Compiler 2021.01 Jan 19 2021
+# Start time: 16:20:42 on Apr 09,2026
+# vlog -sv rtl/sync_fifo.v rtl/gemu.v tb/tb_gemu.v 
+# -- Compiling module sync_fifo
+# -- Compiling module GEMU
+# -- Compiling module tb_gemu
+# 
+# Top level modules:
+# 	tb_gemu
+# End time: 16:20:42 on Apr 09,2026, Elapsed time: 0:00:00
+# Errors: 0, Warnings: 0
+# 
+# echo "Compile done"
+# Compile done
+# 
+# vsim -c work.tb_gemu -voptargs=+acc
+# vsim -c work.tb_gemu -voptargs="+acc" 
+# Start time: 16:20:42 on Apr 09,2026
+# ** Note: (vsim-3812) Design is being optimized...
+# ** Note: (vopt-143) Recognized 1 FSM in module "GEMU(fast)".
+# //  Questa Sim-64
+# //  Version 2021.1 win64 Jan 19 2021
+# //
+# //  Copyright 1991-2021 Mentor Graphics Corporation
+# //  All Rights Reserved.
+# //
+# //  QuestaSim and its associated documentation contain trade
+# //  secrets and commercial or financial information that are the property of
+# //  Mentor Graphics Corporation and are privileged, confidential,
+# //  and exempt from disclosure under the Freedom of Information Act,
+# //  5 U.S.C. Section 552. Furthermore, this information
+# //  is prohibited from disclosure under the Trade Secrets Act,
+# //  18 U.S.C. Section 1905.
+# //
+# Loading sv_std.std
+# Loading work.tb_gemu(fast)
+# Loading work.GEMU(fast)
+# Loading work.sync_fifo(fast)
+# Loading work.sync_fifo(fast__1)
+# run -all
+# [PASS] small_dot expected=46 got=46 at t=125000
+# [PASS] wide_accum expected=1fffc000200000000 got=1fffc000200000000 at t=195000
+# TB RESULT: PASS
+# ** Note: $finish    : tb/tb_gemu.v(127)
+#    Time: 225 ns  Iteration: 0  Instance: /tb_gemu
+# End time: 16:20:46 on Apr 09,2026, Elapsed time: 0:00:04
+# Errors: 0, Warnings: 0
