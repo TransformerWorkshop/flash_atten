@@ -6,7 +6,7 @@ set RTL_DIR "../../rtl"
 # Testbench目录路径
 set TB_DIR "../../tb"
 # 默认顶层模块
-set TOP_MODULE "tb_gemu"
+set TOP_MODULE "tb_gemm"
 
 # ---------------- 命令行参数处理 ----------------
 # 检查是否只需编译

@@ -1,124 +1,211 @@
 module GEMM #(
 	parameter WIDTH = 32,
-	parameter X_DIM = 4 ,
-	parameter Y_DIM = 4
+	parameter X_DIM = 4,
+	parameter Y_DIM = 4,
+	parameter OUTPUT_BY_ROW = 1
 ) (
-	input  wire                   clk    ,
-	input  wire                   rstn   ,
-	input  wire                   clear  , // soft reset
-	input  wire                   a_valid,
-	output wire                   a_ready,
-	input  wire [X_DIM*WIDTH-1:0] a      , // Flattened input matrix A
-	input  wire                   b_valid,
-	output wire                   b_ready,
-	input  wire [Y_DIM*WIDTH-1:0] b        // Flattened input matrix B
+	input  wire                                     clk,
+	input  wire                                     rstn,
+	input  wire                                     clear,
+	input  wire                                     start,
+	input  wire [WIDTH-1:0]                         num_acc,
+	input  wire                                     a_valid,
+	output wire                                     a_ready,
+	input  wire [X_DIM*WIDTH-1:0]                   a,
+	input  wire                                     b_valid,
+	output wire                                     b_ready,
+	input  wire [Y_DIM*WIDTH-1:0]                   b,
+	output wire [((OUTPUT_BY_ROW != 0) ? Y_DIM : X_DIM)*4*WIDTH-1:0] m_group_data,
+	output wire                                     m_group_valid,
+	input  wire                                     m_group_ready,
+	output wire [31:0]                              m_group_idx,
+	output wire                                     m_last
 );
 
-	genvar i, j;
+	localparam integer TOTAL_PE = X_DIM * Y_DIM;
+	localparam integer GROUP_SIZE = (OUTPUT_BY_ROW != 0) ? Y_DIM : X_DIM;
+	localparam integer GROUP_COUNT = (OUTPUT_BY_ROW != 0) ? X_DIM : Y_DIM;
 
+	localparam [1:0] STATE_IDLE = 2'b00;
+	localparam [1:0] STATE_COLLECT = 2'b01;
+	localparam [1:0] STATE_STREAM = 2'b10;
 
+	reg [1:0] state;
+	reg [1:0] next_state;
+	reg [31:0] stream_idx;
 
+	reg [4*WIDTH-1:0] result_buf [0:TOTAL_PE-1];
+	reg [TOTAL_PE-1:0] collected;
 
-	// MM_SKEW - SHIFT_REG interfaces
-	wire [      X_DIM-1:0] a_shift_ready_vec;
-	wire [      X_DIM-1:0] a_skewed_valid   ;
-	wire [X_DIM*WIDTH-1:0] a_skewed         ;
+	wire [TOTAL_PE-1:0] pe_a_ready;
+	wire [TOTAL_PE-1:0] pe_b_ready;
+	wire [TOTAL_PE-1:0] pe_m_valid;
+	wire [TOTAL_PE-1:0] pe_m_ready;
+	wire [4*WIDTH-1:0] pe_m_data [0:TOTAL_PE-1];
 
-	wire [      Y_DIM-1:0] b_shift_ready_vec;
-	wire [      Y_DIM-1:0] b_skewed_valid   ;
-	wire [Y_DIM*WIDTH-1:0] b_skewed         ;
+	wire collect_done;
+	wire stream_fire;
 
+	reg [4*WIDTH-1:0] group_word [0:GROUP_SIZE-1];
 
+	integer p;
+	integer q;
+	integer row_idx;
+	integer col_idx;
 
-	// GEMU - SHIFT_REG interfaces
-	wire [Y_DIM*WIDTH-1:0] a_shift_out  [0:X_DIM-1];
-	wire [X_DIM*WIDTH-1:0] b_shift_out  [0:Y_DIM-1];
-	wire [      Y_DIM-1:0] a_gemu_ready [0:X_DIM-1];
-	wire [      X_DIM-1:0] b_gemu_ready [0:Y_DIM-1];
-	wire [      Y_DIM-1:0] a_shift_valid[0:X_DIM-1];
-	wire [      X_DIM-1:0] b_shift_valid[0:Y_DIM-1];
+	assign a_ready = &pe_a_ready;
+	assign b_ready = &pe_b_ready;
 
-	MM_SKEW #(
-		.WIDTH(WIDTH),
-		.X_DIM(X_DIM),
-		.Y_DIM(Y_DIM)
-	) mm_skew (
-		.clk           (clk               ),
-		.rstn          (rstn              ),
-		.clear         (clear             ),
-		.a             (a                 ),
-		.a_valid       (a_valid           ),
-		.a_ready       (a_ready           ),
-		.b             (b                 ),
-		.b_valid       (b_valid           ),
-		.b_ready       (b_ready           ),
-		.a_skewed      (a_skewed          ),
-		.a_skewed_ready(&a_shift_ready_vec),
-		.a_skewed_valid(a_skewed_valid    ),
-		.b_skewed      (b_skewed          ),
-		.b_skewed_ready(&b_shift_ready_vec),
-		.b_skewed_valid(b_skewed_valid    )
-	);
+	assign collect_done = &collected;
+	assign stream_fire = (state == STATE_STREAM) && m_group_valid && m_group_ready;
 
-	// shift registers
+	assign m_group_valid = (state == STATE_STREAM);
+	assign m_group_idx = stream_idx;
+	assign m_last = (state == STATE_STREAM) && (stream_idx == (GROUP_COUNT - 1));
+
+	// 3-process FSM: next-state combinational logic
+	always @(*) begin
+		next_state = state;
+		case (state)
+			STATE_IDLE: begin
+				if (start) begin
+					next_state = STATE_COLLECT;
+				end
+			end
+			STATE_COLLECT: begin
+				if (collect_done) begin
+					next_state = STATE_STREAM;
+				end
+			end
+			STATE_STREAM: begin
+				if (stream_fire && (stream_idx == (GROUP_COUNT - 1))) begin
+					next_state = STATE_IDLE;
+				end
+			end
+			default: begin
+				next_state = STATE_IDLE;
+			end
+		endcase
+	end
 	generate
-		for (i = 0; i < X_DIM; i = i + 1) begin: gen_a_shift_reg
-			SHIFT_REG #(
-				.WIDTH(WIDTH),
-				.DEPTH(Y_DIM),
-				.USE_SIPO(1)
-			) shift_reg_a (
-				.clk(clk),
-				.rstn(rstn),
-				.clear(clear),
-				.data_in(a_skewed[(i+1)*WIDTH-1:i*WIDTH]),
-				.valid_in(a_skewed_valid[i]),
-				.ready_in(a_shift_ready_vec[i]),
-				.sipo_data_out(a_shift_out[i]),
-				.sipo_ready(a_gemu_ready[i]),
-				.sipo_valid(a_shift_valid[i])
-			);
+		genvar gw;
+		for (gw = 0; gw < GROUP_SIZE; gw = gw + 1) begin : gen_group_data
+			assign m_group_data[(gw+1)*4*WIDTH-1:gw*4*WIDTH] =
+				m_group_valid ? group_word[gw] : {4*WIDTH{1'b0}};
 		end
-		for (j = 0; j < Y_DIM; j = j + 1) begin: gen_b_shift_reg
-			SHIFT_REG #(
-				.WIDTH(WIDTH),
-				.DEPTH(X_DIM),
-				.USE_SIPO(1)
-			) shift_reg_b (
-				.clk(clk),
-				.rstn(rstn),
-				.clear(clear),
-				.data_in(b_skewed[(j+1)*WIDTH-1:j*WIDTH]),
-				.valid_in(b_skewed_valid[j]),
-				.ready_in(b_shift_ready_vec[j]), // TODO: connect to MM_SKEW unit
-				.sipo_data_out(b_shift_out[j]),
-				.sipo_ready(b_gemu_ready[j]),
-				.sipo_valid(b_shift_valid[j])
-			);
-		end
+	endgenerate
 
-		for(i = 0; i < X_DIM; i = i + 1) begin: gen_gemu_horizontal
-			for (j = 0; j < Y_DIM; j = j + 1) begin: gen_gemu_vertical
+	generate
+		genvar i;
+		genvar j;
+		for (i = 0; i < X_DIM; i = i + 1) begin : gen_gemu_row
+			for (j = 0; j < Y_DIM; j = j + 1) begin : gen_gemu_col
+				localparam integer PE = i * Y_DIM + j;
+
+				assign pe_m_ready[PE] = (state == STATE_COLLECT) && !collected[PE];
+
 				GEMU #(
 					.WIDTH(WIDTH)
 				) gemu_unit (
-					.clk(clk),
-					.rstn(rstn),
-					.clear(clear),
-					.a(a_shift_out[i][(j+1)*WIDTH-1:j*WIDTH]),
-					.a_valid(a_shift_valid[i][j]),
-					.a_ready(a_gemu_ready[i][j]),
-					.b(b_shift_out[j][(i+1)*WIDTH-1:i*WIDTH]),
-					.b_valid(b_shift_valid[j][i]),
-					.b_ready(b_gemu_ready[j][i]),
-					.m(), // TODO: connect to output matrix
-					.m_valid(), // TODO: connect to output matrix
-					.m_ready(1'b1), // TODO: connect to output matrix
-					.start(1'b0) // TODO: control signal for starting computation
+					.clk    (clk),
+					.rstn   (rstn),
+					.clear  (clear),
+					.a      (a[(i+1)*WIDTH-1:i*WIDTH]),
+					.a_valid(a_valid),
+					.a_ready(pe_a_ready[PE]),
+					.b      (b[(j+1)*WIDTH-1:j*WIDTH]),
+					.b_valid(b_valid),
+					.b_ready(pe_b_ready[PE]),
+					.m      (pe_m_data[PE]),
+					.m_valid(pe_m_valid[PE]),
+					.m_ready(pe_m_ready[PE]),
+					.start  (start),
+					.num_acc(num_acc)
 				);
 			end
 		end
 	endgenerate
 
+	always @(*) begin
+		for (q = 0; q < GROUP_SIZE; q = q + 1) begin
+			group_word[q] = {4*WIDTH{1'b0}};
+		end
 
-endmodule 
+		if (state == STATE_STREAM) begin
+			for (q = 0; q < GROUP_SIZE; q = q + 1) begin
+				if (OUTPUT_BY_ROW != 0) begin
+					group_word[q] = result_buf[stream_idx * Y_DIM + q];
+				end else begin
+					group_word[q] = result_buf[q * Y_DIM + stream_idx];
+				end
+			end
+		end
+	end
+
+	// 3-process FSM: state register
+	always @(posedge clk or negedge rstn) begin
+		if (!rstn) begin
+			state <= STATE_IDLE;
+		end else if (clear) begin
+			state <= STATE_IDLE;
+		end else begin
+			state <= next_state;
+		end
+	end
+
+	// 3-process FSM: state-dependent sequential datapath updates
+	always @(posedge clk or negedge rstn) begin
+		if (!rstn) begin
+			stream_idx <= 32'd0;
+			collected <= {TOTAL_PE{1'b0}};
+			for (p = 0; p < TOTAL_PE; p = p + 1) begin
+				result_buf[p] <= {4*WIDTH{1'b0}};
+			end
+		end else if (clear) begin
+			stream_idx <= 32'd0;
+			collected <= {TOTAL_PE{1'b0}};
+			for (p = 0; p < TOTAL_PE; p = p + 1) begin
+				result_buf[p] <= {4*WIDTH{1'b0}};
+			end
+		end else begin
+			case (state)
+				STATE_IDLE: begin
+					stream_idx <= 32'd0;
+					if (start) begin
+						collected <= {TOTAL_PE{1'b0}};
+					end
+				end
+
+				STATE_COLLECT: begin
+					for (row_idx = 0; row_idx < X_DIM; row_idx = row_idx + 1) begin
+						for (col_idx = 0; col_idx < Y_DIM; col_idx = col_idx + 1) begin
+							if (pe_m_valid[row_idx * Y_DIM + col_idx] && pe_m_ready[row_idx * Y_DIM + col_idx]) begin
+								result_buf[row_idx * Y_DIM + col_idx] <= pe_m_data[row_idx * Y_DIM + col_idx];
+								collected[row_idx * Y_DIM + col_idx] <= 1'b1;
+							end
+						end
+					end
+
+					if (collect_done) begin
+						stream_idx <= 32'd0;
+					end
+				end
+
+				STATE_STREAM: begin
+					if (stream_fire) begin
+						if (stream_idx == (GROUP_COUNT - 1)) begin
+							stream_idx <= 32'd0;
+						end else begin
+							stream_idx <= stream_idx + 1'b1;
+						end
+					end
+				end
+
+				default: begin
+					stream_idx <= 32'd0;
+				end
+			endcase
+		end
+	end
+
+endmodule

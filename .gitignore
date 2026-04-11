@@ -12,3 +12,4 @@ sim/modelsim/project_log.txt
 sim/modelsim/*.mpf
 sim/modelsim/*.mti
 sim/modelsim/*.vstf
+codex/

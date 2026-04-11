@@ -2,7 +2,7 @@
 set PROJECT_NAME "tpu_v1"
 set RTL_DIR "../../rtl"
 set TB_DIR "../../tb"
-set TOP_MODULE "tb_gemu"
+set TOP_MODULE "tb_gemm"
 
 # 如果有命令行参数传入，则覆盖默认值
 if {[info exists top_module]} {

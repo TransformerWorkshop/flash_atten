@@ -2,29 +2,31 @@ onerror {resume}
 quietly WaveActivateNextPane {} 0
 quietly delete wave *
 
-# tb_gemu top-level interface
-add wave -noupdate /tb_gemu/clk
-add wave -noupdate /tb_gemu/rstn
-add wave -noupdate /tb_gemu/start
-add wave -noupdate /tb_gemu/clear
-add wave -noupdate /tb_gemu/num_acc
-add wave -noupdate /tb_gemu/a
-add wave -noupdate /tb_gemu/a_valid
-add wave -noupdate /tb_gemu/a_ready
-add wave -noupdate /tb_gemu/b
-add wave -noupdate /tb_gemu/b_valid
-add wave -noupdate /tb_gemu/b_ready
-add wave -noupdate /tb_gemu/m
-add wave -noupdate /tb_gemu/m_valid
-add wave -noupdate /tb_gemu/m_ready
-add wave -noupdate /tb_gemu/errors
+# tb_gemm (wrapper + base) interface
+add wave -noupdate /tb_gemm/u_tb_gemm_base/clk
+add wave -noupdate /tb_gemm/u_tb_gemm_base/rstn
+add wave -noupdate /tb_gemm/u_tb_gemm_base/start
+add wave -noupdate /tb_gemm/u_tb_gemm_base/clear
+add wave -noupdate /tb_gemm/u_tb_gemm_base/num_acc
+add wave -noupdate /tb_gemm/u_tb_gemm_base/a
+add wave -noupdate /tb_gemm/u_tb_gemm_base/a_valid
+add wave -noupdate /tb_gemm/u_tb_gemm_base/a_ready
+add wave -noupdate /tb_gemm/u_tb_gemm_base/b
+add wave -noupdate /tb_gemm/u_tb_gemm_base/b_valid
+add wave -noupdate /tb_gemm/u_tb_gemm_base/b_ready
+add wave -noupdate /tb_gemm/u_tb_gemm_base/m_group_data
+add wave -noupdate /tb_gemm/u_tb_gemm_base/m_group_valid
+add wave -noupdate /tb_gemm/u_tb_gemm_base/m_group_ready
+add wave -noupdate /tb_gemm/u_tb_gemm_base/m_group_idx
+add wave -noupdate /tb_gemm/u_tb_gemm_base/m_last
+add wave -noupdate /tb_gemm/u_tb_gemm_base/errors
 
-# DUT internals for debugging handshakes and accumulation
+# DUT internals for grouped output debug
 add wave -noupdate -divider DUT
-add wave -noupdate /tb_gemu/dut/fifo_*
-add wave -noupdate /tb_gemu/dut/is_*
-add wave -noupdate /tb_gemu/dut/acc*
-add wave -noupdate /tb_gemu/dut/*_state
+add wave -noupdate /tb_gemm/u_tb_gemm_base/dut/state
+add wave -noupdate /tb_gemm/u_tb_gemm_base/dut/stream_idx
+add wave -noupdate /tb_gemm/u_tb_gemm_base/dut/collected
+add wave -noupdate /tb_gemm/u_tb_gemm_base/dut/group_word
 
 WaveRestoreCursors {{Cursor 1} {0 ps} 0}
 quietly wave cursor active 0

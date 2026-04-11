@@ -1,5 +1,5 @@
 # 默认设置
-top ?= tb_gemu
+top ?= tb_gemm
 w ?= wave.do
 PROJECT_NAME ?= flash_atten
 
@@ -78,7 +78,8 @@ help:
 	@echo ""
 	@echo "可选参数:"
 	@echo "  top=<模块名> - 指定仿真顶层模块"
-	@echo "  例如: make sim top=tb_fifo_array"
+	@echo "  例如: make sim top=tb_gemm"
+	@echo "  例如: make sim top=tb_gemm_col"
 	@echo "  w=<文件名> - 指定波形配置文件"
 	@echo "  例如: make wave w=my_waves.do"
 	@echo "  PROJECT_NAME=<名称> - 指定工程名称"
