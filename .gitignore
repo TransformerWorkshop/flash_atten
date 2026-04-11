@@ -13,3 +13,4 @@ sim/modelsim/*.mpf
 sim/modelsim/*.mti
 sim/modelsim/*.vstf
 codex/
+rtl/a.out

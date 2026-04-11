@@ -1,0 +1,46 @@
+`ifndef             __PARAM_V__
+`define             __PARAM_V__
+
+// Processing Tile (PT) instruction definitions
+
+`define             INST_WIDTH              32
+`define             QUEUE_LEN               4
+
+// PT opcode definitions
+`define             PT_OP_MATMUL            4'h1
+`define             PT_OP_CFG               4'hf
+
+// PT instruction fields for MATMUL opcode:
+// [31:28] opcode
+// [27:26] M scale
+// [25:24] N scale
+// [23:22] K scale
+// [21:12] A offset (10-bit)
+// [11: 2] B offset (10-bit)
+// [ 1: 0] reserved
+`define             PT_INST_OPCODE_H        31
+`define             PT_INST_OPCODE_L        28
+`define             PT_INST_M_H             27
+`define             PT_INST_M_L             26
+`define             PT_INST_N_H             25
+`define             PT_INST_N_L             24
+`define             PT_INST_K_H             23
+`define             PT_INST_K_L             22
+`define             PT_INST_A_OFF_H         21
+`define             PT_INST_A_OFF_L         12
+`define             PT_INST_B_OFF_H         11
+`define             PT_INST_B_OFF_L         2
+
+// PT MNK encoding
+`define             PT_SCALE_SCALAR         2'b00
+`define             PT_SCALE_FULL_DIV4      2'b01
+`define             PT_SCALE_FULL_DIV2      2'b10
+`define             PT_SCALE_FULL           2'b11
+
+// PT CFG selector (used when opcode == PT_OP_CFG)
+`define             PT_CFG_A_BASE_LO        4'h0
+`define             PT_CFG_A_BASE_HI        4'h1
+`define             PT_CFG_B_BASE_LO        4'h2
+`define             PT_CFG_B_BASE_HI        4'h3
+
+`endif
