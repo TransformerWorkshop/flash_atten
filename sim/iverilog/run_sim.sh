@@ -8,7 +8,7 @@ RTL_DIR="${REPO_ROOT}/rtl"
 TB_DIR="${REPO_ROOT}/tb"
 BUILD_DIR="${SCRIPT_DIR}/build"
 
-TOP_MODULE="${TOP_MODULE:-tb_gemu}"
+TOP_MODULE="${TOP_MODULE:-tb_gemm}"
 SAFE_TOP="${TOP_MODULE//[^[:alnum:]_]/_}"
 WAVE_OUT="${WAVE_OUT:-${SCRIPT_DIR}/${SAFE_TOP}.vcd}"
 VVP_OUT="${VVP_OUT:-${BUILD_DIR}/${SAFE_TOP}.vvp}"
@@ -25,7 +25,7 @@ Usage:
   ./run_sim.sh sim
 
 Environment overrides:
-  TOP_MODULE   simulation top module (default: tb_gemu)
+  TOP_MODULE   simulation top module (default: tb_gemm)
   WAVE_OUT     output VCD path
   VVP_OUT      compiled vvp path
 EOF

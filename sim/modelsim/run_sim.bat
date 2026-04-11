@@ -3,7 +3,7 @@ REM filepath: d:\Project\FPGA\tpu-v1\sim\run_sim.bat
 setlocal enabledelayedexpansion
 
 REM 默认设置
-set TOP_MODULE=tb_gemu
+set TOP_MODULE=tb_gemm
 set WAVE_CFG=wave.do
 
 REM 解析命令行参数

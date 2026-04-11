@@ -1,4 +1,4 @@
-top ?= tb_gemu
+top ?= tb_gemm
 w ?= $(top).vcd
 bin ?= build/$(top).vvp
 
@@ -57,7 +57,8 @@ help:
 	@echo "  bin=<file>   - Select compiled vvp output file"
 	@echo ""
 	@echo "Examples:"
-	@echo "  make sim top=tb_gemu"
+	@echo "  make sim top=tb_gemm"
+	@echo "  make sim top=tb_gemm_col w=tb_gemm_col.vcd"
 	@echo "  make sim top=tb_shift_reg w=shift_reg.vcd"
 
 .PHONY: all compile sim wave clean info help
