@@ -76,7 +76,7 @@ compile_design() {
     # The current RTL/testbenches are written in Verilog-2001.
     # Using a newer SystemVerilog mode makes identifiers like "expect"
     # parse as reserved keywords in existing benches.
-    iverilog -g2001 -Wall -s "${WRAPPER_TOP}" -o "${VVP_OUT}" -c "${FILELIST}" "${WRAPPER}"
+    iverilog -g2001 -Wall -I "${RTL_DIR}" -s "${WRAPPER_TOP}" -o "${VVP_OUT}" -c "${FILELIST}" "${WRAPPER}"
     echo "Compile output: ${VVP_OUT}"
 }
 

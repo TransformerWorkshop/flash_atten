@@ -1,6 +1,14 @@
 .venv/
+.DS_Store
+**/.DS_Store
 sim/iverilog/build/
 sim/iverilog/*.vcd
+sim/cocotb/build/
+sim/cocotb/results/
+sim/cocotb/logs/
+sim/cocotb/waves/
+sim/cocotb/__pycache__/
+sim/cocotb/tests/__pycache__/
 
 # ModelSim artifacts
 sim/modelsim/work/

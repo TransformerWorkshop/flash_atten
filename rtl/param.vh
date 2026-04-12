@@ -8,6 +8,7 @@
 
 // PT opcode definitions
 `define             PT_OP_MATMUL            4'h1
+`define             PT_OP_QCFG              4'h2
 `define             PT_OP_CFG               4'hf
 
 // PT instruction fields for MATMUL opcode:
@@ -42,5 +43,23 @@
 `define             PT_CFG_A_BASE_HI        4'h1
 `define             PT_CFG_B_BASE_LO        4'h2
 `define             PT_CFG_B_BASE_HI        4'h3
+
+// PT QCFG header fields (used when opcode == PT_OP_QCFG and cmd == HDR)
+`define             PT_QCFG_CMD_H           27
+`define             PT_QCFG_CMD_L           24
+`define             PT_QCFG_QTYPE_H         23
+`define             PT_QCFG_QTYPE_L         22
+`define             PT_QCFG_GRAN_H          21
+`define             PT_QCFG_GRAN_L          19
+
+`define             PT_QCFG_CMD_HDR         4'h0
+
+`define             PT_QTYPE_SYMMETRIC      2'b00
+
+`define             PT_QGRAN_PER_TENSOR     3'd0
+`define             PT_QGRAN_X_WISE         3'd1
+`define             PT_QGRAN_Y_WISE         3'd2
+`define             PT_QGRAN_X_WISE_DIV2    3'd3
+`define             PT_QGRAN_Y_WISE_DIV2    3'd4
 
 `endif
