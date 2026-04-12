@@ -418,16 +418,19 @@ module PT #(
 			.m_last       (gemm_m_last )
 		);
 
-	QUANT #(
-		.DATA_WIDTH(DATA_WIDTH),
-		.GEMM_X_DIM(GEMM_X_DIM),
-		.GEMM_Y_DIM(GEMM_Y_DIM)
-	) u_quant (
-		.in_valid      (gemm_m_valid    ),
-		.in_ready      (gemm_m_ready    ),
-		.in_data       (gemm_m_data     ),
-		.in_idx        (gemm_m_idx      ),
-		.in_last       (gemm_m_last     ),
+		QUANT #(
+			.DATA_WIDTH(DATA_WIDTH),
+			.GEMM_X_DIM(GEMM_X_DIM),
+			.GEMM_Y_DIM(GEMM_Y_DIM)
+		) u_quant (
+			.clk           (clk             ),
+			.rstn          (rstn            ),
+			.clear         (clear           ),
+			.in_valid      (gemm_m_valid    ),
+			.in_ready      (gemm_m_ready    ),
+			.in_data       (gemm_m_data     ),
+			.in_idx        (gemm_m_idx      ),
+			.in_last       (gemm_m_last     ),
 		.quant_mode    (quant_mode      ),
 		.quant_inv_scale(quant_inv_scale),
 		.out_valid     (quant_m_valid   ),

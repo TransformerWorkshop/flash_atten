@@ -123,6 +123,12 @@ module PT_MD #(
 	localparam integer ELEM_SHIFT = (DATA_WIDTH <= 8) ? 0 : $clog2(DATA_WIDTH / 8);
 	localparam integer A_DIM_CONST = (GEMM_X_DIM <= 0) ? 1 : GEMM_X_DIM;
 	localparam integer B_DIM_CONST = (GEMM_Y_DIM <= 0) ? 1 : GEMM_Y_DIM;
+	localparam integer A_DIM_SHIFT = $clog2(A_DIM_CONST);
+	localparam integer B_DIM_SHIFT = $clog2(B_DIM_CONST);
+	localparam [7:0] A_DIM_MASK_8 = A_DIM_CONST - 1;
+	localparam [7:0] B_DIM_MASK_8 = B_DIM_CONST - 1;
+	localparam [DMA_BEATS_W-1:0] A_DIM_MASK_DMA = A_DIM_CONST - 1;
+	localparam [DMA_BEATS_W-1:0] B_DIM_MASK_DMA = B_DIM_CONST - 1;
 	localparam integer EXP_BEATS = GEMM_X_DIM * GEMM_Y_DIM;
 
 	localparam [2:0] ST_IDLE      = 3'd0;
@@ -143,6 +149,19 @@ module PT_MD #(
 
 	reg [2:0] state;
 	reg [2:0] next_state;
+
+	function is_pow2;
+		input integer value;
+		begin
+			is_pow2 = (value > 0) ? (((value & (value - 1)) == 0) ? 1'b1 : 1'b0) : 1'b0;
+		end
+	endfunction
+
+	initial begin
+		if (!is_pow2(GEMM_X_DIM) || !is_pow2(GEMM_Y_DIM)) begin
+			$fatal(1, "PT_MD requires power-of-two GEMM_X_DIM/GEMM_Y_DIM, got %0d x %0d", GEMM_X_DIM, GEMM_Y_DIM);
+		end
+	end
 
 	function [31:0] pack_resp;
 		input err;
@@ -172,14 +191,14 @@ module PT_MD #(
 	function [7:0] row_to_a_elem;
 		input [7:0] row_idx;
 		begin
-			row_to_a_elem = row_idx * A_DIM_CONST;
+			row_to_a_elem = row_idx << A_DIM_SHIFT;
 		end
 	endfunction
 
 	function [7:0] row_to_b_elem;
 		input [7:0] row_idx;
 		begin
-			row_to_b_elem = row_idx * B_DIM_CONST;
+			row_to_b_elem = row_idx << B_DIM_SHIFT;
 		end
 	endfunction
 
@@ -266,8 +285,8 @@ module PT_MD #(
 	                       (cmd_n == `PT_SCALE_FULL) &&
 	                       (cmd_k == `PT_SCALE_FULL);
 
-	wire cmd_a_row_aligned = ((cmd_a_off[7:0] % A_DIM_CONST) == 0);
-	wire cmd_b_row_aligned = ((cmd_b_off[7:0] % B_DIM_CONST) == 0);
+	wire cmd_a_row_aligned = ((cmd_a_off[7:0] & A_DIM_MASK_8) == 8'd0);
+	wire cmd_b_row_aligned = ((cmd_b_off[7:0] & B_DIM_MASK_8) == 8'd0);
 
 	// quantization configuration session context
 	reg [31:0] qcfg_active_id;
@@ -302,7 +321,7 @@ module PT_MD #(
 				`PT_QGRAN_X_WISE_DIV2: begin
 					if ((GEMM_X_DIM % 2) == 0) begin
 						qcfg_hdr_ok  = 1'b1;
-						qcfg_hdr_cnt = (GEMM_X_DIM / 2);
+						qcfg_hdr_cnt = (GEMM_X_DIM >> 1);
 					end else begin
 						qcfg_hdr_err = 1'b1;
 					end
@@ -310,7 +329,7 @@ module PT_MD #(
 				`PT_QGRAN_Y_WISE_DIV2: begin
 					if ((GEMM_Y_DIM % 2) == 0) begin
 						qcfg_hdr_ok  = 1'b1;
-						qcfg_hdr_cnt = (GEMM_Y_DIM / 2);
+						qcfg_hdr_cnt = (GEMM_Y_DIM >> 1);
 					end else begin
 						qcfg_hdr_err = 1'b1;
 					end
@@ -388,6 +407,10 @@ module PT_MD #(
 	wire [31:0] dma_base_sel = load_is_b ? pcsr_b_base : pcsr_a_base;
 	wire [EXT_ADDR_W-1:0] dma_off_bytes =
 		({{(EXT_ADDR_W-10){1'b0}}, load_ext_off} << ELEM_SHIFT);
+	wire [DMA_BEATS_W-1:0] dma_a_row = load_recv_count >> A_DIM_SHIFT;
+	wire [DMA_BEATS_W-1:0] dma_a_col = load_recv_count & A_DIM_MASK_DMA;
+	wire [DMA_BEATS_W-1:0] dma_b_row = load_recv_count >> B_DIM_SHIFT;
+	wire [DMA_BEATS_W-1:0] dma_b_col = load_recv_count & B_DIM_MASK_DMA;
 
 	wire dma_tuser_mismatch = s_axis_tvalid &&
 		((!load_is_b && (s_axis_tuser != MATRIX_A)) ||
@@ -455,8 +478,6 @@ module PT_MD #(
 	reg irq_r;
 	assign irq = irq_r;
 
-	integer dma_row;
-	integer dma_col;
 	integer ri;
 
 	always @(posedge clk or negedge rstn) begin
@@ -749,17 +770,17 @@ module PT_MD #(
 						load_is_b        <= 1'b0;
 						load_buf_sel     <= a_wr_buf_sel;
 						load_ext_off     <= cur_a_off;
-						load_row_base    <= cur_a_off[7:0] / A_DIM_CONST;
-						load_total_beats <= A_ELEMS[DMA_BEATS_W-1:0];
-						load_recv_count  <= {DMA_BEATS_W{1'b0}};
-					end else begin
-						load_is_b        <= 1'b1;
-						load_buf_sel     <= b_wr_buf_sel;
-						load_ext_off     <= cur_b_off;
-						load_row_base    <= cur_b_off[7:0] / B_DIM_CONST;
-						load_total_beats <= B_ELEMS[DMA_BEATS_W-1:0];
-						load_recv_count  <= {DMA_BEATS_W{1'b0}};
-					end
+							load_row_base    <= cur_a_off[7:0] >> A_DIM_SHIFT;
+							load_total_beats <= A_ELEMS[DMA_BEATS_W-1:0];
+							load_recv_count  <= {DMA_BEATS_W{1'b0}};
+						end else begin
+							load_is_b        <= 1'b1;
+							load_buf_sel     <= b_wr_buf_sel;
+							load_ext_off     <= cur_b_off;
+							load_row_base    <= cur_b_off[7:0] >> B_DIM_SHIFT;
+							load_total_beats <= B_ELEMS[DMA_BEATS_W-1:0];
+							load_recv_count  <= {DMA_BEATS_W{1'b0}};
+						end
 				end
 
 				ST_DMA_REQ: begin
@@ -769,28 +790,24 @@ module PT_MD #(
 				end
 
 				ST_DMA_RECV: begin
-					if (dma_error || dma_tuser_mismatch) begin
-						md_resp       <= pack_resp(1'b1, 1'b0, cur_id);
-						md_resp_valid <= 1'b1;
-						irq_r         <= 1'b1;
-					end else if (s_axis_tvalid) begin
-						if (!load_is_b) begin
-							dma_row = load_recv_count / GEMM_X_DIM;
-							dma_col = load_recv_count % GEMM_X_DIM;
-							a_mem_wr_en   <= 1'b1;
-							a_mem_wr_buf  <= load_buf_sel;
-							a_mem_wr_lane <= dma_row[A_LW-1:0];
-							a_mem_wr_addr <= load_row_base[A_AW-1:0] + dma_col[A_AW-1:0];
-							a_mem_wr_data <= s_axis_tdata;
-						end else begin
-							dma_row = load_recv_count / GEMM_Y_DIM;
-							dma_col = load_recv_count % GEMM_Y_DIM;
-							b_mem_wr_en   <= 1'b1;
-							b_mem_wr_buf  <= load_buf_sel;
-							b_mem_wr_lane <= dma_col[B_LW-1:0];
-							b_mem_wr_addr <= load_row_base[B_AW-1:0] + dma_row[B_AW-1:0];
-							b_mem_wr_data <= s_axis_tdata;
-						end
+						if (dma_error || dma_tuser_mismatch) begin
+							md_resp       <= pack_resp(1'b1, 1'b0, cur_id);
+							md_resp_valid <= 1'b1;
+							irq_r         <= 1'b1;
+						end else if (s_axis_tvalid) begin
+							if (!load_is_b) begin
+								a_mem_wr_en   <= 1'b1;
+								a_mem_wr_buf  <= load_buf_sel;
+								a_mem_wr_lane <= dma_a_row[A_LW-1:0];
+								a_mem_wr_addr <= load_row_base[A_AW-1:0] + dma_a_col[A_AW-1:0];
+								a_mem_wr_data <= s_axis_tdata;
+							end else begin
+								b_mem_wr_en   <= 1'b1;
+								b_mem_wr_buf  <= load_buf_sel;
+								b_mem_wr_lane <= dma_b_col[B_LW-1:0];
+								b_mem_wr_addr <= load_row_base[B_AW-1:0] + dma_b_row[B_AW-1:0];
+								b_mem_wr_data <= s_axis_tdata;
+							end
 
 						load_recv_count <= load_recv_count + 1'b1;
 					end
@@ -803,14 +820,14 @@ module PT_MD #(
 							lut_a_ext_off[work_lut_idx] <= load_ext_off;
 							lut_a_loc_off[work_lut_idx] <= make_a_local_off(load_buf_sel, load_row_base);
 							a_wr_buf_sel                <= ~a_wr_buf_sel;
-							if (b_need_dma) begin
-								load_is_b        <= 1'b1;
-								load_buf_sel     <= b_wr_buf_sel;
-								load_ext_off     <= cur_b_off;
-								load_row_base    <= cur_b_off[7:0] / B_DIM_CONST;
-								load_total_beats <= B_ELEMS[DMA_BEATS_W-1:0];
-								load_recv_count  <= {DMA_BEATS_W{1'b0}};
-							end else begin
+								if (b_need_dma) begin
+									load_is_b        <= 1'b1;
+									load_buf_sel     <= b_wr_buf_sel;
+									load_ext_off     <= cur_b_off;
+									load_row_base    <= cur_b_off[7:0] >> B_DIM_SHIFT;
+									load_total_beats <= B_ELEMS[DMA_BEATS_W-1:0];
+									load_recv_count  <= {DMA_BEATS_W{1'b0}};
+								end else begin
 								patched_inst = cur_inst;
 								patched_inst[`PT_INST_A_OFF_H:`PT_INST_A_OFF_L] = make_a_local_off(load_buf_sel, load_row_base);
 								if (!cur_b_is_m) begin

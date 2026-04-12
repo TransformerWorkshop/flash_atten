@@ -66,6 +66,8 @@ module PT_CE #(
 	localparam integer B_LW = (GEMM_Y_DIM <= 1) ? 1 : $clog2(GEMM_Y_DIM);
 	localparam integer A_DIM_CONST = (GEMM_X_DIM <= 0) ? 1 : GEMM_X_DIM;
 	localparam integer B_DIM_CONST = (GEMM_Y_DIM <= 0) ? 1 : GEMM_Y_DIM;
+	localparam integer A_DIM_SHIFT = $clog2(A_DIM_CONST);
+	localparam integer B_DIM_SHIFT = $clog2(B_DIM_CONST);
 
 	localparam [2:0] ST_IDLE       = 3'd0;
 	localparam [2:0] ST_EXEC_START = 3'd1;
@@ -92,6 +94,19 @@ module PT_CE #(
 	reg [A_AW-1:0] store_row_addr;
 	reg            store_row_last;
 	reg [B_LW-1:0] store_lane_cnt;
+
+	function is_pow2;
+		input integer value;
+		begin
+			is_pow2 = (value > 0) ? (((value & (value - 1)) == 0) ? 1'b1 : 1'b0) : 1'b0;
+		end
+	endfunction
+
+	initial begin
+		if (!is_pow2(GEMM_X_DIM) || !is_pow2(GEMM_Y_DIM)) begin
+			$fatal(1, "PT_CE requires power-of-two GEMM_X_DIM/GEMM_Y_DIM, got %0d x %0d", GEMM_X_DIM, GEMM_Y_DIM);
+		end
+	end
 
 	function [31:0] pack_resp;
 		input err;
@@ -248,8 +263,8 @@ module PT_CE #(
 						cur_exec_b_is_m <= ce_inst[`PT_INST_B_OFF_H];
 						cur_exec_a_buf  <= ce_inst[`PT_INST_A_OFF_H-1];
 						cur_exec_b_buf  <= ce_inst[`PT_INST_B_OFF_H-1];
-						cur_a_row_base  <= ce_inst[`PT_INST_A_OFF_L+7:`PT_INST_A_OFF_L] / A_DIM_CONST;
-						cur_b_row_base  <= ce_inst[`PT_INST_B_OFF_L+7:`PT_INST_B_OFF_L] / B_DIM_CONST;
+						cur_a_row_base  <= ce_inst[`PT_INST_A_OFF_L+7:`PT_INST_A_OFF_L] >> A_DIM_SHIFT;
+						cur_b_row_base  <= ce_inst[`PT_INST_B_OFF_L+7:`PT_INST_B_OFF_L] >> B_DIM_SHIFT;
 						cur_m_wr_buf    <= m_wr_buf_ptr;
 					end
 				end

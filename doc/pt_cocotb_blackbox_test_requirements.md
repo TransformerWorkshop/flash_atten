@@ -42,7 +42,7 @@
   - `B_BANK_DEPTH=8`
 - 尺寸 sweep：
   - `2x2`
-  - `3x2`
+  - `3x2`（power-of-two guard 负例）
   - `4x4`
   - `8x8`
 
@@ -70,7 +70,7 @@ make -C sim/cocotb randomized WAVES=1 VERBOSE=1
   - `full_2x2_numeric`
   - `full_4x4_core`
   - `full_8x8_core`
-  - `full_3x2_protocol`
+  - `full_3x2_pow2_guard`
 - `randomized`
   - `randomized_4x4_seed10..19`
   - `randomized_8x8_seed10..19`
@@ -82,7 +82,7 @@ make -C sim/cocotb randomized WAVES=1 VERBOSE=1
 | `PT-BB-002` | PT Numeric Boundaries | `test_pt_numeric_boundaries` | `identity` 作为 A；B 输入覆盖零值、常值、上下饱和和 tie rounding 场景 | `2x2/4x4/8x8` 数值正确性、量化边界、saturation、rounding tie | 每个边界场景导出矩阵与参考模型完全一致 | 任一边界场景出现导出值不一致、遗漏导出或 `ctrl_resp` 异常 |
 | `PT-BB-003` | PT QCFG Modes | `test_pt_qcfg_modes` | 合法 `QCFG` payload；覆盖 `PER_TENSOR/X_WISE/Y_WISE/X_WISE_DIV2/Y_WISE_DIV2` | granularity 选择、payload 个数、scale index 映射、导出数值 | 每种 granularity 下 `QCFG` 交互成功且导出数值与参考模型一致 | QCFG 交互失败、payload 数量不匹配、导出数值与 scale 规则不符 |
 | `PT-BB-004` | PT Protocol Errors | `test_pt_protocol_errors` | 注入非法 `MNK`、非对齐 offset、非法 QCFG、wrong `tuser`、A/B DMA error、M export DMA error | 错误响应路径、`ctrl_resp` 顺序、`irq` 次数、success resp + export error resp 组合 | 每类非法场景都进入预期错误路径，`ctrl_resp` 与 `irq` 行为符合设计预期 | 非法场景未报错、报错类型错误、`ctrl_resp` 顺序错误、`irq` 次数错误 |
-| `PT-BB-005` | PT QCFG Odd Granularity | `test_pt_qcfg_odd_granularity` | odd `X_DIM` 或 odd `Y_DIM` 的 `/2` granularity header | odd 维度下 `/2` granularity 非法拒绝 | odd 维度下 `X/Y_WISE_DIV2` header 被明确拒绝并返回错误响应 | odd 维度下非法 granularity 被错误接受或未返回错误响应 |
+| `PT-BB-005` | PT Power-of-two Guard | runner-level `full_3x2_pow2_guard` | odd `X_DIM/Y_DIM` 配置启动仿真 | 顶层参数约束、启动即拒绝非法维度、fatal 文本稳定性 | 仿真启动阶段即以预期 fatal 退出，且 log 命中 `PT_MD/PT_CE` 的 power-of-two guard 文本 | odd 维度配置被错误接受、fatal 文本不匹配、或负例结果未被 runner 正确归档 |
 | `PT-BB-006` | PT Backpressure | `test_pt_backpressure` | 对 `dma_req_ready`、`m_dma_req_ready`、`m_axis_tready`、`s_axis_valid` 注入时序扰动 | 输入侧 / 输出侧回压、导出未结束时排队下一事务 | 回压存在时事务仍按协议完成，导出顺序、响应和 `irq` 数正确 | 回压导致死锁、导出顺序错误、响应丢失或多余 `irq` |
 | `PT-BB-007` | PT Randomized | `test_pt_randomized` | 固定 seed；混合 legal/hit/M-window/QCFG/invalid/wrong_tuser/export_error | 多 seed 混合事务、随机 ready/valid/backpressure、缓存命中、错误注入 | 所有 seed 全部通过，且失败可由 seed 完整复现 | 任一 seed 下出现非预期数据/协议 mismatch，或结果不可复现 |
 
@@ -103,7 +103,7 @@ make -C sim/cocotb randomized WAVES=1 VERBOSE=1
 ### 6.3 本轮重跑后的结果基线
 - xUnit 文件总数：`26`
 - 执行到的 testcase 数：`34`
-- skipped 数：`148`
+- skipped 数：`142`
 - failure 数：`0`
 
 ### 6.4 本轮结果文件清单
@@ -112,7 +112,7 @@ make -C sim/cocotb randomized WAVES=1 VERBOSE=1
   - `smoke_8x8_seed10.xml`
 - full
   - `full_2x2_numeric_seed10.xml`
-  - `full_3x2_protocol_seed10.xml`
+  - `full_3x2_pow2_guard_seed10.xml`
   - `full_4x4_core_seed10.xml`
   - `full_8x8_core_seed10.xml`
 - randomized
@@ -126,7 +126,7 @@ make -C sim/cocotb randomized WAVES=1 VERBOSE=1
 
 ### 7.2 full
 - `full_2x2_numeric_seed10.xml`：PASS
-- `full_3x2_protocol_seed10.xml`：PASS
+- `full_3x2_pow2_guard_seed10.xml`：PASS（expected startup fatal）
 - `full_4x4_core_seed10.xml`：PASS
 - `full_8x8_core_seed10.xml`：PASS
 
@@ -141,6 +141,7 @@ make -C sim/cocotb randomized WAVES=1 VERBOSE=1
 - M export 输出协议
 - 多尺寸数值正确性
 - 量化模式与数值边界
+- odd 维度 power-of-two guard 负例
 - `miss/hit/M-window`
 - backpressure 组合
 - 多 seed 伪随机混合事务

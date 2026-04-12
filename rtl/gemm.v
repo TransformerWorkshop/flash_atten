@@ -42,6 +42,9 @@ module GEMM #(
 	wire [TOTAL_PE-1:0] pe_m_valid              ;
 	wire [TOTAL_PE-1:0] pe_m_ready              ;
 	wire [ 4*WIDTH-1:0] pe_m_data [0:TOTAL_PE-1];
+	wire [X_DIM-1:0]    row_a_ready             ;
+	wire [X_DIM-1:0]    row_b_ready             ;
+	wire [X_DIM-1:0]    row_collected           ;
 
 	wire collect_done;
 	wire stream_fire ;
@@ -53,10 +56,10 @@ module GEMM #(
 	integer row_idx;
 	integer col_idx;
 
-	assign a_ready = &pe_a_ready;
-	assign b_ready = &pe_b_ready;
+	assign a_ready = &row_a_ready;
+	assign b_ready = &row_b_ready;
 
-	assign collect_done = &collected;
+	assign collect_done = &row_collected;
 	assign stream_fire  = (state == STATE_STREAM) && m_group_valid && m_group_ready;
 
 	assign m_group_valid = (state == STATE_STREAM);
@@ -87,6 +90,15 @@ module GEMM #(
 			end
 		endcase
 	end
+	generate
+		genvar gr;
+		for (gr = 0; gr < X_DIM; gr = gr + 1) begin : gen_row_reduce
+			assign row_a_ready[gr]   = &pe_a_ready[gr*Y_DIM +: Y_DIM];
+			assign row_b_ready[gr]   = &pe_b_ready[gr*Y_DIM +: Y_DIM];
+			assign row_collected[gr] = &collected[gr*Y_DIM +: Y_DIM];
+		end
+	endgenerate
+
 	generate
 		genvar gw;
 		for (gw = 0; gw < GROUP_SIZE; gw = gw + 1) begin : gen_group_data
