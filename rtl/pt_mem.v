@@ -78,3 +78,90 @@ module PT_MEM_BANK #(
 	wire _unused_rst = rstn | clear;
 
 endmodule
+
+module PT_M_MEM #(
+	parameter DATA_WIDTH = 32,
+	parameter LANES      = 4 ,
+	parameter DEPTH      = 16
+) (
+	input  wire                            clk      ,
+	input  wire                            rstn     ,
+	input  wire                            clear    ,
+	input  wire                            wr_en    ,
+	input  wire                            wr_buf   ,
+	input  wire [$clog2(LANES)-1:0]        wr_lane  ,
+	input  wire [$clog2(DEPTH)-1:0]        wr_addr  ,
+	input  wire [         DATA_WIDTH-1:0]  wr_data  ,
+	input  wire                            rd_a_en  ,
+	input  wire                            rd_a_buf ,
+	input  wire [$clog2(DEPTH)-1:0]        rd_a_addr,
+	output wire [   LANES*DATA_WIDTH-1:0]  rd_a_data,
+	input  wire                            rd_b_en  ,
+	input  wire                            rd_b_buf ,
+	input  wire [$clog2(DEPTH)-1:0]        rd_b_addr,
+	output wire [   LANES*DATA_WIDTH-1:0]  rd_b_data,
+	input  wire                            rd_exp_en ,
+	input  wire                            rd_exp_buf,
+	input  wire [$clog2(DEPTH)-1:0]        rd_exp_addr,
+	output wire [   LANES*DATA_WIDTH-1:0]  rd_exp_data
+);
+
+	// Mirror storage to emulate 2R1W behavior using two 1R1W PT_MEM_BANK instances.
+	PT_MEM_BANK #(
+		.DATA_WIDTH(DATA_WIDTH),
+		.LANES     (LANES),
+		.DEPTH     (DEPTH)
+	) u_mem_a (
+		.clk    (clk     ),
+		.rstn   (rstn    ),
+		.clear  (clear   ),
+		.wr_en  (wr_en   ),
+		.wr_buf (wr_buf  ),
+		.wr_lane(wr_lane ),
+		.wr_addr(wr_addr ),
+		.wr_data(wr_data ),
+		.rd_en  (rd_a_en ),
+		.rd_buf (rd_a_buf),
+		.rd_addr(rd_a_addr),
+		.rd_data(rd_a_data)
+	);
+
+	PT_MEM_BANK #(
+		.DATA_WIDTH(DATA_WIDTH),
+		.LANES     (LANES),
+		.DEPTH     (DEPTH)
+	) u_mem_b (
+		.clk    (clk     ),
+		.rstn   (rstn    ),
+		.clear  (clear   ),
+		.wr_en  (wr_en   ),
+		.wr_buf (wr_buf  ),
+		.wr_lane(wr_lane ),
+		.wr_addr(wr_addr ),
+		.wr_data(wr_data ),
+		.rd_en  (rd_b_en ),
+		.rd_buf (rd_b_buf),
+		.rd_addr(rd_b_addr),
+		.rd_data(rd_b_data)
+	);
+
+	PT_MEM_BANK #(
+		.DATA_WIDTH(DATA_WIDTH),
+		.LANES     (LANES),
+		.DEPTH     (DEPTH)
+	) u_mem_exp (
+		.clk    (clk      ),
+		.rstn   (rstn     ),
+		.clear  (clear    ),
+		.wr_en  (wr_en    ),
+		.wr_buf (wr_buf   ),
+		.wr_lane(wr_lane  ),
+		.wr_addr(wr_addr  ),
+		.wr_data(wr_data  ),
+		.rd_en  (rd_exp_en),
+		.rd_buf (rd_exp_buf),
+		.rd_addr(rd_exp_addr),
+		.rd_data(rd_exp_data)
+	);
+
+endmodule
