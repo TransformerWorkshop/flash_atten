@@ -5,9 +5,11 @@ import os
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Mapping, Optional
 
 from cocotb_tools.runner import get_runner
+
+from tests.pt_case_catalog import GUARD_PROFILES, RANDOMIZED_PROFILES
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -25,11 +27,13 @@ class RunConfig:
 	name: str
 	x_dim: int
 	y_dim: int
-	testcases: List[str]
+	test_modules: List[str]
+	build_name: Optional[str] = None
 	seeds: Optional[List[int]] = None
-	random_cases: int = 12
+	random_cases: int = 20
 	expect_startup_fail: bool = False
 	expected_log_tokens: Optional[List[str]] = None
+	extra_env: Optional[Mapping[str, str]] = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,79 +54,80 @@ def suite_configs(suite: str, seed_override: Optional[int]) -> List[RunConfig]:
 	default_seed = DEFAULT_SEED if seed_override is None else seed_override
 	if suite == "smoke":
 		return [
-			RunConfig(name="smoke_4x4", x_dim=4, y_dim=4, testcases=["test_pt_smoke"], seeds=[default_seed]),
-			RunConfig(name="smoke_8x8", x_dim=8, y_dim=8, testcases=["test_pt_smoke"], seeds=[default_seed]),
+			RunConfig(name="smoke_4x4", x_dim=4, y_dim=4, test_modules=["tests.test_pt_smoke_cases"], seeds=[default_seed]),
+			RunConfig(name="smoke_8x8", x_dim=8, y_dim=8, test_modules=["tests.test_pt_smoke_cases"], seeds=[default_seed]),
 		]
 
 	if suite == "full":
-		return [
+		configs = [
 			RunConfig(
 				name="full_2x2_numeric",
 				x_dim=2,
 				y_dim=2,
-				testcases=["test_pt_numeric_boundaries"],
+				test_modules=["tests.test_pt_numeric_cases"],
 				seeds=[default_seed],
 			),
 			RunConfig(
 				name="full_4x4_core",
 				x_dim=4,
 				y_dim=4,
-				testcases=[
-					"test_pt_smoke",
-					"test_pt_numeric_boundaries",
-					"test_pt_qcfg_modes",
-					"test_pt_protocol_errors",
-					"test_pt_backpressure",
-					"test_pt_randomized",
+				test_modules=[
+					"tests.test_pt_smoke_cases",
+					"tests.test_pt_numeric_cases",
+					"tests.test_pt_qcfg_cases",
+					"tests.test_pt_protocol_cases",
+					"tests.test_pt_backpressure_cases",
 				],
 				seeds=[default_seed],
-				random_cases=8,
 			),
 			RunConfig(
 				name="full_8x8_core",
 				x_dim=8,
 				y_dim=8,
-				testcases=[
-					"test_pt_smoke",
-					"test_pt_numeric_boundaries",
-					"test_pt_qcfg_modes",
-					"test_pt_backpressure",
+				test_modules=[
+					"tests.test_pt_smoke_cases",
+					"tests.test_pt_numeric_cases",
+					"tests.test_pt_qcfg_cases",
+					"tests.test_pt_backpressure_cases",
 				],
 				seeds=[default_seed],
-			),
-			RunConfig(
-				name="full_3x2_pow2_guard",
-				x_dim=3,
-				y_dim=2,
-				testcases=["test_pt_smoke"],
-				seeds=[default_seed],
-				expect_startup_fail=True,
-				expected_log_tokens=[
-					"PT_MD requires power-of-two GEMM_X_DIM/GEMM_Y_DIM",
-					"PT_CE requires power-of-two GEMM_X_DIM/GEMM_Y_DIM",
-				],
 			),
 		]
+		for profile in GUARD_PROFILES:
+			configs.append(
+				RunConfig(
+					name=f"full_pow2_guard_{profile.profile}",
+					x_dim=profile.data["x_dim"],
+					y_dim=profile.data["y_dim"],
+					test_modules=["tests.test_pt_guard_boot"],
+					seeds=[default_seed],
+					expect_startup_fail=True,
+					expected_log_tokens=[
+						"PT_MD requires power-of-two GEMM_X_DIM/GEMM_Y_DIM",
+						"PT_CE requires power-of-two GEMM_X_DIM/GEMM_Y_DIM",
+					],
+					extra_env={"PT_GUARD_PROFILE": profile.profile},
+				)
+			)
+		return configs
 
-	default_seeds = [seed_override] if seed_override is not None else list(range(DEFAULT_SEED, 20))
-	return [
-		RunConfig(
-			name="randomized_4x4",
-			x_dim=4,
-			y_dim=4,
-			testcases=["test_pt_randomized"],
-			seeds=default_seeds,
-			random_cases=16,
-		),
-		RunConfig(
-			name="randomized_8x8",
-			x_dim=8,
-			y_dim=8,
-			testcases=["test_pt_randomized"],
-			seeds=default_seeds,
-			random_cases=12,
-		),
-	]
+	configs = []
+	for profile in RANDOMIZED_PROFILES:
+		dim = profile.dims[0]
+		profile_seed = seed_override if seed_override is not None else profile.data["seed"]
+		configs.append(
+			RunConfig(
+				name=f"randomized_{profile.profile}",
+				build_name=f"randomized_dim{dim}",
+				x_dim=dim,
+				y_dim=dim,
+				test_modules=["tests.test_pt_randomized_cases"],
+				seeds=[profile_seed],
+				random_cases=profile.data["random_cases"],
+				extra_env={"PT_RANDOM_PROFILE": profile.profile},
+			)
+		)
+	return configs
 
 
 def safe_read_text(path: Path) -> str:
@@ -169,7 +174,7 @@ def expected_fail_status(config: RunConfig, log_file: Path, exit_code: int) -> O
 
 def run_case(sim_name: str, waves: bool, verbose: bool, config: RunConfig) -> None:
 	runner = get_runner(sim_name)
-	build_dir = BUILD_ROOT / config.name
+	build_dir = BUILD_ROOT / (config.build_name or config.name)
 	params = {
 		"DATA_WIDTH": 32,
 		"GEMM_X_DIM": config.x_dim,
@@ -214,13 +219,14 @@ def run_case(sim_name: str, waves: bool, verbose: bool, config: RunConfig) -> No
 			"PT_TEST_SEED": str(seed),
 			"PT_RANDOM_CASES": str(config.random_cases),
 		}
+		if config.extra_env:
+			extra_env.update(config.extra_env)
 		exit_code = 0
 		try:
 			runner.test(
-				test_module="tests.test_pt_blackbox",
+				test_module=config.test_modules,
 				hdl_toplevel="PT",
 				seed=seed,
-				testcase=config.testcases,
 				extra_env=extra_env,
 				build_dir=build_dir,
 				test_dir=test_dir,

@@ -4,86 +4,50 @@
 | --- | --- |
 | 测试唯一 ID | `PT-BB-006` |
 | 测试唯一名称 | `backpressure` |
-| 对应测试用例 | `test_pt_backpressure` |
+| 对应测试用例 | `tests.test_pt_backpressure_timing_*` |
 | 当前状态 | `PASS` |
 | 文档时间戳 | `20260412_162330` |
 
 ## 测试目标
-- 验证 `PT` 在输入侧、输出侧和请求侧回压存在时，仍能保持事务正确性与无死锁。
+- 验证 `PT` 在输入侧和输出侧回压存在时仍能保持协议正确性和导出顺序。
+- 将回压设计成 20 个稳定的命名 profile，而不是无语义 bit 序列编号。
 
-## 测试过程
-1. 使用 `SequencePattern` 对以下端口注入时序扰动：
-   - `dma_req_ready = [0, 0, 1, 1, 0, 1, 1, 1]`
-   - `m_dma_req_ready = [0, 1, 0, 1, 1, 0, 1, 1]`
-   - `m_axis_tready = [1, 1, 0, 0, 0, 1, 0, 1, 1, 1]`
-   - `s_axis_valid = [0, 1, 1, 0, 1, 0, 1, 1, 1]`
-2. 在 `4x4` 与 `8x8` 两个尺寸实例中，各执行两笔连续 `MATMUL`。
-3. 第一笔导出尚未完全结束时，继续向 DUT 提交第二笔事务。
-4. 检查以下定量结果：
-   - 第一笔 `ctrl_resp`
-   - 第二笔 `ctrl_resp`
-   - `dma_req` 次数
-   - `m_dma_req` 次数
-   - `irq` 次数
-   - 是否在 `12000` 仿真周期超时前完成
+## 用例分组
+| 一级分组 | 二级子组 | 对应用例 | 累计 executed | 覆盖意图 |
+| --- | --- | --- | --- | --- |
+| `时序扰动测试` | `轻度回压` | `tests.test_pt_backpressure_timing_light_*` | `8` | 覆盖轻微空洞与轻度错相 |
+| `时序扰动测试` | `中度回压` | `tests.test_pt_backpressure_timing_medium_*` | `8` | 覆盖中等强度输入/输出偏压 |
+| `时序扰动测试` | `重度回压` | `tests.test_pt_backpressure_timing_heavy_*` | `8` | 覆盖高占空比回压 |
+| `时序扰动测试` | `相位错位回压` | `tests.test_pt_backpressure_timing_phase_shift_*` | `4` | 覆盖 DMA / export 领先或错位 |
+| `时序扰动测试` | `输入侧偏压` | `tests.test_pt_backpressure_timing_input_*` | `6` | 覆盖 `dma_req/s_axis` 受限 |
+| `时序扰动测试` | `输出侧偏压` | `tests.test_pt_backpressure_timing_output_*` | `6` | 覆盖 `m_dma_req/m_axis` 受限 |
 
-## 对应指标
-- `4x4` 实例：
-  - 第一笔 `ctrl_resp = 0x00000301`
-  - 第二笔 `ctrl_resp = 0x40000302`
-  - `dma_req` 次数 = `4`
-  - `m_dma_req` 次数 = `2`
-  - `irq` 次数 = `2`
-- `8x8` 实例：
-  - 第一笔 `ctrl_resp = 0x00000301`
-  - 第二笔 `ctrl_resp = 0x40000302`
-  - `dma_req` 次数 = `4`
-  - `m_dma_req` 次数 = `2`
-  - `irq` 次数 = `2`
-- 两个实例中，第二笔事务都必须在第一笔回压存在时被排队并最终导出
-- `wait_export_done(2, 12000)` 必须成功，即两个导出都在 `12000` 周期窗口内完成
+## 指标映射
+- `dma_req_ready`
+- `m_dma_req_ready`
+- `m_axis_tready`
+- `s_axis_valid`
+- 两笔事务在回压下的响应、导出和 `irq`
 
-## 测试成功判据
-- `full_4x4_core_seed10.xml` 与 `full_8x8_core_seed10.xml` 都没有 `<failure>`。
-- 两个尺寸实例都观测到：
-  - 第一笔 `ctrl_resp=0x00000301`
-  - 第二笔 `ctrl_resp=0x40000302`
-- 两个尺寸实例都观测到：
-  - `dma_req` 共 `4` 次（A/B 各两次）
-  - `m_dma_req` 共 `2` 次
-  - `irq` 共 `2` 次
-- 两个实例都在 `12000` 周期门限内完成 `2` 次导出。
+## 成功判据
+- 每个 backpressure 场景都必须完成两笔事务，且按顺序观测到：
+  - `ctrl_resp=0x00000301`
+  - `ctrl_resp=0x40000302`
+- 每个场景都必须只发起 `2` 次 `m_dma_req`，且 buffer 顺序固定为 `buf=0 -> buf=1`。
+- `4x4` 场景每笔导出 `beats=16`，`8x8` 场景每笔导出 `beats=64`。
+- 每个场景都必须完成 `2` 次导出完成与 `2` 次 `irq`，并保持导出顺序正确。
+- 日志中不能出现 `ctrl_resp timeout`、`export_done timeout`、`m_axis_tdata mismatch` 或 deadlock 现象。
 
-## 测试失败判据
-- 任一实例没有出现 `0x00000301` 和 `0x40000302` 两个完成响应。
-- 任一实例 `dma_req` 次数不等于 `4`。
-- 任一实例 `m_dma_req` 次数不等于 `2`。
-- 任一实例 `irq` 次数不等于 `2`。
-- 任一实例在 `12000` 周期内未完成两次导出。
-- 任一结果文件出现 `<failure>`。
+## 失败判据
+- 缺少任一笔成功 `ctrl_resp`，或顺序不是 `0x00000301 -> 0x40000302`。
+- `m_dma_req` 次数不是 `2`，或 `buf` 顺序不是 `0 -> 1`。
+- `beats` 数与当前维度不符。
+- 任一场景未完成两次导出、两次 `irq`，或出现 `timeout / mismatch / deadlock`。
 
-## 测试结论
-- 本项测试结论为通过。
-- 原因是 `4x4` 和 `8x8` 两个实例都满足固定的回压模式，并仍然完成了 `2` 笔事务、`4` 次 DMA load 请求、`2` 次 export 请求和 `2` 次 completion `irq`，且均未超时。
-
-## 实际情况
-- 实际执行结果文件：
+## 实际结果
+- 结果文件：
   - [`full_4x4_core_seed10.xml`](../../../sim/cocotb/results/full_4x4_core_seed10.xml)
   - [`full_8x8_core_seed10.xml`](../../../sim/cocotb/results/full_8x8_core_seed10.xml)
-- 对应日志文件：
-  - [`full_4x4_core_seed10.test.log`](../../../sim/cocotb/logs/full_4x4_core_seed10.test.log)
-  - [`full_8x8_core_seed10.test.log`](../../../sim/cocotb/logs/full_8x8_core_seed10.test.log)
-- 代表性实际现象：
-  - `4x4` 日志中实际出现：
-    - `ctrl_resp=0x00000301`
-    - `m_dma_req buf=0 id=0x00000301 beats=16`
-    - `ctrl_resp=0x40000302`
-    - `m_dma_req buf=1 id=0x00000302 beats=16`
-    - 对应总 `dma_req` 数为 `4`
-  - `8x8` 日志中实际出现：
-    - `ctrl_resp=0x00000301`
-    - `m_dma_req buf=0 id=0x00000301 beats=64`
-    - `ctrl_resp=0x40000302`
-    - `m_dma_req buf=1 id=0x00000302 beats=64`
-    - 对应总 `dma_req` 数为 `4`
-  - 两个结果文件都没有 `<failure>`，也没有出现 timeout 现象。
+- 统计：
+  - `PT-BB-006 executed = 40`
+  - `PT-BB-006 failed = 0`
