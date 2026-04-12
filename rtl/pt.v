@@ -171,12 +171,11 @@ module PT #(
 	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] b_mem_rd_data;
 
 	// M bank read data
-	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] m_a_mem_rd_data_y;
-	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] m_b_mem_rd_data_y;
-	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] m_exp_rd_data_y;
-	reg  [GEMM_X_DIM*DATA_WIDTH-1:0] m_a_mem_rd_data_x;
-	wire [GEMM_X_DIM*DATA_WIDTH-1:0] gemm_a_data = exec_a_is_m ? m_a_mem_rd_data_x : a_mem_rd_data;
-	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] gemm_b_data = exec_b_is_m ? m_b_mem_rd_data_y : b_mem_rd_data;
+	wire [GEMM_X_DIM*DATA_WIDTH-1:0] m_a_mem_rd_data;
+	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] m_b_mem_rd_data;
+	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] m_exp_rd_data;
+	wire [GEMM_X_DIM*DATA_WIDTH-1:0] gemm_a_data = exec_a_is_m ? m_a_mem_rd_data : a_mem_rd_data;
+	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] gemm_b_data = exec_b_is_m ? m_b_mem_rd_data : b_mem_rd_data;
 
 	PT_MD #(
 		.DATA_WIDTH  (DATA_WIDTH),
@@ -245,7 +244,7 @@ module PT #(
 			.exp_rd_en       (exp_rd_en       ),
 			.exp_rd_buf      (exp_rd_buf      ),
 			.exp_rd_addr     (exp_rd_addr     ),
-			.exp_rd_data     (m_exp_rd_data_y ),
+			.exp_rd_data     (m_exp_rd_data   ),
 			.pcsr_a_base     (pcsr_a_base     ),
 			.pcsr_b_base     (pcsr_b_base     ),
 			.csr_quant_inv_scale(quant_inv_scale),
@@ -369,7 +368,8 @@ module PT #(
 
 	PT_M_MEM #(
 		.DATA_WIDTH(DATA_WIDTH),
-		.LANES     (GEMM_Y_DIM),
+		.A_LANES   (GEMM_X_DIM),
+		.B_LANES   (GEMM_Y_DIM),
 		.DEPTH     (M_DEPTH)
 	) u_m_mem (
 		.clk      (clk         ),
@@ -383,15 +383,15 @@ module PT #(
 		.rd_a_en  (exec_a_is_m && gemm_a_valid),
 		.rd_a_buf (exec_m_a_buf),
 		.rd_a_addr(exec_m_a_addr),
-		.rd_a_data(m_a_mem_rd_data_y),
+		.rd_a_data(m_a_mem_rd_data),
 		.rd_b_en  (exec_b_is_m && gemm_b_valid),
 		.rd_b_buf (exec_m_b_buf),
 		.rd_b_addr(exec_m_b_addr),
-		.rd_b_data(m_b_mem_rd_data_y),
+		.rd_b_data(m_b_mem_rd_data),
 		.rd_exp_en(exp_rd_en),
 		.rd_exp_buf(exp_rd_buf),
 		.rd_exp_addr(exp_rd_addr),
-		.rd_exp_data(m_exp_rd_data_y)
+		.rd_exp_data(m_exp_rd_data)
 	);
 
 	GEMM #(
@@ -436,17 +436,6 @@ module PT #(
 		.out_idx       (quant_m_idx     ),
 		.out_last      (quant_m_last    )
 	);
-
-	integer ai;
-	always @(*) begin
-		m_a_mem_rd_data_x = {GEMM_X_DIM*DATA_WIDTH{1'b0}};
-		for (ai = 0; ai < GEMM_X_DIM; ai = ai + 1) begin
-			if (ai < GEMM_Y_DIM) begin
-				m_a_mem_rd_data_x[ai*DATA_WIDTH +: DATA_WIDTH] =
-					m_a_mem_rd_data_y[ai*DATA_WIDTH +: DATA_WIDTH];
-			end
-		end
-	end
 
 	always @(posedge clk or negedge rstn) begin
 		if (!rstn) begin

@@ -269,13 +269,13 @@ module PT_CE #(
 				end
 
 				ST_EXEC_FEED: begin
-					exec_a_addr   <= cur_a_row_base[A_AW-1:0] + exec_k_cnt[A_AW-1:0];
-					exec_b_addr   <= cur_b_row_base[B_AW-1:0] + exec_k_cnt[B_AW-1:0];
-					exec_m_a_addr <= cur_a_row_base[A_AW-1:0] + exec_k_cnt[A_AW-1:0];
-					exec_m_b_addr <= cur_b_row_base[B_AW-1:0] + exec_k_cnt[B_AW-1:0];
 					if (gemm_a_ready && gemm_b_ready) begin
 						if (exec_k_cnt != (GEMM_X_DIM - 1)) begin
 							exec_k_cnt <= exec_k_cnt + 1'b1;
+							exec_a_addr <= cur_a_row_base[A_AW-1:0] + exec_k_cnt[A_AW-1:0] + 1'b1;
+							exec_b_addr <= cur_b_row_base[B_AW-1:0] + exec_k_cnt[B_AW-1:0] + 1'b1;
+							exec_m_a_addr <= cur_a_row_base[A_AW-1:0] + exec_k_cnt[A_AW-1:0] + 1'b1;
+							exec_m_b_addr <= cur_b_row_base[B_AW-1:0] + exec_k_cnt[B_AW-1:0] + 1'b1;
 						end
 					end
 				end

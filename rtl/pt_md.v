@@ -779,16 +779,16 @@ module PT_MD #(
 							dma_col = load_recv_count % GEMM_X_DIM;
 							a_mem_wr_en   <= 1'b1;
 							a_mem_wr_buf  <= load_buf_sel;
-							a_mem_wr_lane <= dma_col[A_LW-1:0];
-							a_mem_wr_addr <= load_row_base[A_AW-1:0] + dma_row[A_AW-1:0];
+							a_mem_wr_lane <= dma_row[A_LW-1:0];
+							a_mem_wr_addr <= load_row_base[A_AW-1:0] + dma_col[A_AW-1:0];
 							a_mem_wr_data <= s_axis_tdata;
 						end else begin
 							dma_row = load_recv_count / GEMM_Y_DIM;
 							dma_col = load_recv_count % GEMM_Y_DIM;
 							b_mem_wr_en   <= 1'b1;
 							b_mem_wr_buf  <= load_buf_sel;
-							b_mem_wr_lane <= dma_row[B_LW-1:0];
-							b_mem_wr_addr <= load_row_base[B_AW-1:0] + dma_col[B_AW-1:0];
+							b_mem_wr_lane <= dma_col[B_LW-1:0];
+							b_mem_wr_addr <= load_row_base[B_AW-1:0] + dma_row[B_AW-1:0];
 							b_mem_wr_data <= s_axis_tdata;
 						end
 
