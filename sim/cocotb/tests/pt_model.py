@@ -173,13 +173,22 @@ class ExportExpectation:
 
 
 @dataclass
+class DmaLoadExpectation:
+	ctrl_id: int
+	kind: str
+	ext_addr: int
+	local_addr: int
+	beats: int
+
+
+@dataclass
 class MatmulPlan:
 	ctrl_id: int
 	response_word: int
 	err: bool
 	success_buffer: Optional[int]
 	result_matrix: Optional[List[int]]
-	expected_dma_loads: List[Tuple[str, int]]
+	expected_dma_loads: List[DmaLoadExpectation]
 	a_off: int
 	b_off: int
 	a_matrix: Optional[List[int]]
@@ -206,6 +215,21 @@ class PTBlackBoxModel:
 		self.m_buffer_ctrl_id: Dict[int, Optional[int]] = {0: None, 1: None}
 		self.m_buffer_state: Dict[int, str] = {0: "free", 1: "free"}
 		self.next_write_buf = 0
+		self.a_dma_buf_sel = 0
+		self.b_dma_buf_sel = 0
+
+	def reset_runtime_state(self) -> None:
+		self.quant_cfg = QuantConfig(
+			granularity=PT_QGRAN_PER_TENSOR,
+			inv_scales=[0x0001_0000] * self.max_dim,
+		)
+		self.cache_by_id.clear()
+		self.m_buffers = {0: None, 1: None}
+		self.m_buffer_ctrl_id = {0: None, 1: None}
+		self.m_buffer_state = {0: "free", 1: "free"}
+		self.next_write_buf = 0
+		self.a_dma_buf_sel = 0
+		self.b_dma_buf_sel = 0
 
 	def set_base(self, kind: str, value: int) -> None:
 		if kind == "A":
@@ -218,6 +242,11 @@ class PTBlackBoxModel:
 	def ext_addr(self, kind: str, elem_off: int) -> int:
 		base = self.a_base if kind == "A" else self.b_base
 		return (base + (elem_off * self.word_bytes)) & 0xFFFF_FFFF
+
+	def local_addr(self, kind: str, elem_off: int, buf_sel: int) -> int:
+		align = self.x_dim if kind == "A" else self.y_dim
+		local_elem_off = elem_off & ~(align - 1)
+		return ((buf_sel & 0x1) << 8) | (local_elem_off & 0xFF)
 
 	def set_qcfg(self, granularity: int, inv_scales: Sequence[int]) -> None:
 		payload_count = qcfg_payload_count(granularity, self.x_dim, self.y_dim)
@@ -307,19 +336,35 @@ class PTBlackBoxModel:
 			)
 
 		cache_entry = self.cache_by_id.get(ctrl_id)
-		expected_dma_loads: List[Tuple[str, int]] = []
+		expected_dma_loads: List[DmaLoadExpectation] = []
 
 		a_matrix, a_is_m = self._resolve_matrix("A", a_off, external_a_tiles)
 		if not a_is_m and cache_entry is not None and cache_entry.a_off == a_off and cache_entry.a_matrix is not None:
 			a_matrix = list(cache_entry.a_matrix)
 		elif not a_is_m:
-			expected_dma_loads.append(("A", self.ext_addr("A", a_off)))
+			expected_dma_loads.append(
+				DmaLoadExpectation(
+					ctrl_id=ctrl_id,
+					kind="A",
+					ext_addr=self.ext_addr("A", a_off),
+					local_addr=self.local_addr("A", a_off, self.a_dma_buf_sel),
+					beats=self.x_dim * self.x_dim,
+				)
+			)
 
 		b_matrix, b_is_m = self._resolve_matrix("B", b_off, external_b_tiles)
 		if not b_is_m and cache_entry is not None and cache_entry.b_off == b_off and cache_entry.b_matrix is not None:
 			b_matrix = list(cache_entry.b_matrix)
 		elif not b_is_m:
-			expected_dma_loads.append(("B", self.ext_addr("B", b_off)))
+			expected_dma_loads.append(
+				DmaLoadExpectation(
+					ctrl_id=ctrl_id,
+					kind="B",
+					ext_addr=self.ext_addr("B", b_off),
+					local_addr=self.local_addr("B", b_off, self.b_dma_buf_sel),
+					beats=self.y_dim * self.y_dim,
+				)
+			)
 
 		result_matrix = self._quantize_matrix(matmul_row_major(a_matrix, b_matrix, self.x_dim, self.y_dim, self.k_dim))
 		success_buffer = self.next_write_buf
@@ -375,7 +420,15 @@ class PTBlackBoxModel:
 		if matrix is None or ctrl_id is None:
 			raise ValueError(f"buffer {buffer} has no matrix data")
 		self.m_buffer_state[buffer] = "exporting"
-		return ExportExpectation(ctrl_id=ctrl_id, buffer=buffer, matrix=list(matrix))
+		return ExportExpectation(ctrl_id=(ctrl_id & 0x3FFF_FFFF), buffer=buffer, matrix=list(matrix))
 
 	def complete_export(self, buffer: int) -> None:
 		self.m_buffer_state[buffer] = "free"
+
+	def commit_dma_success(self, kind: str) -> None:
+		if kind == "A":
+			self.a_dma_buf_sel = 1 - self.a_dma_buf_sel
+		elif kind == "B":
+			self.b_dma_buf_sel = 1 - self.b_dma_buf_sel
+		else:
+			raise ValueError(f"unknown DMA kind {kind!r}")

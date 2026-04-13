@@ -35,7 +35,13 @@ full:
 randomized:
 	$(RUNNER) randomized --sim $(SIM) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG)
 
-clean:
-	rm -rf build results logs waves
+extended:
+	$(RUNNER) extended --sim $(SIM) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG)
 
-.PHONY: all smoke full randomized clean
+coverage:
+	$(RUNNER) coverage --sim verilator $(SEED_ARG) $(VERBOSE_ARG)
+
+clean:
+	rm -rf build results logs waves coverage
+
+.PHONY: all smoke full randomized extended coverage clean

@@ -145,6 +145,36 @@ PROTOCOL_CASES = [
 ]
 
 
+STATE_CASES = [
+	_case("test_pt_state_reset_clear_idle_recovery_01", "PT-BB-008", "约束/配置测试", "clear/reset", "clear 后 CSR、cache、M-window 恢复默认并可重跑", (4, 8), ("full",), "clear_idle_recovery", kind="clear_idle_recovery", params={}),
+	_case("test_pt_state_reset_clear_mid_export_recovery_02", "PT-BB-008", "约束/配置测试", "clear/reset", "导出中 clear 后接口恢复且下一笔事务可完成", (4, 8), ("full",), "clear_mid_export_recovery", kind="clear_mid_export_recovery", params={}),
+	_case("test_pt_state_cfg_a_base_hi_nonzero_03", "PT-BB-008", "约束/配置测试", "base_hi", "A base 高 16 位参与 DMA ext addr 计算", (4, 8), ("full",), "cfg_a_base_hi_nonzero", kind="cfg_base_hi", params={"kind": "A", "value": 0x1234_1000}),
+	_case("test_pt_state_cfg_b_base_hi_nonzero_04", "PT-BB-008", "约束/配置测试", "base_hi", "B base 高 16 位参与 DMA ext addr 计算", (4, 8), ("full",), "cfg_b_base_hi_nonzero", kind="cfg_base_hi", params={"kind": "B", "value": 0x5678_2000}),
+]
+
+
+PROTOCOL_EDGE_CASES = [
+	_case("test_pt_protocol_edge_unknown_opcode_01", "PT-BB-009", "异常路径测试", "控制编码异常", "未知 opcode 应立即报错", (4, 8), ("full",), "unknown_opcode", kind="unknown_opcode", params={"inst": 0x0000_0000}),
+	_case("test_pt_protocol_edge_qcfg_invalid_granularity_02", "PT-BB-009", "异常路径测试", "QCFG 交互异常", "非法 granularity 应立即报错", (4, 8), ("full",), "qcfg_invalid_granularity", kind="qcfg_invalid_granularity", params={"granularity": 0x7}),
+	_case("test_pt_protocol_edge_dma_error_mid_a_03", "PT-BB-009", "异常路径测试", "输入流异常", "A stream mid-stream error", (4, 8), ("full",), "dma_error_mid_a", kind="dma_error_mid_a", params={"error_at_beat": 2, "delay": 1}),
+	_case("test_pt_protocol_edge_dma_error_mid_b_04", "PT-BB-009", "异常路径测试", "输入流异常", "B stream mid-stream error", (4, 8), ("full",), "dma_error_mid_b", kind="dma_error_mid_b", params={"error_at_beat": 2, "delay": 1}),
+	_case("test_pt_protocol_edge_dma_error_after_a_05", "PT-BB-009", "异常路径测试", "输入流异常", "A stream after-stream error", (4, 8), ("full",), "dma_error_after_a", kind="dma_error_after_a", params={"delay": 1}),
+	_case("test_pt_protocol_edge_dma_error_after_b_06", "PT-BB-009", "异常路径测试", "输入流异常", "B stream after-stream error", (4, 8), ("full",), "dma_error_after_b", kind="dma_error_after_b", params={"delay": 1}),
+	_case("test_pt_protocol_edge_single_side_hit_mix_07", "PT-BB-009", "异常路径测试", "cache/M-window 组合", "单边 hit/miss 组合只触发一侧 DMA", (4, 8), ("full",), "single_side_hit_mix", kind="single_side_hit_mix", params={}),
+	_case("test_pt_protocol_edge_single_side_mwindow_mix_08", "PT-BB-009", "异常路径测试", "cache/M-window 组合", "单边 M-window + 单边 ext 组合只触发一侧 DMA", (4, 8), ("full",), "single_side_mwindow_mix", kind="single_side_mwindow_mix", params={}),
+]
+
+
+COVERAGE_CASES = [
+	_case("test_pt_coverage_cfg_selector_default_noop_01", "PT-COV-001", "约束/配置测试", "coverage_hole", "命中 CFG selector default 分支", (4, 8), ("coverage",), "cfg_selector_default_noop", kind="cfg_selector_default_noop", params={}),
+	_case("test_pt_coverage_ctrl_inst_bit_sweep_02", "PT-COV-001", "约束/配置测试", "coverage_hole", "切换 ctrl_inst 未翻转高低位", (4, 8), ("coverage",), "ctrl_inst_bit_sweep", kind="ctrl_inst_bit_sweep", params={}),
+	_case("test_pt_coverage_qcfg_header_variant_sweep_03", "PT-COV-001", "约束/配置测试", "coverage_hole", "覆盖 QCFG header 与 commit/stay 路径", (4, 8), ("coverage",), "qcfg_header_variant_sweep", kind="qcfg_header_variant_sweep", params={}),
+	_case("test_pt_coverage_clear_phase_sweep_04", "PT-COV-001", "约束/配置测试", "coverage_hole", "在多个控制阶段拉起 clear", (4, 8), ("coverage",), "clear_phase_sweep", kind="clear_phase_sweep", params={}),
+	_case("test_pt_coverage_operand_source_matrix_05", "PT-COV-001", "约束/配置测试", "coverage_hole", "覆盖多种 ext/hit/mwindow 操作数组合", (4, 8), ("coverage",), "operand_source_matrix", kind="operand_source_matrix", params={}),
+	_case("test_pt_coverage_export_path_sweep_06", "PT-COV-001", "约束/配置测试", "coverage_hole", "覆盖 export success/error 与 ready 相位组合", (4, 8), ("coverage",), "export_path_sweep", kind="export_path_sweep", params={}),
+]
+
+
 BACKPRESSURE_CASES = [
 	_case("test_pt_backpressure_timing_light_balanced_01", "PT-BB-006", "时序扰动测试", "轻度回压", "轻度均衡回压", (4, 8), ("full",), "light_balanced_01", patterns=([1, 1, 1, 0, 1, 1, 1, 1], [1, 1, 0, 1, 1, 1, 1, 1], [1, 1, 1, 0, 1, 1, 1], [1, 1, 0, 1, 1, 1, 1])),
 	_case("test_pt_backpressure_timing_light_input_soft_02", "PT-BB-006", "时序扰动测试", "轻度回压", "输入侧轻微空洞", (4, 8), ("full",), "light_input_soft_02", patterns=([1, 0, 1, 1, 1, 1, 0, 1], [1, 1, 1, 0, 1, 1, 1, 1], [1, 1, 1, 1, 0, 1, 1], [1, 0, 1, 1, 0, 1, 1])),

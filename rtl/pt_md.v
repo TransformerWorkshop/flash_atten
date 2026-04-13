@@ -478,6 +478,51 @@ module PT_MD #(
 	reg irq_r;
 	assign irq = irq_r;
 
+`ifdef VERILATOR
+	md_user_state_idle: cover property (@(posedge clk) state == ST_IDLE);
+	md_user_state_lut_check: cover property (@(posedge clk) state == ST_LUT_CHECK);
+	md_user_state_dma_req: cover property (@(posedge clk) state == ST_DMA_REQ);
+	md_user_state_dma_recv: cover property (@(posedge clk) state == ST_DMA_RECV);
+	md_user_state_enq_ce: cover property (@(posedge clk) state == ST_ENQ_CE);
+	md_user_state_qcfg_load: cover property (@(posedge clk) state == ST_QCFG_LOAD);
+
+	md_user_tr_idle_to_lut_check: cover property (@(posedge clk) state == ST_IDLE && next_state == ST_LUT_CHECK);
+	md_user_tr_idle_to_qcfg_load: cover property (@(posedge clk) state == ST_IDLE && next_state == ST_QCFG_LOAD);
+	md_user_tr_lut_check_to_dma_req: cover property (@(posedge clk) state == ST_LUT_CHECK && next_state == ST_DMA_REQ);
+	md_user_tr_lut_check_to_enq_ce: cover property (@(posedge clk) state == ST_LUT_CHECK && next_state == ST_ENQ_CE);
+	md_user_tr_dma_recv_to_dma_req: cover property (@(posedge clk) state == ST_DMA_RECV && next_state == ST_DMA_REQ);
+	md_user_tr_dma_recv_to_enq_ce: cover property (@(posedge clk) state == ST_DMA_RECV && next_state == ST_ENQ_CE);
+	md_user_tr_dma_recv_err_idle: cover property (@(posedge clk) state == ST_DMA_RECV && (dma_error || dma_tuser_mismatch));
+	md_user_tr_qcfg_load_stay: cover property (
+		@(posedge clk)
+		state == ST_QCFG_LOAD &&
+		cmd_q_out_valid &&
+		(cmd_id == qcfg_active_id) &&
+		((qcfg_recv_cnt + 1'b1) < qcfg_expect_cnt)
+	);
+	md_user_tr_qcfg_load_commit: cover property (
+		@(posedge clk)
+		state == ST_QCFG_LOAD &&
+		cmd_q_out_valid &&
+		(cmd_id == qcfg_active_id) &&
+		((qcfg_recv_cnt + 1'b1) >= qcfg_expect_cnt)
+	);
+
+	md_user_exp_state_idle: cover property (@(posedge clk) exp_state == EXP_IDLE);
+	md_user_exp_state_req: cover property (@(posedge clk) exp_state == EXP_REQ);
+	md_user_exp_state_stream: cover property (@(posedge clk) exp_state == EXP_STREAM);
+	md_user_exp_state_wait_done: cover property (@(posedge clk) exp_state == EXP_WAIT_DONE);
+	md_user_exp_idle_to_req: cover property (@(posedge clk) exp_state == EXP_IDLE && exp_has_ready);
+	md_user_exp_req_to_stream: cover property (@(posedge clk) exp_state == EXP_REQ && m_dma_req_ready);
+	md_user_exp_stream_to_wait_done: cover property (@(posedge clk) exp_state == EXP_STREAM && exp_fire && exp_last_beat);
+	md_user_exp_wait_done_to_idle: cover property (@(posedge clk) exp_state == EXP_WAIT_DONE && (m_dma_done || m_dma_error));
+
+	md_user_evt_dma_tuser_mismatch: cover property (@(posedge clk) state == ST_DMA_RECV && dma_tuser_mismatch);
+	md_user_evt_dma_error: cover property (@(posedge clk) state == ST_DMA_RECV && dma_error);
+	md_user_evt_export_dma_error: cover property (@(posedge clk) exp_state == EXP_WAIT_DONE && m_dma_error);
+	md_user_evt_qcfg_id_mismatch: cover property (@(posedge clk) state == ST_QCFG_LOAD && cmd_q_out_valid && (cmd_id != qcfg_active_id));
+`endif
+
 	integer ri;
 
 	always @(posedge clk or negedge rstn) begin

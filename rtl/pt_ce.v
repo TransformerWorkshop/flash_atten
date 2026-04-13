@@ -126,6 +126,26 @@ module PT_CE #(
 	assign b_mem_rd_en   = (state == ST_EXEC_FEED) && !cur_exec_b_is_m;
 	assign quant_m_ready = (state == ST_WAIT_GEMM);
 
+`ifdef VERILATOR
+	ce_user_state_idle: cover property (@(posedge clk) state == ST_IDLE);
+	ce_user_state_exec_start: cover property (@(posedge clk) state == ST_EXEC_START);
+	ce_user_state_exec_feed: cover property (@(posedge clk) state == ST_EXEC_FEED);
+	ce_user_state_wait_gemm: cover property (@(posedge clk) state == ST_WAIT_GEMM);
+	ce_user_state_m_store: cover property (@(posedge clk) state == ST_M_STORE);
+
+	ce_user_tr_idle_to_start: cover property (@(posedge clk) state == ST_IDLE && ce_inst_valid);
+	ce_user_tr_start_to_feed: cover property (@(posedge clk) state == ST_EXEC_START && next_state == ST_EXEC_FEED);
+	ce_user_tr_feed_to_wait_gemm: cover property (@(posedge clk) state == ST_EXEC_FEED && gemm_a_ready && gemm_b_ready && (exec_k_cnt == (GEMM_X_DIM - 1)));
+	ce_user_tr_wait_gemm_to_store: cover property (@(posedge clk) state == ST_WAIT_GEMM && quant_m_valid && quant_m_ready);
+	ce_user_tr_store_to_wait_gemm: cover property (@(posedge clk) state == ST_M_STORE && (store_lane_cnt == (GEMM_Y_DIM - 1)) && !store_row_last);
+	ce_user_tr_store_to_idle: cover property (@(posedge clk) state == ST_M_STORE && (store_lane_cnt == (GEMM_Y_DIM - 1)) && store_row_last);
+
+	ce_user_src_a_ext: cover property (@(posedge clk) state == ST_EXEC_START && !cur_exec_a_is_m);
+	ce_user_src_a_mwindow: cover property (@(posedge clk) state == ST_EXEC_START && cur_exec_a_is_m);
+	ce_user_src_b_ext: cover property (@(posedge clk) state == ST_EXEC_START && !cur_exec_b_is_m);
+	ce_user_src_b_mwindow: cover property (@(posedge clk) state == ST_EXEC_START && cur_exec_b_is_m);
+`endif
+
 	always @(posedge clk or negedge rstn) begin
 		if (!rstn) begin
 			state <= ST_IDLE;
