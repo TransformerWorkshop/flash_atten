@@ -28,6 +28,9 @@
   - [`test_pt_numeric_cases.py`](../../../sim/cocotb/tests/test_pt_numeric_cases.py)
   - [`test_pt_qcfg_cases.py`](../../../sim/cocotb/tests/test_pt_qcfg_cases.py)
   - [`test_pt_protocol_cases.py`](../../../sim/cocotb/tests/test_pt_protocol_cases.py)
+  - [`test_pt_protocol_edge_cases.py`](../../../sim/cocotb/tests/test_pt_protocol_edge_cases.py)
+  - [`test_pt_state_cases.py`](../../../sim/cocotb/tests/test_pt_state_cases.py)
+  - [`test_pt_coverage_cases.py`](../../../sim/cocotb/tests/test_pt_coverage_cases.py)
   - [`test_pt_backpressure_cases.py`](../../../sim/cocotb/tests/test_pt_backpressure_cases.py)
   - [`test_pt_randomized_cases.py`](../../../sim/cocotb/tests/test_pt_randomized_cases.py)
   - [`test_pt_guard_boot.py`](../../../sim/cocotb/tests/test_pt_guard_boot.py)
@@ -53,17 +56,20 @@
 make -C sim/cocotb clean
 make -C sim/cocotb smoke
 make -C sim/cocotb full
+make -C sim/cocotb extended
 make -C sim/cocotb randomized
+make -C sim/cocotb coverage
 ```
 
 ## 6. 结果与日志目录
 - xUnit 结果目录：[`sim/cocotb/results/`](../../../sim/cocotb/results)
 - build / test 日志目录：[`sim/cocotb/logs/`](../../../sim/cocotb/logs)
 - 构建目录：[`sim/cocotb/build/`](../../../sim/cocotb/build)
+- coverage 目录：[`sim/cocotb/coverage/`](../../../sim/cocotb/coverage)
 
 ## 7. 当前结果基线
-- 结果文件总数：`45`
-- 实际执行 testcase 数：`280`
+- 结果文件总数：`73`
+- 实际执行 testcase 数：`546`
 - skipped 数：`0`
 - failure 数：`0`
 - 7 个黑盒测试项累计 executed 数：
@@ -74,15 +80,19 @@ make -C sim/cocotb randomized
   - `PT-BB-005 = 20`
   - `PT-BB-006 = 40`
   - `PT-BB-007 = 20`
+- 新增项：
+  - `PT-BB-008 = 8`
+  - `PT-BB-009 = 16`
+  - `PT-BB-010 = 24`
+  - `PT-COV-001 = 218`
 - `full_pow2_guard_<profile>_seed10.xml` 为 runner synthetic PASS；原始 `test.log` 在 `time 0` 命中 `PT_MD/PT_CE` 的 power-of-two guard fatal。
 
 ## 8. 必要参考文档
 - PT 专用规范：[pt_cocotb_blackbox_test_requirements.md](../../../doc/pt_cocotb_blackbox_test_requirements.md)
 - 通用模板：[blackbox_test_requirements_template.md](../../../doc/blackbox_test_requirements_template.md)
-- 总结文档：[summary_20260412_162330.md](./summary_20260412_162330.md)
+- 总结文档：[summary_20260413.md](./summary_20260413.md)
 - 被测模块顶层：[`pt.v`](../../../rtl/pt.v)
 - cocotb runner：[run.py](../../../sim/cocotb/run.py)
 - cocotb 命令入口：[Makefile](../../../sim/cocotb/Makefile)
 - cocotb 共享环境：[pt_blackbox_env.py](../../../sim/cocotb/tests/pt_blackbox_env.py)
 - cocotb 参考模型：[pt_model.py](../../../sim/cocotb/tests/pt_model.py)
-

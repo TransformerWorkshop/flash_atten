@@ -6,7 +6,7 @@
 | 测试唯一名称 | `qcfg_modes` |
 | 对应测试用例 | `tests.test_pt_qcfg_typical_*` + `tests.test_pt_qcfg_boundary_*` + `tests.test_pt_qcfg_config_*` |
 | 当前状态 | `PASS` |
-| 文档时间戳 | `20260412_162330` |
+| 文档时间戳 | `20260413` |
 
 ## 测试目标
 - 验证 `PT` 在不同 `QCFG granularity` 下的配置交互与数值行为。
@@ -18,24 +18,6 @@
 | `典型值测试` | `per_tensor / x_wise / y_wise / x_div2 / y_div2` | `tests.test_pt_qcfg_typical_*` | `16` | 覆盖 5 种粒度的标准 scale 组合 |
 | `边界值测试` | `small_scale / large_scale / sign_flip` | `tests.test_pt_qcfg_boundary_*` | `16` | 覆盖极小/极大 scale 与正负翻转边界 |
 | `约束/配置测试` | `payload_count` | `tests.test_pt_qcfg_config_*` | `8` | 覆盖合法 payload 个数与粒度映射边界 |
-
-## 指标映射
-- granularity 选择
-- payload 个数
-- scale index 映射
-- 导出数值正确性
-
-## 成功判据
-- 每个 qcfg 场景都必须完成一次合法 `QCFG` 配置交互和一次合法 `MATMUL` 导出。
-- `典型值测试` 场景必须覆盖 `PER_TENSOR/X_WISE/Y_WISE/X_WISE_DIV2/Y_WISE_DIV2` 五种粒度。
-- `边界值测试` 场景必须覆盖极小/极大合法 scale 和正负翻转 scale。
-- `约束/配置测试` 场景必须覆盖合法 payload 个数边界与粒度映射边界。
-- 每个场景导出结果都必须与参考模型一致，且不能出现 payload 数量错误、`ctrl_resp mismatch` 或 timeout。
-
-## 失败判据
-- 任一粒度模式未被覆盖，或 payload 个数与当前粒度不匹配。
-- 导出结果与 scale index 规则不一致。
-- 出现非法 `QCFG` 行为、响应顺序错误、`mismatch` 或 timeout。
 
 ## 实际结果
 - 结果文件：
