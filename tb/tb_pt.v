@@ -172,6 +172,16 @@ module tb_pt;
 		end
 	endfunction
 
+	function [`INST_WIDTH-1:0] build_load_inst;
+		input need_a;
+		input need_b;
+		input [9:0] a_off;
+		input [9:0] b_off;
+		begin
+			build_load_inst = {`PT_OP_LOAD, need_a, need_b, 4'b0000, a_off, b_off, 2'b00};
+		end
+	endfunction
+
 	function [31:0] pack_resp;
 		input err;
 		input m_buf;

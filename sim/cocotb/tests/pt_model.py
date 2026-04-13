@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 PT_OP_MATMUL = 0x1
 PT_OP_QCFG = 0x2
 PT_OP_MATADD = 0x3
+PT_OP_LOAD = 0x4
 PT_OP_CFG = 0xF
 
 PT_SCALE_SCALAR = 0b00
@@ -77,6 +78,26 @@ def build_matadd_inst(m_off: int, c_off: int, reserved_hi: int = 0, reserved_lo:
 		| ((reserved_hi & 0x3F) << 22)
 		| ((m_off & 0x3FF) << 12)
 		| ((c_off & 0x3FF) << 2)
+		| (reserved_lo & 0x3)
+	)
+
+
+def build_load_inst(
+	a_off: int,
+	b_off: int,
+	*,
+	need_a: bool,
+	need_b: bool,
+	reserved_hi: int = 0,
+	reserved_lo: int = 0,
+) -> int:
+	return (
+		((PT_OP_LOAD & 0xF) << 28)
+		| ((1 if need_a else 0) << 27)
+		| ((1 if need_b else 0) << 26)
+		| ((reserved_hi & 0xF) << 22)
+		| ((a_off & 0x3FF) << 12)
+		| ((b_off & 0x3FF) << 2)
 		| (reserved_lo & 0x3)
 	)
 
@@ -231,6 +252,20 @@ class ExecPlan:
 
 MatmulPlan = ExecPlan
 MataddPlan = ExecPlan
+
+
+@dataclass
+class LoadPlan:
+	ctrl_id: int
+	response_word: int
+	err: bool
+	expected_dma_loads: List[DmaLoadExpectation]
+	need_a: bool
+	need_b: bool
+	a_off: int
+	b_off: int
+	a_matrix: Optional[List[int]]
+	b_matrix: Optional[List[int]]
 
 
 class PTBlackBoxModel:
@@ -501,6 +536,74 @@ class PTBlackBoxModel:
 			cache_update=cache_update,
 		)
 
+	def issue_load(
+		self,
+		ctrl_id: int,
+		a_off: int,
+		b_off: int,
+		*,
+		need_a: bool,
+		need_b: bool,
+		external_a_tiles: Dict[int, List[int]],
+		external_b_tiles: Dict[int, List[int]],
+		reserved_hi: int = 0,
+		reserved_lo: int = 0,
+	) -> LoadPlan:
+		reserved_zero = ((reserved_hi & 0xF) == 0) and ((reserved_lo & 0x3) == 0)
+		a_legal = (not need_a) or ((((a_off >> 9) & 0x1) == 0) and (((a_off & 0xFF) % self.x_dim) == 0))
+		b_legal = (not need_b) or ((((b_off >> 9) & 0x1) == 0) and (((b_off & 0xFF) % self.y_dim) == 0))
+		if (not (need_a or need_b)) or (not reserved_zero) or (not a_legal) or (not b_legal):
+			return LoadPlan(
+				ctrl_id=ctrl_id,
+				response_word=pack_resp(True, 0, ctrl_id),
+				err=True,
+				expected_dma_loads=[],
+				need_a=need_a,
+				need_b=need_b,
+				a_off=a_off,
+				b_off=b_off,
+				a_matrix=None,
+				b_matrix=None,
+			)
+
+		expected_dma_loads: List[DmaLoadExpectation] = []
+		a_matrix: Optional[List[int]] = None
+		b_matrix: Optional[List[int]] = None
+		if need_a:
+			a_matrix, _ = self._resolve_matrix("A", a_off, external_a_tiles)
+			expected_dma_loads.append(
+				DmaLoadExpectation(
+					ctrl_id=ctrl_id,
+					kind="A",
+					ext_addr=self.ext_addr("A", a_off),
+					local_addr=self.local_addr("A", a_off, self.a_dma_buf_sel),
+					beats=self.x_dim * self.x_dim,
+				)
+			)
+		if need_b:
+			b_matrix, _ = self._resolve_matrix("B", b_off, external_b_tiles)
+			expected_dma_loads.append(
+				DmaLoadExpectation(
+					ctrl_id=ctrl_id,
+					kind="B",
+					ext_addr=self.ext_addr("B", b_off),
+					local_addr=self.local_addr("B", b_off, self.b_dma_buf_sel),
+					beats=self.y_dim * self.y_dim,
+				)
+			)
+		return LoadPlan(
+			ctrl_id=ctrl_id,
+			response_word=pack_resp(False, 0, ctrl_id),
+			err=False,
+			expected_dma_loads=expected_dma_loads,
+			need_a=need_a,
+			need_b=need_b,
+			a_off=a_off,
+			b_off=b_off,
+			a_matrix=None if a_matrix is None else list(a_matrix),
+			b_matrix=None if b_matrix is None else list(b_matrix),
+		)
+
 	def commit_success(self, plan: ExecPlan) -> None:
 		if plan.err or plan.success_buffer is None or plan.result_matrix is None:
 			raise ValueError("cannot commit an error plan")
@@ -516,6 +619,17 @@ class PTBlackBoxModel:
 			b_off=plan.cache_update.b_off if plan.cache_update and plan.cache_update.b_off is not None else prev.b_off,
 			a_matrix=plan.a_matrix if plan.a_matrix is not None else prev.a_matrix,
 			b_matrix=plan.b_matrix if plan.b_matrix is not None else prev.b_matrix,
+		)
+
+	def commit_load_success(self, plan: LoadPlan) -> None:
+		if plan.err:
+			raise ValueError("cannot commit an error load plan")
+		prev = self.cache_by_id.get(plan.ctrl_id, CacheEntry(a_off=None, b_off=None))
+		self.cache_by_id[plan.ctrl_id] = CacheEntry(
+			a_off=plan.a_off if plan.need_a and plan.a_matrix is not None else prev.a_off,
+			b_off=plan.b_off if plan.need_b and plan.b_matrix is not None else prev.b_off,
+			a_matrix=list(plan.a_matrix) if plan.a_matrix is not None else prev.a_matrix,
+			b_matrix=list(plan.b_matrix) if plan.b_matrix is not None else prev.b_matrix,
 		)
 
 	def expected_export(self) -> ExportExpectation:

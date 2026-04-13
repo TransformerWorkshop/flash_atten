@@ -23,6 +23,7 @@ from tests.pt_model import (
 	PT_QTYPE_SYMMETRIC,
 	PT_SCALE_FULL,
 	build_cfg_inst,
+	build_load_inst,
 	build_matadd_inst,
 	build_matmul_inst,
 	build_qcfg_header,
@@ -509,6 +510,19 @@ class PTBlackBoxEnv:
 			await RisingEdge(self.dut.clk)
 		raise AssertionError(f"ctrl_resp timeout waiting for 0x{expected_word:08x}")
 
+	async def wait_ctrl_resp_any(self, expected_words: Sequence[int], timeout_cycles: int = 4000) -> int:
+		expected_set = set(int(word) for word in expected_words)
+		for _ in range(timeout_cycles):
+			for idx, actual in enumerate(self.ctrl_resp_queue):
+				if actual in expected_set:
+					del self.ctrl_resp_queue[idx]
+					return actual
+			await RisingEdge(self.dut.clk)
+		raise AssertionError(
+			"ctrl_resp timeout waiting for one of "
+			+ ", ".join(f"0x{word:08x}" for word in expected_set)
+		)
+
 	async def expect_no_ctrl_resp(self, wait_cycles: int) -> None:
 		for _ in range(wait_cycles):
 			assert not self.ctrl_resp_queue, f"unexpected queued ctrl_resp 0x{self.ctrl_resp_queue[0]:08x}"
@@ -604,6 +618,32 @@ class PTBlackBoxEnv:
 			ctrl_id=ctrl_id,
 			m_off=m_off,
 			c_off=c_off,
+			external_b_tiles=self.external_b_tiles,
+			reserved_hi=reserved_hi,
+			reserved_lo=reserved_lo,
+		)
+		for expected_req in plan.expected_dma_loads:
+			self.expected_dma_loads.append(expected_req)
+		return plan
+
+	def plan_load(
+		self,
+		ctrl_id: int,
+		a_off: int,
+		b_off: int,
+		*,
+		need_a: bool,
+		need_b: bool,
+		reserved_hi: int = 0,
+		reserved_lo: int = 0,
+	):
+		plan = self.model.issue_load(
+			ctrl_id=ctrl_id,
+			a_off=a_off,
+			b_off=b_off,
+			need_a=need_a,
+			need_b=need_b,
+			external_a_tiles=self.external_a_tiles,
 			external_b_tiles=self.external_b_tiles,
 			reserved_hi=reserved_hi,
 			reserved_lo=reserved_lo,

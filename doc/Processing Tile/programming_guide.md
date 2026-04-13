@@ -9,7 +9,7 @@ PT is not programmed through AXI-Lite directly. Its native control plane is a ba
 | Signal | Dir | Meaning |
 | --- | --- | --- |
 | `ctrl_valid` | in | Command word is valid in the current cycle |
-| `ctrl_ready` | out | PT can accept a new command; driven by the 4-entry ingress FIFO |
+| `ctrl_ready` | out | PT can accept a new command; driven by `PT_DISPATCH`'s ingress queues |
 | `ctrl_inst[31:0]` | in | Instruction word |
 | `ctrl_id[31:0]` | in | Transaction identifier used for cache lookup, DMA request tagging, and responses |
 | `ctrl_resp[31:0]` | out | Result or error response word |
@@ -24,8 +24,10 @@ Treat `ctrl_*` as the authoritative PT programming interface. A command is accep
 | --- | --- | --- | --- |
 | `CFG` success | Immediately after acceptance | `0` | `0` |
 | `QCFG` success | After the final payload commits | `0` | `0` |
+| `LOAD` success | After the selected A/B sides finish | `0` | `0` |
 | Illegal `MATMUL` | Immediately when rejected by `PT_MD` | `1` | `0` |
 | Illegal `MATADD` | Immediately when rejected by `PT_MD` | `1` | `0` |
+| Illegal `LOAD` | Immediately when the dispatched `REJECT` command completes | `1` | `0` |
 | A/B load DMA or stream error | When the load path fails | `1` | `0` |
 | `MATMUL` success | When the result has been written into an M buffer | `0` | Target M buffer |
 | `MATADD` success | When the result has been written into an M buffer | `0` | Target M buffer |
@@ -44,9 +46,10 @@ Instruction fields are defined in [`rtl/param.vh`](../../rtl/param.vh).
 | `PT_OP_MATMUL` | `4'h1` | Launch one tile GEMM |
 | `PT_OP_QCFG` | `4'h2` | Start a quantization configuration session |
 | `PT_OP_MATADD` | `4'h3` | Add one retained M tile and one external/B-style tile |
+| `PT_OP_LOAD` | `4'h4` | Explicitly prefetch one or both external operand tiles into the `ctrl_id` cache |
 | `PT_OP_CFG` | `4'hf` | Update a 16-bit fragment of the internal PT base CSR state |
 
-Unknown opcodes are rejected in `PT_MD` with `err=1`.
+Unknown opcodes are converted into a dispatched `REJECT` command and return `err=1`.
 
 ### 2.2 `MATMUL` Format
 
@@ -83,7 +86,28 @@ Although all constants are defined, the current RTL accepts only the `FULL/FULL/
 
 `MATADD` v1 accepts only `quantized M-window + external/B-style tile`. It does not accept `M+M`, external left operands, or any new scale/QCFG fields.
 
-### 2.4 Offset Semantics
+### 2.4 `LOAD` Format
+
+| Bit | Field | Meaning |
+| --- | --- | --- |
+| `[31:28]` | `opcode` | Must be `PT_OP_LOAD` |
+| `[27]` | `need_a` | Prefetch side A when `1` |
+| `[26]` | `need_b` | Prefetch side B when `1` |
+| `[25:22]` | reserved | Must be zero |
+| `[21:12]` | `a_off` | External A offset used when `need_a=1` |
+| `[11:2]` | `b_off` | External B offset used when `need_b=1` |
+| `[1:0]` | reserved | Must be zero |
+
+`LOAD` legality rules:
+
+- `need_a` and `need_b` cannot both be zero.
+- Each selected side must use an external offset, not an M-window offset.
+- Each selected side must satisfy the same row-alignment rule as `MATMUL`.
+- Success returns exactly one `pack_resp(err=0, m_buf=0, id=ctrl_id)`.
+- Success does not raise `irq`.
+- If both sides are requested, DMA order is always `A -> B`.
+
+### 2.5 Offset Semantics
 
 `A offset` and `B offset` support two legal forms:
 
@@ -98,9 +122,9 @@ Although all constants are defined, the current RTL accepts only the `FULL/FULL/
    - bit 8 = `buffer`
    - bits `[7:0]` = retained M tile element offset, still subject to tile-row alignment
 
-On a cache hit, `PT_MD` may rewrite an external offset into an internal local offset using the form `{1'b0, buf_sel, row_base_elem_off}`. That rewritten value is an internal implementation detail and should not be generated intentionally by software.
+On a cache hit, `PT_DISPATCH` may rewrite an external offset into an internal local offset using the form `{1'b0, buf_sel, row_base_elem_off}`. That rewritten value is an internal implementation detail and should not be generated intentionally by software.
 
-Software should generate either external offsets or explicit M-window offsets. Internal local offsets are patched by `PT_MD`.
+Software should generate either external offsets or explicit M-window offsets. Internal local offsets are patched by `PT_DISPATCH`.
 
 For `MATADD`, software must use:
 
@@ -108,7 +132,7 @@ For `MATADD`, software must use:
 - `c_off` as an external/B-style offset.
 - Zero for every reserved bit.
 
-### 2.5 `CFG` Format
+### 2.6 `CFG` Format
 
 | Bit | Field | Meaning |
 | --- | --- | --- |
@@ -127,7 +151,7 @@ Supported selectors:
 
 Unknown selectors do not raise an error. PT returns a success response while leaving the effective configuration unchanged.
 
-### 2.6 `QCFG` Format
+### 2.7 `QCFG` Format
 
 Header word:
 
@@ -180,7 +204,7 @@ If host software requires exact response-ID roundtrip, keep `ctrl_id < 2^30`.
 
 ### 4.1 A/B Load DMA
 
-`PT_MD` issues the following request for each missed A/B tile:
+`PT_MD` issues the following request for each explicit `LOAD` side and each compute miss side:
 
 | Signal | Meaning |
 | --- | --- |
@@ -269,7 +293,14 @@ PT uses AXIS as a transport shell around a stricter tile contract.
 5. Wait for `ctrl_resp = pack(err=0, m_buf=<buf>, id=matmul_id)`.
 6. Continue monitoring automatic export and any later export error.
 
-### 6.3 `MATMUL` Followed By `MATADD`
+### 6.3 `LOAD` Followed By `MATMUL`
+
+1. Send `LOAD` with the target `ctrl_id`, offsets, and `need_a/need_b`.
+2. Wait for `ctrl_resp = pack(err=0, m_buf=0, id=load_id)`.
+3. Reuse the same `ctrl_id` in a later `MATMUL` so `PT_DISPATCH` can hit the preloaded tile(s).
+4. Any side not covered by the earlier `LOAD` may still miss and DMA normally.
+
+### 6.4 `MATMUL` Followed By `MATADD`
 
 1. Send a legal `MATMUL` and wait for `ctrl_resp = pack(err=0, m_buf=<buf>, id=matmul_id)`.
 2. Encode `m_off` as `build_mwin_off(<buf>, row_base_elem_off)` and encode `c_off` as the external/B-style tile offset for `C`.
@@ -279,7 +310,7 @@ PT uses AXIS as a transport shell around a stricter tile contract.
 
 This is the native PT sequence for `quant(A*B) + C`.
 
-### 6.4 M-Window Reuse
+### 6.5 M-Window Reuse
 
 1. Complete one legal `MATMUL` and capture the returned `m_buf`.
 2. In a later `MATMUL`, encode `a_off` or `b_off` as an M-window source with bit 9 set and bit 8 equal to `m_buf`.
@@ -288,14 +319,14 @@ This is the native PT sequence for `quant(A*B) + C`.
 
 M-window reuse is useful for tile-to-tile chaining, but the surrounding system must track buffer lifetime across `clear` and export.
 
-### 6.5 Completion And Export Handling
+### 6.6 Completion And Export Handling
 
 1. Treat a successful `MATMUL` response as “the result has been written into an M buffer.”
 2. Treat `m_dma_req_*` and `m_axis_*` as “the result is now being exported.”
 3. PT marks the exported buffer back to `FREE` only after `m_dma_done`.
 4. If an export error response arrives, treat export for that buffer as failed and apply the system retry or recompute policy.
 
-### 6.5 Error Handling And Recovery
+### 6.7 Error Handling And Recovery
 
 When any of the following occurs, the recommended recovery action is `clear` followed by reconfiguration:
 
@@ -356,6 +387,7 @@ Keep `csr_array` as a control-plane convenience layer, not as the normative PT A
 
 - Instruction definitions: [`rtl/param.vh`](../../rtl/param.vh)
 - PT top: [`rtl/pt.v`](../../rtl/pt.v)
+- `PT_DISPATCH`: [`rtl/pt_dispatch.v`](../../rtl/pt_dispatch.v)
 - `PT_MD`: [`rtl/pt_md.v`](../../rtl/pt_md.v)
 - `PT_CE`: [`rtl/pt_ce.v`](../../rtl/pt_ce.v)
 - `CSR_BANK`: [`rtl/csr_bank.v`](../../rtl/csr_bank.v)

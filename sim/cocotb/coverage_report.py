@@ -15,7 +15,7 @@ RTL_DIR = REPO_ROOT / "rtl"
 RESULTS_ROOT = REPO_ROOT / "sim" / "cocotb" / "results"
 COVERAGE_ROOT = REPO_ROOT / "sim" / "cocotb" / "coverage" / "coverage"
 DEBUG_ROOT = REPO_ROOT / "debug" / "cocotb" / "PT"
-CORE_FILES = ("pt.v", "pt_md.v", "pt_ce.v")
+CORE_FILES = ("pt.v", "pt_dispatch.v", "pt_md.v", "pt_ce.v")
 
 # These branches are permanently blocked by the top-level power-of-two guard.
 EXCLUDED_LINE_POINTS = {

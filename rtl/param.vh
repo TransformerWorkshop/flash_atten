@@ -10,6 +10,7 @@
 `define             PT_OP_MATMUL            4'h1
 `define             PT_OP_QCFG              4'h2
 `define             PT_OP_MATADD            4'h3
+`define             PT_OP_LOAD              4'h4
 `define             PT_OP_CFG               4'hf
 
 // PT instruction fields for MATMUL opcode:
@@ -32,6 +33,19 @@
 `define             PT_INST_A_OFF_L         12
 `define             PT_INST_B_OFF_H         11
 `define             PT_INST_B_OFF_L         2
+
+// PT LOAD fields:
+// [31:28] opcode
+// [27]    need_a
+// [26]    need_b
+// [25:22] reserved, must be zero
+// [21:12] A offset (10-bit)
+// [11: 2] B offset (10-bit)
+// [ 1: 0] reserved, must be zero
+`define             PT_LOAD_NEED_A_BIT      27
+`define             PT_LOAD_NEED_B_BIT      26
+`define             PT_LOAD_RSV_H           25
+`define             PT_LOAD_RSV_L           22
 
 // PT MNK encoding
 `define             PT_SCALE_SCALAR         2'b00
@@ -62,5 +76,13 @@
 `define             PT_QGRAN_Y_WISE         3'd2
 `define             PT_QGRAN_X_WISE_DIV2    3'd3
 `define             PT_QGRAN_Y_WISE_DIV2    3'd4
+
+// PT_DISPATCH <-> PT_MD mem command kinds
+`define             PT_MEM_KIND_W           4
+`define             PT_MEM_KIND_CFG         4'd0
+`define             PT_MEM_KIND_QCFG_HDR    4'd1
+`define             PT_MEM_KIND_QCFG_PAYLOAD 4'd2
+`define             PT_MEM_KIND_LOAD        4'd3
+`define             PT_MEM_KIND_REJECT      4'd4
 
 `endif

@@ -70,8 +70,8 @@ def suite_configs(suite: str, seed_override: Optional[int]) -> List[RunConfig]:
 	default_seed = DEFAULT_SEED if seed_override is None else seed_override
 	if suite == "smoke":
 		return [
-			RunConfig(name="smoke_4x4", x_dim=4, y_dim=4, test_modules=["tests.test_pt_smoke_cases"], seeds=[default_seed]),
-			RunConfig(name="smoke_8x8", x_dim=8, y_dim=8, test_modules=["tests.test_pt_smoke_cases"], seeds=[default_seed]),
+			RunConfig(name="smoke_4x4", x_dim=4, y_dim=4, test_modules=["tests.test_pt_smoke_cases", "tests.test_pt_load_cases"], seeds=[default_seed]),
+			RunConfig(name="smoke_8x8", x_dim=8, y_dim=8, test_modules=["tests.test_pt_smoke_cases", "tests.test_pt_load_cases"], seeds=[default_seed]),
 		]
 
 	if suite == "full":
@@ -89,6 +89,7 @@ def suite_configs(suite: str, seed_override: Optional[int]) -> List[RunConfig]:
 				y_dim=4,
 					test_modules=[
 						"tests.test_pt_smoke_cases",
+						"tests.test_pt_load_cases",
 						"tests.test_pt_numeric_cases",
 						"tests.test_pt_qcfg_cases",
 						"tests.test_pt_protocol_cases",
@@ -104,6 +105,7 @@ def suite_configs(suite: str, seed_override: Optional[int]) -> List[RunConfig]:
 				y_dim=8,
 					test_modules=[
 						"tests.test_pt_smoke_cases",
+						"tests.test_pt_load_cases",
 						"tests.test_pt_numeric_cases",
 						"tests.test_pt_qcfg_cases",
 						"tests.test_pt_protocol_edge_cases",
@@ -178,6 +180,7 @@ def suite_configs(suite: str, seed_override: Optional[int]) -> List[RunConfig]:
 			y_dim=4,
 				test_modules=[
 					"tests.test_pt_smoke_cases",
+					"tests.test_pt_load_cases",
 					"tests.test_pt_numeric_cases",
 					"tests.test_pt_qcfg_cases",
 					"tests.test_pt_protocol_cases",
@@ -197,6 +200,7 @@ def suite_configs(suite: str, seed_override: Optional[int]) -> List[RunConfig]:
 			y_dim=8,
 				test_modules=[
 					"tests.test_pt_smoke_cases",
+					"tests.test_pt_load_cases",
 					"tests.test_pt_numeric_cases",
 					"tests.test_pt_qcfg_cases",
 					"tests.test_pt_protocol_edge_cases",

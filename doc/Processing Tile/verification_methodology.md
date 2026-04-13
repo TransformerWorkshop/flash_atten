@@ -33,7 +33,7 @@ Core entry points:
 Environment responsibilities:
 
 - `PTBlackBoxEnv` drives `ctrl_*`, A/B stream traffic, DMA ready/complete/error behavior, and M export readiness.
-- `PTBlackBoxModel` generates expected DMA requests, success responses, error responses, `MATADD` saturating-add results, and M export contents based on current RTL semantics.
+- `PTBlackBoxModel` generates expected DMA requests, `LOAD` cache updates, success responses, error responses, `MATADD` saturating-add results, and M export contents based on current RTL semantics.
 - Monitors check:
   - `dma_req_tuser/id/ext_addr/local_addr/beats`
   - `ctrl_resp`
@@ -47,7 +47,7 @@ The testbench is intentionally protocol-aware and validates both payload correct
 ### 3.1 Smoke
 
 - Typical legal flows
-- Covers the main `CFG/QCFG -> MATMUL -> MATADD -> hit -> M-window` sequence
+- Covers the main `CFG/QCFG/LOAD -> MATMUL -> MATADD -> hit -> M-window` sequence
 - Primary file:
   - [`test_pt_smoke_cases.py`](../../sim/cocotb/tests/test_pt_smoke_cases.py)
 
@@ -70,6 +70,7 @@ The testbench is intentionally protocol-aware and validates both payload correct
 - Illegal opcode
 - Illegal `MATMUL` encoding
 - Illegal `MATADD` encoding
+- Illegal `LOAD` encoding
 - Illegal `QCFG` qtype or granularity
 - Payload ID mismatch
 - Wrong `s_axis_tuser`
@@ -120,6 +121,7 @@ The suites are organized by behavioral proof objective, not by RTL submodule.
 | --- | --- |
 | `CFG` and base updates | smoke, state, coverage |
 | `QCFG` session and commit | qcfg, protocol, coverage |
+| Explicit `LOAD` success/error and reuse | smoke, protocol, coverage |
 | A/B cache hit and miss behavior | smoke, protocol-edge, randomized |
 | M-window reuse | smoke, protocol-edge, randomized |
 | `MATMUL` numeric correctness | numeric, smoke |
@@ -135,6 +137,7 @@ The suites are organized by behavioral proof objective, not by RTL submodule.
 ### 5.1 Functional And Protocol Intent
 
 - Every `PT_MD` main state and export substate is hit at least once.
+- `PT_DISPATCH` ordering, miss, and QCFG barrier behavior is covered through black-box request/response observations.
 - Every `PT_CE` main state and A/B/M operand-source combination is hit.
 - `MATADD` request/capture/send states are hit with both B miss and B hit.
 - `QCFG` stay, commit, and error branches are all exercised.
