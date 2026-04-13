@@ -103,6 +103,8 @@ module PT #(
 	wire                  exec_m_b_buf;
 	wire [A_AW-1:0]       exec_m_a_addr;
 	wire [B_AW-1:0]       exec_m_b_addr;
+	wire                  exec_m_a_rd_en;
+	wire                  exec_m_b_rd_en;
 
 	// MD -> CE issue queue stream
 	wire                  ce_inst_valid;
@@ -127,6 +129,17 @@ module PT #(
 	wire                  quant_m_valid;
 	wire                  quant_m_last;
 	wire                  quant_m_ready;
+	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] gema_lhs_data;
+	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] gema_rhs_data;
+	wire [31:0]           gema_in_idx;
+	wire                  gema_in_last;
+	wire                  gema_in_valid;
+	wire                  gema_in_ready;
+	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] add_m_data;
+	wire [31:0]           add_m_idx;
+	wire                  add_m_valid;
+	wire                  add_m_last;
+	wire                  add_m_ready;
 	wire [2:0]            quant_mode;
 	wire [MAX_DIM*32-1:0] quant_inv_scale;
 	wire [31:0]           pcsr_a_base;
@@ -307,6 +320,8 @@ module PT #(
 		.exec_m_b_buf(exec_m_b_buf),
 		.exec_m_a_addr(exec_m_a_addr),
 		.exec_m_b_addr(exec_m_b_addr),
+		.exec_m_a_rd_en(exec_m_a_rd_en),
+		.exec_m_b_rd_en(exec_m_b_rd_en),
 		.gemm_a_valid(gemm_a_valid),
 		.gemm_b_valid(gemm_b_valid),
 		.gemm_start  (gemm_start  ),
@@ -318,6 +333,19 @@ module PT #(
 			.quant_m_valid(quant_m_valid),
 			.quant_m_last (quant_m_last ),
 			.quant_m_ready(quant_m_ready),
+			.b_mem_row_data(b_mem_rd_data),
+			.m_mem_row_data(m_b_mem_rd_data),
+			.gema_lhs_data(gema_lhs_data),
+			.gema_rhs_data(gema_rhs_data),
+			.gema_in_idx  (gema_in_idx  ),
+			.gema_in_last (gema_in_last ),
+			.gema_in_valid(gema_in_valid),
+			.gema_in_ready(gema_in_ready),
+			.add_m_data   (add_m_data   ),
+			.add_m_idx    (add_m_idx    ),
+			.add_m_valid  (add_m_valid  ),
+			.add_m_last   (add_m_last   ),
+			.add_m_ready  (add_m_ready  ),
 			.m_mem_wr_en (m_mem_wr_en ),
 			.m_mem_wr_buf(m_mem_wr_buf),
 			.m_mem_wr_lane(m_mem_wr_lane),
@@ -380,11 +408,11 @@ module PT #(
 		.wr_lane  (m_mem_wr_lane),
 		.wr_addr  (m_mem_wr_addr),
 		.wr_data  (m_mem_wr_data),
-		.rd_a_en  (exec_a_is_m && gemm_a_valid),
+		.rd_a_en  (exec_m_a_rd_en),
 		.rd_a_buf (exec_m_a_buf),
 		.rd_a_addr(exec_m_a_addr),
 		.rd_a_data(m_a_mem_rd_data),
-		.rd_b_en  (exec_b_is_m && gemm_b_valid),
+		.rd_b_en  (exec_m_b_rd_en),
 		.rd_b_buf (exec_m_b_buf),
 		.rd_b_addr(exec_m_b_addr),
 		.rd_b_data(m_b_mem_rd_data),
@@ -438,6 +466,26 @@ module PT #(
 		.out_data      (quant_m_data    ),
 		.out_idx       (quant_m_idx     ),
 		.out_last      (quant_m_last    )
+	);
+
+	GEMA #(
+		.DATA_WIDTH(DATA_WIDTH),
+		.GEMM_Y_DIM(GEMM_Y_DIM)
+	) u_gema (
+		.clk      (clk         ),
+		.rstn     (rstn        ),
+		.clear    (clear       ),
+		.in_valid (gema_in_valid),
+		.in_ready (gema_in_ready),
+		.lhs_data (gema_lhs_data),
+		.rhs_data (gema_rhs_data),
+		.in_idx   (gema_in_idx ),
+		.in_last  (gema_in_last),
+		.out_valid(add_m_valid ),
+		.out_ready(add_m_ready ),
+		.out_data (add_m_data  ),
+		.out_idx  (add_m_idx   ),
+		.out_last (add_m_last  )
 	);
 
 	always @(posedge clk or negedge rstn) begin

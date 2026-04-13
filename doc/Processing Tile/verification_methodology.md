@@ -33,7 +33,7 @@ Core entry points:
 Environment responsibilities:
 
 - `PTBlackBoxEnv` drives `ctrl_*`, A/B stream traffic, DMA ready/complete/error behavior, and M export readiness.
-- `PTBlackBoxModel` generates expected DMA requests, success responses, error responses, and M export contents based on current RTL semantics.
+- `PTBlackBoxModel` generates expected DMA requests, success responses, error responses, `MATADD` saturating-add results, and M export contents based on current RTL semantics.
 - Monitors check:
   - `dma_req_tuser/id/ext_addr/local_addr/beats`
   - `ctrl_resp`
@@ -47,7 +47,7 @@ The testbench is intentionally protocol-aware and validates both payload correct
 ### 3.1 Smoke
 
 - Typical legal flows
-- Covers the main `CFG/QCFG -> miss -> hit -> M-window` sequence
+- Covers the main `CFG/QCFG -> MATMUL -> MATADD -> hit -> M-window` sequence
 - Primary file:
   - [`test_pt_smoke_cases.py`](../../sim/cocotb/tests/test_pt_smoke_cases.py)
 
@@ -69,6 +69,7 @@ The testbench is intentionally protocol-aware and validates both payload correct
 
 - Illegal opcode
 - Illegal `MATMUL` encoding
+- Illegal `MATADD` encoding
 - Illegal `QCFG` qtype or granularity
 - Payload ID mismatch
 - Wrong `s_axis_tuser`
@@ -122,6 +123,7 @@ The suites are organized by behavioral proof objective, not by RTL submodule.
 | A/B cache hit and miss behavior | smoke, protocol-edge, randomized |
 | M-window reuse | smoke, protocol-edge, randomized |
 | `MATMUL` numeric correctness | numeric, smoke |
+| `MATADD` miss/hit behavior and `quant(A*B)+C` chaining | smoke, protocol, backpressure, coverage |
 | No deadlock under backpressure | backpressure, randomized |
 | Export sideband and ordering | smoke, protocol, backpressure |
 | Secondary export error response | protocol, randomized, coverage |
@@ -134,6 +136,7 @@ The suites are organized by behavioral proof objective, not by RTL submodule.
 
 - Every `PT_MD` main state and export substate is hit at least once.
 - Every `PT_CE` main state and A/B/M operand-source combination is hit.
+- `MATADD` request/capture/send states are hit with both B miss and B hit.
 - `QCFG` stay, commit, and error branches are all exercised.
 - Mixed A/B `hit/miss/M-window` combinations are exercised.
 - Wrong `tuser`, DMA error, and export error are all exercised.
@@ -145,6 +148,7 @@ The suites are organized by behavioral proof objective, not by RTL submodule.
 - Sparse matrices
 - Monotonic patterns
 - Constant matrices
+- Post-quantization signed saturating add
 - Saturation boundaries
 - Rounding ties
 - Positive and negative scale combinations

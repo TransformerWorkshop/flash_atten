@@ -9,6 +9,7 @@
 // PT opcode definitions
 `define             PT_OP_MATMUL            4'h1
 `define             PT_OP_QCFG              4'h2
+`define             PT_OP_MATADD            4'h3
 `define             PT_OP_CFG               4'hf
 
 // PT instruction fields for MATMUL opcode:

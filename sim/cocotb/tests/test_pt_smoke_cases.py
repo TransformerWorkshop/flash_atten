@@ -4,7 +4,7 @@ import cocotb
 
 from tests.pt_blackbox_env import create_env, flatten_pattern_matrix, repeating_matrix, setup_bases_and_passthrough_qcfg
 from tests.pt_case_catalog import SMOKE_CASES, ScenarioCase
-from tests.pt_model import PT_SCALE_FULL, build_matmul_inst, build_mwin_off, identity_matrix, to_unsigned, zero_matrix
+from tests.pt_model import PT_SCALE_FULL, build_matadd_inst, build_matmul_inst, build_mwin_off, identity_matrix, to_unsigned, zero_matrix
 
 
 def _materialize_matrix(env, mode: str, args):
@@ -48,6 +48,50 @@ async def _run_smoke_case(dut, case: ScenarioCase) -> None:
 	env = await create_env(dut)
 	try:
 		await setup_bases_and_passthrough_qcfg(env)
+
+		if case.data.get("kind") == "matadd_chain":
+			a_matrix = _materialize_matrix(env, case.data["a_mode"], case.data["a_args"])
+			b_matrix = _materialize_matrix(env, case.data["b_mode"], case.data["b_args"])
+			c_matrix = _materialize_matrix(env, case.data["c_mode"], case.data["c_args"])
+			env.register_external_matrix("A", 0, a_matrix)
+			env.register_external_matrix("B", 0, b_matrix)
+			env.register_external_matrix("B", env.y_dim, c_matrix)
+
+			ctrl_id = 0x41
+			start = env.snapshot()
+			matmul_plan = env.plan_matmul(ctrl_id, 0x000, 0x000)
+			assert not matmul_plan.err
+			await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL, 0x000, 0x000), ctrl_id)
+			await env.wait_ctrl_resp(matmul_plan.response_word)
+			env.model.commit_success(matmul_plan)
+			await env.wait_export_done(start.export_done_count + 1)
+
+			m_off = build_mwin_off(matmul_plan.success_buffer, 0)
+			start = env.snapshot()
+			matadd_miss = env.plan_matadd(ctrl_id, m_off, env.y_dim)
+			assert not matadd_miss.err
+			assert len(matadd_miss.expected_dma_loads) == 1
+			await env.send_ctrl(build_matadd_inst(m_off, env.y_dim), ctrl_id)
+			await env.wait_ctrl_resp(matadd_miss.response_word)
+			env.model.commit_success(matadd_miss)
+			await env.wait_export_done(start.export_done_count + 1)
+			assert env.dma_req_count - start.dma_req_count == 1
+			assert env.export_req_count - start.export_req_count == 1
+			assert env.irq_count - start.irq_count == 1
+
+			m_off_hit = build_mwin_off(matadd_miss.success_buffer, 0)
+			start = env.snapshot()
+			matadd_hit = env.plan_matadd(ctrl_id, m_off_hit, env.y_dim)
+			assert not matadd_hit.err
+			assert len(matadd_hit.expected_dma_loads) == 0
+			await env.send_ctrl(build_matadd_inst(m_off_hit, env.y_dim), ctrl_id)
+			await env.wait_ctrl_resp(matadd_hit.response_word)
+			env.model.commit_success(matadd_hit)
+			await env.wait_export_done(start.export_done_count + 1)
+			assert env.dma_req_count - start.dma_req_count == 0
+			assert env.export_req_count - start.export_req_count == 1
+			assert env.irq_count - start.irq_count == 1
+			return
 
 		a_matrix = _materialize_matrix(env, case.data["a_mode"], case.data["a_args"])
 		b_matrix = _materialize_matrix(env, case.data["b_mode"], case.data["b_args"])

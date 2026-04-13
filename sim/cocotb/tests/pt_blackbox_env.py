@@ -23,6 +23,7 @@ from tests.pt_model import (
 	PT_QTYPE_SYMMETRIC,
 	PT_SCALE_FULL,
 	build_cfg_inst,
+	build_matadd_inst,
 	build_matmul_inst,
 	build_qcfg_header,
 	pack_resp,
@@ -593,6 +594,19 @@ class PTBlackBoxEnv:
 			m_scale=m_scale,
 			n_scale=n_scale,
 			k_scale=k_scale,
+		)
+		for expected_req in plan.expected_dma_loads:
+			self.expected_dma_loads.append(expected_req)
+		return plan
+
+	def plan_matadd(self, ctrl_id: int, m_off: int, c_off: int, *, reserved_hi: int = 0, reserved_lo: int = 0):
+		plan = self.model.issue_matadd(
+			ctrl_id=ctrl_id,
+			m_off=m_off,
+			c_off=c_off,
+			external_b_tiles=self.external_b_tiles,
+			reserved_hi=reserved_hi,
+			reserved_lo=reserved_lo,
 		)
 		for expected_req in plan.expected_dma_loads:
 			self.expected_dma_loads.append(expected_req)

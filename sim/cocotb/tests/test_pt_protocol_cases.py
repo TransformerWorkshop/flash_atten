@@ -10,6 +10,7 @@ from tests.pt_model import (
 	PT_QGRAN_Y_WISE,
 	PT_QTYPE_SYMMETRIC,
 	PT_SCALE_FULL,
+	build_matadd_inst,
 	build_matmul_inst,
 	build_qcfg_header,
 	pack_resp,
@@ -135,20 +136,46 @@ async def _run_protocol_case(dut, case: ScenarioCase) -> None:
 			assert env.irq_count == start.irq_count + 1
 			return
 
-		if kind == "export_error":
-			start = env.snapshot()
-			env.queue_export_injection(ExportInjection(error=True, done_delay=params["delay"]))
-			plan = env.plan_matmul(ctrl_id, 0x000, 0x000)
-			await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL, 0x000, 0x000), ctrl_id)
-			await env.wait_ctrl_resp(plan.response_word, 4000)
-			env.model.commit_success(plan)
-			await env.wait_export_error(start.export_error_count + 1)
-			await env.wait_ctrl_resp(pack_resp(True, plan.success_buffer, ctrl_id), 4000)
-			assert env.export_req_count == start.export_req_count + 1
-			assert env.irq_count == start.irq_count + 2
-			return
+			if kind == "export_error":
+				start = env.snapshot()
+				env.queue_export_injection(ExportInjection(error=True, done_delay=params["delay"]))
+				plan = env.plan_matmul(ctrl_id, 0x000, 0x000)
+				await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL, 0x000, 0x000), ctrl_id)
+				await env.wait_ctrl_resp(plan.response_word, 4000)
+				env.model.commit_success(plan)
+				await env.wait_export_error(start.export_error_count + 1)
+				await env.wait_ctrl_resp(pack_resp(True, plan.success_buffer, ctrl_id), 4000)
+				assert env.export_req_count == start.export_req_count + 1
+				assert env.irq_count == start.irq_count + 2
+				return
 
-		raise AssertionError(f"unsupported protocol case kind={kind}")
+			if kind == "matadd_invalid":
+				start = env.snapshot()
+				plan = env.plan_matadd(
+					ctrl_id,
+					params["m_off"],
+					params["c_off"],
+					reserved_hi=params.get("reserved_hi", 0),
+					reserved_lo=params.get("reserved_lo", 0),
+				)
+				assert plan.err
+				await env.send_ctrl(
+					build_matadd_inst(
+						params["m_off"],
+						params["c_off"],
+						reserved_hi=params.get("reserved_hi", 0),
+						reserved_lo=params.get("reserved_lo", 0),
+					),
+					ctrl_id,
+				)
+				await env.wait_ctrl_resp(plan.response_word, 500)
+				await ClockCycles(dut.clk, 8)
+				assert env.dma_req_count == start.dma_req_count
+				assert env.export_req_count == start.export_req_count
+				assert env.irq_count == start.irq_count + 1
+				return
+
+			raise AssertionError(f"unsupported protocol case kind={kind}")
 	finally:
 		env.shutdown()
 

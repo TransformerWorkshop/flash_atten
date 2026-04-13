@@ -70,6 +70,7 @@ SMOKE_CASES = [
 	_case("test_pt_smoke_boundary_high_dynamic_range_18", "PT-BB-001", "边界值测试", "dynamic_range", "较高动态范围但不越界的矩阵", (4, 8), ("smoke", "full"), "high_dynamic_range", a_mode="repeat", a_args=[1, 8, 16, 32, 2, 4, 12, 24], b_mode="repeat", b_args=[3, 9, 27, 18, 6, 12, 24, 30]),
 	_case("test_pt_smoke_boundary_single_hot_a_19", "PT-BB-001", "边界值测试", "single_hot", "单热点 A 的最小激活路径", (4, 8), ("smoke", "full"), "single_hot_a", a_mode="single_hot", a_args=(3, 2), b_mode="repeat", b_args=[1, 2, 3, 4]),
 	_case("test_pt_smoke_boundary_single_hot_b_20", "PT-BB-001", "边界值测试", "single_hot", "单热点 B 的最小激活路径", (4, 8), ("smoke", "full"), "single_hot_b", a_mode="repeat", a_args=[1, 2, 3, 4], b_mode="single_hot", b_args=(2, 3)),
+	_case("test_pt_smoke_typical_matadd_chain_quant_plus_c_21", "PT-BB-001", "典型值测试", "matadd_chain", "MATMUL 后接 MATADD，实现 quant(A*B)+C", (4, 8), ("smoke", "full"), "matadd_chain_quant_plus_c", kind="matadd_chain", a_mode="pattern", a_args=(3, 1, 0), b_mode="pattern", b_args=(2, 4, 1), c_mode="pattern", c_args=(1, 3, 2)),
 ]
 
 
@@ -142,6 +143,10 @@ PROTOCOL_CASES = [
 	_case("test_pt_protocol_error_export_error_short_18", "PT-BB-004", "异常路径测试", "导出异常", "导出 DMA error 短延迟", (4,), ("full",), "export_error_short", kind="export_error", params={"delay": 1}),
 	_case("test_pt_protocol_error_export_error_mid_19", "PT-BB-004", "异常路径测试", "导出异常", "导出 DMA error 中延迟", (4,), ("full",), "export_error_mid", kind="export_error", params={"delay": 2}),
 	_case("test_pt_protocol_error_export_error_long_20", "PT-BB-004", "异常路径测试", "导出异常", "导出 DMA error 长延迟", (4,), ("full",), "export_error_long", kind="export_error", params={"delay": 4}),
+	_case("test_pt_protocol_error_matadd_m_off_not_mwindow_21", "PT-BB-004", "异常路径测试", "地址/对齐异常", "MATADD m_off 非 M-window", (4,), ("full",), "matadd_m_off_not_mwindow", kind="matadd_invalid", params={"m_off": 0x000, "c_off": 0x000}),
+	_case("test_pt_protocol_error_matadd_c_off_not_external_22", "PT-BB-004", "异常路径测试", "地址/对齐异常", "MATADD c_off 非外部 B tile", (4,), ("full",), "matadd_c_off_not_external", kind="matadd_invalid", params={"m_off": 0x200, "c_off": 0x200}),
+	_case("test_pt_protocol_error_matadd_c_off_bad_align_23", "PT-BB-004", "异常路径测试", "地址/对齐异常", "MATADD c_off 未按 B row 对齐", (4,), ("full",), "matadd_c_off_bad_align", kind="matadd_invalid", params={"m_off": 0x200, "c_off": 0x001}),
+	_case("test_pt_protocol_error_matadd_reserved_nonzero_24", "PT-BB-004", "异常路径测试", "控制编码异常", "MATADD 保留位非零", (4,), ("full",), "matadd_reserved_nonzero", kind="matadd_invalid", params={"m_off": 0x200, "c_off": 0x000, "reserved_hi": 0x1, "reserved_lo": 0x1}),
 ]
 
 
@@ -172,6 +177,7 @@ COVERAGE_CASES = [
 	_case("test_pt_coverage_clear_phase_sweep_04", "PT-COV-001", "约束/配置测试", "coverage_hole", "在多个控制阶段拉起 clear", (4, 8), ("coverage",), "clear_phase_sweep", kind="clear_phase_sweep", params={}),
 	_case("test_pt_coverage_operand_source_matrix_05", "PT-COV-001", "约束/配置测试", "coverage_hole", "覆盖多种 ext/hit/mwindow 操作数组合", (4, 8), ("coverage",), "operand_source_matrix", kind="operand_source_matrix", params={}),
 	_case("test_pt_coverage_export_path_sweep_06", "PT-COV-001", "约束/配置测试", "coverage_hole", "覆盖 export success/error 与 ready 相位组合", (4, 8), ("coverage",), "export_path_sweep", kind="export_path_sweep", params={}),
+	_case("test_pt_coverage_matadd_path_sweep_07", "PT-COV-001", "约束/配置测试", "coverage_hole", "覆盖 MATADD opcode、B miss/hit 和 CE add 状态", (4, 8), ("coverage",), "matadd_path_sweep", kind="matadd_path_sweep", params={}),
 ]
 
 
@@ -196,6 +202,7 @@ BACKPRESSURE_CASES = [
 	_case("test_pt_backpressure_timing_output_req_bias_18", "PT-BB-006", "时序扰动测试", "输出侧偏压", "m_dma_req_ready 更受限", (4, 8), ("full",), "output_req_bias_18", patterns=([1, 1, 0, 1, 1, 0, 1, 1], [1, 1, 0, 1, 1, 0, 1, 1], [0, 1, 0, 1, 0, 1, 1], [1, 1, 0, 1, 1, 0, 1, 1])),
 	_case("test_pt_backpressure_timing_output_axis_bias_19", "PT-BB-006", "时序扰动测试", "输出侧偏压", "m_axis_tready 更受限", (4, 8), ("full",), "output_axis_bias_19", patterns=([1, 1, 0, 1, 1, 0, 1, 1], [1, 1, 0, 1, 1, 0, 1, 1], [0, 1, 0, 1, 0, 1, 1], [1, 1, 0, 1, 1, 0, 1, 1])),
 	_case("test_pt_backpressure_timing_output_dual_bias_20", "PT-BB-006", "时序扰动测试", "输出侧偏压", "导出请求与数据通路双偏压", (4, 8), ("full",), "output_dual_bias_20", patterns=([1, 1, 0, 1, 1, 0, 1, 1], [0, 1, 0, 1, 1, 0, 1, 1], [0, 1, 1, 0, 1, 0, 1], [1, 1, 0, 1, 1, 0, 1, 1])),
+	_case("test_pt_backpressure_timing_matadd_export_chain_21", "PT-BB-006", "时序扰动测试", "MATADD 链路", "MATMUL 后接 MATADD，在回压下保持 export 正常", (4, 8), ("full",), "matadd_export_chain_21", kind="matadd_chain", patterns=([0, 1, 1, 0, 1, 1, 0, 1], [1, 0, 1, 1, 0, 1, 1, 1], [0, 1, 1, 0, 1, 1, 1], [1, 0, 1, 1, 0, 1, 1])),
 ]
 
 

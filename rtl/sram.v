@@ -9,13 +9,13 @@ module sram #(
 	input  wire                  we_a  ,
 	input  wire [ADDR_WIDTH-1:0] addr_a,
 	input  wire [ DATA_WIDTH-1:0] din_a ,
-	output wire [ DATA_WIDTH-1:0] dout_a,
+	output reg  [ DATA_WIDTH-1:0] dout_a,
 	// Port B
 	input  wire                  en_b  ,
 	input  wire                  we_b  ,
 	input  wire [ADDR_WIDTH-1:0] addr_b,
 	input  wire [ DATA_WIDTH-1:0] din_b ,
-	output wire [ DATA_WIDTH-1:0] dout_b
+	output reg  [ DATA_WIDTH-1:0] dout_b
 );
 
 	reg [DATA_WIDTH-1:0] mem [0:DEPTH-1];
@@ -25,6 +25,8 @@ module sram #(
 		for (mi = 0; mi < DEPTH; mi = mi + 1) begin
 			mem[mi] = {DATA_WIDTH{1'b0}};
 		end
+		dout_a = {DATA_WIDTH{1'b0}};
+		dout_b = {DATA_WIDTH{1'b0}};
 	end
 
 	always @(posedge clk) begin
@@ -34,11 +36,16 @@ module sram #(
 		if (en_b && we_b) begin
 			mem[addr_b] <= din_b;
 		end
+		if (en_a) begin
+			dout_a <= mem[addr_a];
+		end else begin
+			dout_a <= {DATA_WIDTH{1'b0}};
+		end
+		if (en_b) begin
+			dout_b <= mem[addr_b];
+		end else begin
+			dout_b <= {DATA_WIDTH{1'b0}};
+		end
 	end
 
-	// Combinational read behavior to match current PT datapath timing.
-	assign dout_a = en_a ? mem[addr_a] : {DATA_WIDTH{1'b0}};
-	assign dout_b = en_b ? mem[addr_b] : {DATA_WIDTH{1'b0}};
-
 endmodule
-

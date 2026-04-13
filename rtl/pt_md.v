@@ -272,6 +272,8 @@ module PT_MD #(
 	wire [1:0] cmd_k      = cmd_inst[`PT_INST_K_H:`PT_INST_K_L];
 	wire [9:0] cmd_a_off  = cmd_inst[`PT_INST_A_OFF_H:`PT_INST_A_OFF_L];
 	wire [9:0] cmd_b_off  = cmd_inst[`PT_INST_B_OFF_H:`PT_INST_B_OFF_L];
+	wire [5:0] cmd_reserved_hi = cmd_inst[27:22];
+	wire [1:0] cmd_reserved_lo = cmd_inst[1:0];
 	wire [3:0] cmd_qcfg_cmd = cmd_inst[`PT_QCFG_CMD_H:`PT_QCFG_CMD_L];
 	wire [1:0] cmd_qcfg_qtype = cmd_inst[`PT_QCFG_QTYPE_H:`PT_QCFG_QTYPE_L];
 	wire [2:0] cmd_qcfg_gran = cmd_inst[`PT_QCFG_GRAN_H:`PT_QCFG_GRAN_L];
@@ -287,6 +289,11 @@ module PT_MD #(
 
 	wire cmd_a_row_aligned = ((cmd_a_off[7:0] & A_DIM_MASK_8) == 8'd0);
 	wire cmd_b_row_aligned = ((cmd_b_off[7:0] & B_DIM_MASK_8) == 8'd0);
+	wire cmd_matadd_reserved_zero = (cmd_reserved_hi == 6'd0) && (cmd_reserved_lo == 2'b00);
+	wire cmd_matadd_legal = cmd_a_off[9] &&
+	                        !cmd_b_off[9] &&
+	                        cmd_b_row_aligned &&
+	                        cmd_matadd_reserved_zero;
 
 	// quantization configuration session context
 	reg [31:0] qcfg_active_id;
@@ -439,6 +446,10 @@ module PT_MD #(
 	reg [29:0] exp_active_id;
 	reg [A_AW-1:0] exp_row_idx;
 	reg [B_LW-1:0] exp_col_idx;
+	reg [GEMM_Y_DIM*DATA_WIDTH-1:0] exp_row_data;
+	reg        exp_row_valid;
+	reg        exp_row_fetch_pending;
+	reg [A_AW-1:0] exp_fetch_row_idx;
 
 	wire m_buf0_ready = (m_buf_state0 == MBUF_READY);
 	wire m_buf1_ready = (m_buf_state1 == MBUF_READY);
@@ -450,9 +461,18 @@ module PT_MD #(
 	wire exp_pick_buf = (m_buf0_ready && m_buf1_ready) ? next_wr_buf : (m_buf1_ready ? 1'b1 : 1'b0);
 	wire [29:0] exp_pick_id = exp_pick_buf ? m_buf_id1 : m_buf_id0;
 
-	wire exp_last_beat = (exp_row_idx == (GEMM_X_DIM - 1)) &&
+	wire exp_last_beat = exp_row_valid &&
+	                     (exp_row_idx == (GEMM_X_DIM - 1)) &&
 	                     (exp_col_idx == (GEMM_Y_DIM - 1));
-	wire exp_fire = (exp_state == EXP_STREAM) && m_axis_tvalid && m_axis_tready;
+	wire exp_fire = (exp_state == EXP_STREAM) && exp_row_valid && m_axis_tready;
+	wire exp_prime_req = (exp_state == EXP_STREAM) && !exp_row_valid && !exp_row_fetch_pending;
+	wire exp_prefetch_req = (exp_state == EXP_STREAM) &&
+	                        exp_row_valid &&
+	                        exp_fire &&
+	                        (exp_col_idx == (GEMM_Y_DIM - 1)) &&
+	                        (exp_row_idx != (GEMM_X_DIM - 1));
+	wire exp_row_req = exp_prime_req || exp_prefetch_req;
+	wire [A_AW-1:0] exp_req_row_addr = exp_prime_req ? exp_row_idx : (exp_row_idx + 1'b1);
 	wire exp_dma_err_fire = (exp_state == EXP_WAIT_DONE) && m_dma_error;
 	wire [31:0] exp_err_resp = pack_resp(1'b1, exp_active_buf, {2'b00, exp_active_id});
 
@@ -461,12 +481,12 @@ module PT_MD #(
 	assign m_dma_req_buf   = exp_req_buf;
 	assign m_dma_req_beats = EXP_BEATS[DMA_BEATS_W-1:0];
 
-	assign exp_rd_en       = (exp_state == EXP_STREAM);
+	assign exp_rd_en       = exp_row_req;
 	assign exp_rd_buf      = exp_active_buf;
-	assign exp_rd_addr     = exp_row_idx;
+	assign exp_rd_addr     = exp_req_row_addr;
 
-	assign m_axis_tvalid   = (exp_state == EXP_STREAM);
-	assign m_axis_tdata    = exp_rd_data[exp_col_idx*DATA_WIDTH +: DATA_WIDTH];
+	assign m_axis_tvalid   = (exp_state == EXP_STREAM) && exp_row_valid;
+	assign m_axis_tdata    = exp_row_data[exp_col_idx*DATA_WIDTH +: DATA_WIDTH];
 	assign m_axis_tstrb    = {(DATA_WIDTH/8){1'b1}};
 	assign m_axis_tlast    = exp_last_beat;
 	assign m_axis_tkeep    = 1'b1;
@@ -537,16 +557,18 @@ module PT_MD #(
 
 	always @(*) begin
 		next_state = state;
-		case (state)
-			ST_IDLE: begin
-				if (cmd_q_out_valid) begin
-					if ((cmd_opcode == `PT_OP_MATMUL) && cmd_mnk_is_full &&
-					    cmd_a_row_aligned && cmd_b_row_aligned) begin
-						next_state = ST_LUT_CHECK;
-					end else if ((cmd_opcode == `PT_OP_QCFG) && qcfg_hdr_ok) begin
-						next_state = ST_QCFG_LOAD;
+			case (state)
+				ST_IDLE: begin
+					if (cmd_q_out_valid) begin
+						if ((cmd_opcode == `PT_OP_MATMUL) && cmd_mnk_is_full &&
+						    cmd_a_row_aligned && cmd_b_row_aligned) begin
+							next_state = ST_LUT_CHECK;
+						end else if ((cmd_opcode == `PT_OP_MATADD) && cmd_matadd_legal) begin
+							next_state = ST_LUT_CHECK;
+						end else if ((cmd_opcode == `PT_OP_QCFG) && qcfg_hdr_ok) begin
+							next_state = ST_QCFG_LOAD;
+						end
 					end
-				end
 			end
 
 			ST_LUT_CHECK: begin
@@ -650,6 +672,10 @@ module PT_MD #(
 			exp_active_id    <= 30'd0;
 			exp_row_idx      <= {A_AW{1'b0}};
 			exp_col_idx      <= {B_LW{1'b0}};
+			exp_row_data     <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
+			exp_row_valid    <= 1'b0;
+			exp_row_fetch_pending <= 1'b0;
+			exp_fetch_row_idx <= {A_AW{1'b0}};
 
 			for (ri = 0; ri < LUT_DEPTH; ri = ri + 1) begin
 				lut_valid[ri]     <= 1'b0;
@@ -708,6 +734,10 @@ module PT_MD #(
 			exp_active_id    <= 30'd0;
 			exp_row_idx      <= {A_AW{1'b0}};
 			exp_col_idx      <= {B_LW{1'b0}};
+			exp_row_data     <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
+			exp_row_valid    <= 1'b0;
+			exp_row_fetch_pending <= 1'b0;
+			exp_fetch_row_idx <= {A_AW{1'b0}};
 
 			for (ri = 0; ri < LUT_DEPTH; ri = ri + 1) begin
 				lut_valid[ri]     <= 1'b0;
@@ -743,6 +773,14 @@ module PT_MD #(
 				end
 			end
 
+				if (exp_row_fetch_pending) begin
+					exp_row_data          <= exp_rd_data;
+					exp_row_valid         <= 1'b1;
+					exp_row_fetch_pending <= 1'b0;
+					exp_row_idx           <= exp_fetch_row_idx;
+					exp_col_idx           <= {B_LW{1'b0}};
+				end
+
 				case (state)
 						ST_IDLE: begin
 							if (cmd_q_out_valid) begin
@@ -773,6 +811,15 @@ module PT_MD #(
 							end else if (cmd_opcode == `PT_OP_MATMUL) begin
 								if (!cmd_mnk_is_full || !cmd_a_row_aligned || !cmd_b_row_aligned) begin
 									md_resp       <= pack_resp(1'b1, 1'b0, cmd_id);
+								md_resp_valid <= 1'b1;
+								irq_r         <= 1'b1;
+							end else begin
+								cur_inst <= cmd_inst;
+								cur_id   <= cmd_id;
+							end
+						end else if (cmd_opcode == `PT_OP_MATADD) begin
+							if (!cmd_matadd_legal) begin
+								md_resp       <= pack_resp(1'b1, 1'b0, cmd_id);
 								md_resp_valid <= 1'b1;
 								irq_r         <= 1'b1;
 							end else begin
@@ -952,6 +999,10 @@ module PT_MD #(
 						exp_active_id  <= exp_req_id;
 						exp_row_idx    <= {A_AW{1'b0}};
 						exp_col_idx    <= {B_LW{1'b0}};
+						exp_row_data   <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
+						exp_row_valid  <= 1'b0;
+						exp_row_fetch_pending <= 1'b0;
+						exp_fetch_row_idx <= {A_AW{1'b0}};
 						if (exp_req_buf) begin
 							m_buf_state1 <= MBUF_EXPORTING;
 						end else begin
@@ -962,12 +1013,17 @@ module PT_MD #(
 				end
 
 				EXP_STREAM: begin
+					if (exp_row_req) begin
+						exp_row_fetch_pending <= 1'b1;
+						exp_fetch_row_idx     <= exp_req_row_addr;
+					end
 					if (exp_fire) begin
 						if (exp_last_beat) begin
+							exp_row_valid <= 1'b0;
 							exp_state <= EXP_WAIT_DONE;
 						end else if (exp_col_idx == (GEMM_Y_DIM - 1)) begin
+							exp_row_valid <= 1'b0;
 							exp_col_idx <= {B_LW{1'b0}};
-							exp_row_idx <= exp_row_idx + 1'b1;
 						end else begin
 							exp_col_idx <= exp_col_idx + 1'b1;
 						end
@@ -976,6 +1032,8 @@ module PT_MD #(
 
 				EXP_WAIT_DONE: begin
 					if (m_dma_done || m_dma_error) begin
+						exp_row_valid         <= 1'b0;
+						exp_row_fetch_pending <= 1'b0;
 						if (exp_active_buf) begin
 							m_buf_state1 <= MBUF_FREE;
 						end else begin

@@ -65,10 +65,8 @@ module PT_MEM_BANK #(
 	integer ri;
 	always @(*) begin
 		rd_data = {LANES*DATA_WIDTH{1'b0}};
-		if (rd_en) begin
-			for (ri = 0; ri < LANES; ri = ri + 1) begin
-				rd_data[ri*DATA_WIDTH +: DATA_WIDTH] = rd_buf ? lane_rd_pong[ri] : lane_rd_ping[ri];
-			end
+		for (ri = 0; ri < LANES; ri = ri + 1) begin
+			rd_data[ri*DATA_WIDTH +: DATA_WIDTH] = rd_buf ? lane_rd_pong[ri] : lane_rd_ping[ri];
 		end
 	end
 

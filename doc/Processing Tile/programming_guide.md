@@ -14,7 +14,7 @@ PT is not programmed through AXI-Lite directly. Its native control plane is a ba
 | `ctrl_id[31:0]` | in | Transaction identifier used for cache lookup, DMA request tagging, and responses |
 | `ctrl_resp[31:0]` | out | Result or error response word |
 | `ctrl_resp_valid` | out | One-cycle response pulse |
-| `irq` | out | Pulses on successful `MATMUL` completion and on error events |
+| `irq` | out | Pulses on successful `MATMUL`/`MATADD` completion and on error events |
 
 Treat `ctrl_*` as the authoritative PT programming interface. A command is accepted on `ctrl_valid && ctrl_ready`.
 
@@ -25,8 +25,10 @@ Treat `ctrl_*` as the authoritative PT programming interface. A command is accep
 | `CFG` success | Immediately after acceptance | `0` | `0` |
 | `QCFG` success | After the final payload commits | `0` | `0` |
 | Illegal `MATMUL` | Immediately when rejected by `PT_MD` | `1` | `0` |
+| Illegal `MATADD` | Immediately when rejected by `PT_MD` | `1` | `0` |
 | A/B load DMA or stream error | When the load path fails | `1` | `0` |
 | `MATMUL` success | When the result has been written into an M buffer | `0` | Target M buffer |
+| `MATADD` success | When the result has been written into an M buffer | `0` | Target M buffer |
 | Export DMA error | After a prior success, if export later fails | `1` | Failing M buffer |
 
 A successful `MATMUL` response does not mean export is finished. Export runs afterward and can still generate an error response.
@@ -41,6 +43,7 @@ Instruction fields are defined in [`rtl/param.vh`](../../rtl/param.vh).
 | --- | --- | --- |
 | `PT_OP_MATMUL` | `4'h1` | Launch one tile GEMM |
 | `PT_OP_QCFG` | `4'h2` | Start a quantization configuration session |
+| `PT_OP_MATADD` | `4'h3` | Add one retained M tile and one external/B-style tile |
 | `PT_OP_CFG` | `4'hf` | Update a 16-bit fragment of the internal PT base CSR state |
 
 Unknown opcodes are rejected in `PT_MD` with `err=1`.
@@ -68,7 +71,19 @@ Defined scale constants:
 
 Although all constants are defined, the current RTL accepts only the `FULL/FULL/FULL` combination.
 
-### 2.3 Offset Semantics
+### 2.3 `MATADD` Format
+
+| Bit | Field | Meaning |
+| --- | --- | --- |
+| `[31:28]` | `opcode` | Must be `PT_OP_MATADD` |
+| `[27:22]` | reserved | Must be zero |
+| `[21:12]` | `m_off` | Must be an explicit M-window offset |
+| `[11:2]` | `c_off` | Must be an external/B-style offset aligned to `GEMM_Y_DIM` |
+| `[1:0]` | reserved | Must be zero |
+
+`MATADD` v1 accepts only `quantized M-window + external/B-style tile`. It does not accept `M+M`, external left operands, or any new scale/QCFG fields.
+
+### 2.4 Offset Semantics
 
 `A offset` and `B offset` support two legal forms:
 
@@ -87,7 +102,13 @@ On a cache hit, `PT_MD` may rewrite an external offset into an internal local of
 
 Software should generate either external offsets or explicit M-window offsets. Internal local offsets are patched by `PT_MD`.
 
-### 2.4 `CFG` Format
+For `MATADD`, software must use:
+
+- `m_off` as an explicit M-window offset.
+- `c_off` as an external/B-style offset.
+- Zero for every reserved bit.
+
+### 2.5 `CFG` Format
 
 | Bit | Field | Meaning |
 | --- | --- | --- |
@@ -106,7 +127,7 @@ Supported selectors:
 
 Unknown selectors do not raise an error. PT returns a success response while leaving the effective configuration unchanged.
 
-### 2.5 `QCFG` Format
+### 2.6 `QCFG` Format
 
 Header word:
 
@@ -248,7 +269,17 @@ PT uses AXIS as a transport shell around a stricter tile contract.
 5. Wait for `ctrl_resp = pack(err=0, m_buf=<buf>, id=matmul_id)`.
 6. Continue monitoring automatic export and any later export error.
 
-### 6.3 M-Window Reuse
+### 6.3 `MATMUL` Followed By `MATADD`
+
+1. Send a legal `MATMUL` and wait for `ctrl_resp = pack(err=0, m_buf=<buf>, id=matmul_id)`.
+2. Encode `m_off` as `build_mwin_off(<buf>, row_base_elem_off)` and encode `c_off` as the external/B-style tile offset for `C`.
+3. Send `MATADD`.
+4. Wait for `ctrl_resp = pack(err=0, m_buf=<new_buf>, id=matadd_id)`.
+5. Continue monitoring automatic export and any later export error exactly as with `MATMUL`.
+
+This is the native PT sequence for `quant(A*B) + C`.
+
+### 6.4 M-Window Reuse
 
 1. Complete one legal `MATMUL` and capture the returned `m_buf`.
 2. In a later `MATMUL`, encode `a_off` or `b_off` as an M-window source with bit 9 set and bit 8 equal to `m_buf`.
@@ -257,7 +288,7 @@ PT uses AXIS as a transport shell around a stricter tile contract.
 
 M-window reuse is useful for tile-to-tile chaining, but the surrounding system must track buffer lifetime across `clear` and export.
 
-### 6.4 Completion And Export Handling
+### 6.5 Completion And Export Handling
 
 1. Treat a successful `MATMUL` response as “the result has been written into an M buffer.”
 2. Treat `m_dma_req_*` and `m_axis_*` as “the result is now being exported.”

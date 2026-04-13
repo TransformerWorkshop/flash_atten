@@ -13,7 +13,7 @@ This directory is the authoritative home for PT documentation. Architecture, pro
 
 ## 2. Role In The System
 
-PT accepts tile-level control commands, fetches operand tiles A/B on demand, executes a full-tile GEMM, applies programmable quantization, retains the quantized result in a dual-buffered M window, and automatically streams finished M tiles to an export DMA channel.
+PT accepts tile-level control commands, fetches operand tiles A/B on demand, executes a full-tile GEMM, applies programmable quantization, can optionally run a post-quantization `MATADD` against an external B-style tile, retains the result in a dual-buffered M window, and automatically streams finished M tiles to an export DMA channel.
 
 ### 2.1 Main Submodules
 
@@ -27,6 +27,7 @@ PT accepts tile-level control commands, fetches operand tiles A/B on demand, exe
 | [`PT_M_MEM`](../../rtl/pt_mem.v) | M result storage | Stores row-major and column-major views simultaneously for M-window reuse and export |
 | [`GEMM`](../../rtl/gemm.v) | Tile GEMM array | Runs with `OUTPUT_BY_ROW=1` and emits wide row groups |
 | [`QUANT`](../../rtl/quant.v) | Post-GEMM quantizer | Applies inverse-scale Q16.16 rounding and saturation based on QCFG |
+| [`GEMA`](../../rtl/gema.v) | Post-quant add | Applies signed lane-wise saturating add for `MATADD` |
 
 `PT_MD` owns command admission, operand residency, and export scheduling. `PT_CE` owns execution and writeback. `CSR_BANK` is internal PT state, not an AXI-Lite front-end.
 
@@ -74,15 +75,18 @@ PT assumes square A and B tiles sized by `GEMM_X_DIM` and `GEMM_Y_DIM`, while M 
 ### 4.1 Main Path
 
 1. `ctrl_*` commands enter the ingress FIFO inside `PT_MD`.
-2. `PT_MD` updates `CSR_BANK` directly for `CFG`, enters a multi-beat configuration session for `QCFG`, and performs legality checks for `MATMUL`.
-3. For a legal `MATMUL`, `PT_MD` checks the LUT/cache:
+2. `PT_MD` updates `CSR_BANK` directly for `CFG`, enters a multi-beat configuration session for `QCFG`, and performs legality checks for `MATMUL` and `MATADD`.
+3. For a legal matrix command, `PT_MD` checks the LUT/cache:
    - A cached external tile hit is rewritten into an internal local offset.
    - M-window operands are treated as hits by construction.
-   - A miss triggers one or two `dma_req_*` sequences and receives payload through `s_axis_*` into the A/B banks.
+   - `MATMUL` may miss on A and/or B.
+   - `MATADD` always uses an explicit M-window source on the left and may miss only on the external/B-style right operand.
+   - A miss triggers one or more `dma_req_*` sequences and receives payload through `s_axis_*` into the A/B banks.
 4. Once both operands are ready, the command is pushed through the CE issue FIFO into `PT_CE`.
-5. `PT_CE` reads operands from the A/B banks or from `PT_M_MEM` and drives [`GEMM`](../../rtl/gemm.v).
-6. [`QUANT`](../../rtl/quant.v) applies inverse-scale quantization and saturation to the wide GEMM result.
-7. `PT_CE` serializes each quantized M row into the active M write buffer and returns a success `ctrl_resp` when the final row/final lane has been written.
+5. `PT_CE` executes one of two datapaths:
+   - `MATMUL`: reads operands from the A/B banks or from `PT_M_MEM`, drives [`GEMM`](../../rtl/gemm.v), then [`QUANT`](../../rtl/quant.v).
+   - `MATADD`: reads one retained M row plus one external/B-bank row and drives [`GEMA`](../../rtl/gema.v).
+6. `PT_CE` serializes each result row into the active M write buffer and returns a success `ctrl_resp` when the final row/final lane has been written.
 8. After `ce_resp_valid`, `PT_MD` marks the corresponding M buffer as `READY` and automatically launches `m_dma_req_*` plus `m_axis_*` export.
 
 Command processing is split into admission and residency (`PT_MD`) plus execution and writeback (`PT_CE`). Export is automatic after a successful compute; there is no separate export command.
@@ -123,11 +127,11 @@ The M store is not just a scratchpad. It keeps both row-wise and column-wise acc
 
 | State | Function |
 | --- | --- |
-| `ST_IDLE` | Pops the next command, handles `CFG` directly, and starts a `QCFG` session or a legal `MATMUL` |
-| `ST_LUT_CHECK` | Determines whether the current `MATMUL` sees A/B as hits, misses, or M-window sources |
+| `ST_IDLE` | Pops the next command, handles `CFG` directly, and starts a `QCFG` session or a legal matrix command |
+| `ST_LUT_CHECK` | Determines whether the current `MATMUL`/`MATADD` sees external operands as hits or misses |
 | `ST_DMA_REQ` | Issues an A/B load DMA request for the currently missing side |
 | `ST_DMA_RECV` | Accepts `s_axis_tdata` into the A/B banks and may switch to the other missing side |
-| `ST_ENQ_CE` | Pushes the patched `MATMUL` into the CE issue queue |
+| `ST_ENQ_CE` | Pushes the patched `MATMUL`/`MATADD` into the CE issue queue |
 | `ST_QCFG_LOAD` | Consumes QCFG payloads and commits them into `CSR_BANK` |
 
 `PT_MD` also contains an independent export sub-FSM:
@@ -146,10 +150,11 @@ The M store is not just a scratchpad. It keeps both row-wise and column-wise acc
 | State | Function |
 | --- | --- |
 | `ST_IDLE` | Waits for a valid command in the CE issue queue |
-| `ST_EXEC_START` | Latches operand source selection, row bases, and the target M buffer |
-| `ST_EXEC_FEED` | Feeds `GEMM_X_DIM` accumulation steps into GEMM |
-| `ST_WAIT_GEMM` | Waits for the next quantized row from QUANT |
-| `ST_M_STORE` | Serializes one quantized row lane-by-lane into the M buffer |
+| `ST_EXEC_START` | Latches opcode, operand source selection, row bases, and the target M buffer |
+| `ST_EXEC_FEED` | Feeds `GEMM_X_DIM` accumulation steps into GEMM for `MATMUL` |
+| `ST_ADD_REQ/CAPTURE/SEND` | Reads one M row plus one B row and launches a `GEMA` transaction for `MATADD` |
+| `ST_WAIT_RESULT` | Waits for the next result row from `QUANT` or `GEMA` |
+| `ST_M_STORE` | Serializes one result row lane-by-lane into the M buffer |
 
 When the final row and final lane are written, `PT_CE` produces:
 
@@ -177,6 +182,7 @@ After `clear`, stale SRAM contents may still exist physically, but PT must treat
 
 - `GEMM_X_DIM` and `GEMM_Y_DIM` must be powers of two. [`PT_MD`](../../rtl/pt_md.v) and [`PT_CE`](../../rtl/pt_ce.v) both raise `$fatal` during simulation startup for invalid dimensions.
 - PT currently accepts only full-tile `MATMUL`: `M/N/K` must all be `PT_SCALE_FULL`.
+- `MATADD` currently accepts only `M-window + external/B-style tile`.
 - External A/B offsets must be tile-row aligned:
   - A must align to `GEMM_X_DIM` elements
   - B must align to `GEMM_Y_DIM` elements

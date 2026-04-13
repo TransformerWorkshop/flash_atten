@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 PT_OP_MATMUL = 0x1
 PT_OP_QCFG = 0x2
+PT_OP_MATADD = 0x3
 PT_OP_CFG = 0xF
 
 PT_SCALE_SCALAR = 0b00
@@ -67,6 +68,16 @@ def build_matmul_inst(m_scale: int, n_scale: int, k_scale: int, a_off: int, b_of
 		| ((k_scale & 0x3) << 22)
 		| ((a_off & 0x3FF) << 12)
 		| ((b_off & 0x3FF) << 2)
+	)
+
+
+def build_matadd_inst(m_off: int, c_off: int, reserved_hi: int = 0, reserved_lo: int = 0) -> int:
+	return (
+		((PT_OP_MATADD & 0xF) << 28)
+		| ((reserved_hi & 0x3F) << 22)
+		| ((m_off & 0x3FF) << 12)
+		| ((c_off & 0x3FF) << 2)
+		| (reserved_lo & 0x3)
 	)
 
 
@@ -151,6 +162,28 @@ def quantize_value(acc_value: int, inv_scale_word: int, data_width: int) -> int:
 	return to_unsigned(q_signed, data_width)
 
 
+def saturating_add_value(lhs_word: int, rhs_word: int, data_width: int) -> int:
+	lhs = to_signed(lhs_word, data_width)
+	rhs = to_signed(rhs_word, data_width)
+	sum_value = lhs + rhs
+	sat_max = (1 << (data_width - 1)) - 1
+	sat_min = -(1 << (data_width - 1))
+	if sum_value > sat_max:
+		sum_value = sat_max
+	elif sum_value < sat_min:
+		sum_value = sat_min
+	return to_unsigned(sum_value, data_width)
+
+
+def saturating_add_matrix(lhs_matrix: Sequence[int], rhs_matrix: Sequence[int], data_width: int) -> List[int]:
+	if len(lhs_matrix) != len(rhs_matrix):
+		raise ValueError(f"matrix size mismatch: lhs={len(lhs_matrix)} rhs={len(rhs_matrix)}")
+	return [
+		saturating_add_value(lhs_word=int(lhs_word), rhs_word=int(rhs_word), data_width=data_width)
+		for lhs_word, rhs_word in zip(lhs_matrix, rhs_matrix)
+	]
+
+
 @dataclass
 class QuantConfig:
 	granularity: int
@@ -182,7 +215,7 @@ class DmaLoadExpectation:
 
 
 @dataclass
-class MatmulPlan:
+class ExecPlan:
 	ctrl_id: int
 	response_word: int
 	err: bool
@@ -194,6 +227,10 @@ class MatmulPlan:
 	a_matrix: Optional[List[int]]
 	b_matrix: Optional[List[int]]
 	cache_update: Optional[CacheEntry]
+
+
+MatmulPlan = ExecPlan
+MataddPlan = ExecPlan
 
 
 class PTBlackBoxModel:
@@ -304,9 +341,9 @@ class PTBlackBoxModel:
 		m_scale: int = PT_SCALE_FULL,
 		n_scale: int = PT_SCALE_FULL,
 		k_scale: int = PT_SCALE_FULL,
-	) -> MatmulPlan:
+	) -> ExecPlan:
 		if (m_scale, n_scale, k_scale) != (PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL):
-			return MatmulPlan(
+			return ExecPlan(
 				ctrl_id=ctrl_id,
 				response_word=pack_resp(True, 0, ctrl_id),
 				err=True,
@@ -321,7 +358,7 @@ class PTBlackBoxModel:
 			)
 
 		if ((a_off & 0xFF) % self.x_dim) != 0 or ((b_off & 0xFF) % self.y_dim) != 0:
-			return MatmulPlan(
+			return ExecPlan(
 				ctrl_id=ctrl_id,
 				response_word=pack_resp(True, 0, ctrl_id),
 				err=True,
@@ -372,7 +409,7 @@ class PTBlackBoxModel:
 			a_off=None if a_is_m else a_off,
 			b_off=None if b_is_m else b_off,
 		)
-		return MatmulPlan(
+		return ExecPlan(
 			ctrl_id=ctrl_id,
 			response_word=pack_resp(False, success_buffer, ctrl_id),
 			err=False,
@@ -386,7 +423,85 @@ class PTBlackBoxModel:
 			cache_update=cache_update,
 		)
 
-	def commit_success(self, plan: MatmulPlan) -> None:
+	def issue_matadd(
+		self,
+		ctrl_id: int,
+		m_off: int,
+		c_off: int,
+		external_b_tiles: Dict[int, List[int]],
+		*,
+		reserved_hi: int = 0,
+		reserved_lo: int = 0,
+	) -> ExecPlan:
+		if ((reserved_hi & 0x3F) != 0) or ((reserved_lo & 0x3) != 0):
+			return ExecPlan(
+				ctrl_id=ctrl_id,
+				response_word=pack_resp(True, 0, ctrl_id),
+				err=True,
+				success_buffer=None,
+				result_matrix=None,
+				expected_dma_loads=[],
+				a_off=m_off,
+				b_off=c_off,
+				a_matrix=None,
+				b_matrix=None,
+				cache_update=None,
+			)
+
+		if not ((m_off >> 9) & 0x1) or ((c_off >> 9) & 0x1) or ((c_off & 0xFF) % self.y_dim) != 0:
+			return ExecPlan(
+				ctrl_id=ctrl_id,
+				response_word=pack_resp(True, 0, ctrl_id),
+				err=True,
+				success_buffer=None,
+				result_matrix=None,
+				expected_dma_loads=[],
+				a_off=m_off,
+				b_off=c_off,
+				a_matrix=None,
+				b_matrix=None,
+				cache_update=None,
+			)
+
+		m_buffer = (m_off >> 8) & 0x1
+		m_matrix = self.m_buffers.get(m_buffer)
+		if m_matrix is None:
+			raise ValueError(f"M-window buffer {m_buffer} has no retained contents for MATADD")
+
+		cache_entry = self.cache_by_id.get(ctrl_id)
+		expected_dma_loads: List[DmaLoadExpectation] = []
+		c_matrix, _ = self._resolve_matrix("B", c_off, external_b_tiles)
+		if cache_entry is not None and cache_entry.b_off == c_off and cache_entry.b_matrix is not None:
+			c_matrix = list(cache_entry.b_matrix)
+		else:
+			expected_dma_loads.append(
+				DmaLoadExpectation(
+					ctrl_id=ctrl_id,
+					kind="B",
+					ext_addr=self.ext_addr("B", c_off),
+					local_addr=self.local_addr("B", c_off, self.b_dma_buf_sel),
+					beats=self.y_dim * self.y_dim,
+				)
+			)
+
+		result_matrix = saturating_add_matrix(m_matrix, c_matrix, self.data_width)
+		success_buffer = self.next_write_buf
+		cache_update = CacheEntry(a_off=None, b_off=c_off)
+		return ExecPlan(
+			ctrl_id=ctrl_id,
+			response_word=pack_resp(False, success_buffer, ctrl_id),
+			err=False,
+			success_buffer=success_buffer,
+			result_matrix=result_matrix,
+			expected_dma_loads=expected_dma_loads,
+			a_off=m_off,
+			b_off=c_off,
+			a_matrix=None,
+			b_matrix=list(c_matrix),
+			cache_update=cache_update,
+		)
+
+	def commit_success(self, plan: ExecPlan) -> None:
 		if plan.err or plan.success_buffer is None or plan.result_matrix is None:
 			raise ValueError("cannot commit an error plan")
 		buffer = plan.success_buffer

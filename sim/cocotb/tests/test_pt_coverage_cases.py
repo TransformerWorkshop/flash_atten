@@ -22,6 +22,7 @@ from tests.pt_model import (
 	PT_QGRAN_Y_WISE_DIV2,
 	PT_SCALE_FULL,
 	build_cfg_inst,
+	build_matadd_inst,
 	build_matmul_inst,
 	build_mwin_off,
 	build_qcfg_header,
@@ -219,27 +220,50 @@ async def _run_coverage_case(dut, case: ScenarioCase) -> None:
 				await env.wait_export_done(target_done)
 			return
 
-		if kind == "export_path_sweep":
-			env.configure_patterns(
-				m_dma_req_ready=SequencePattern([0, 0, 1, 0, 1, 1]),
-				m_axis_ready=SequencePattern([1, 0, 1, 1, 0, 1, 1]),
-			)
-			success = env.plan_matmul(0x880, 0x000, 0x000)
-			await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL, 0x000, 0x000), 0x880)
-			await env.wait_ctrl_resp(success.response_word)
-			env.model.commit_success(success)
-			await env.wait_export_done(1, 12000)
+			if kind == "export_path_sweep":
+				env.configure_patterns(
+					m_dma_req_ready=SequencePattern([0, 0, 1, 0, 1, 1]),
+					m_axis_ready=SequencePattern([1, 0, 1, 1, 0, 1, 1]),
+				)
+				success = env.plan_matmul(0x880, 0x000, 0x000)
+				await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL, 0x000, 0x000), 0x880)
+				await env.wait_ctrl_resp(success.response_word)
+				env.model.commit_success(success)
+				await env.wait_export_done(1, 12000)
 
-			env.queue_export_injection(ExportInjection(error=True, done_delay=2))
-			error_plan = env.plan_matmul(0x881, 0x000, 0x000)
-			await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL, 0x000, 0x000), 0x881)
-			await env.wait_ctrl_resp(error_plan.response_word)
-			env.model.commit_success(error_plan)
-			await env.wait_export_error(1, 12000)
-			await env.wait_ctrl_resp(pack_resp(True, error_plan.success_buffer, 0x881), 12000)
-			return
+				env.queue_export_injection(ExportInjection(error=True, done_delay=2))
+				error_plan = env.plan_matmul(0x881, 0x000, 0x000)
+				await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL, 0x000, 0x000), 0x881)
+				await env.wait_ctrl_resp(error_plan.response_word)
+				env.model.commit_success(error_plan)
+				await env.wait_export_error(1, 12000)
+				await env.wait_ctrl_resp(pack_resp(True, error_plan.success_buffer, 0x881), 12000)
+				return
 
-		raise AssertionError(f"unsupported coverage case kind={kind}")
+			if kind == "matadd_path_sweep":
+				env.register_external_matrix("B", env.y_dim, flatten_pattern_matrix(env.y_dim, 1, 2, 3))
+				matmul = env.plan_matmul(0x890, 0x000, 0x000)
+				await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL, 0x000, 0x000), 0x890)
+				await env.wait_ctrl_resp(matmul.response_word)
+				env.model.commit_success(matmul)
+				await env.wait_export_done(1)
+
+				m_off = build_mwin_off(matmul.success_buffer, 0)
+				matadd_miss = env.plan_matadd(0x891, m_off, env.y_dim)
+				await env.send_ctrl(build_matadd_inst(m_off, env.y_dim), 0x891)
+				await env.wait_ctrl_resp(matadd_miss.response_word)
+				env.model.commit_success(matadd_miss)
+				await env.wait_export_done(2)
+
+				m_off_hit = build_mwin_off(matadd_miss.success_buffer, 0)
+				matadd_hit = env.plan_matadd(0x891, m_off_hit, env.y_dim)
+				await env.send_ctrl(build_matadd_inst(m_off_hit, env.y_dim), 0x891)
+				await env.wait_ctrl_resp(matadd_hit.response_word)
+				env.model.commit_success(matadd_hit)
+				await env.wait_export_done(3)
+				return
+
+			raise AssertionError(f"unsupported coverage case kind={kind}")
 	finally:
 		env.shutdown()
 
