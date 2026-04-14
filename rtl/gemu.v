@@ -24,6 +24,7 @@ module GEMU #(parameter WIDTH = 32) (
 
 	reg  [4*WIDTH-1:0] accm                           ;
 	reg  [  WIDTH-1:0] acc_cnt                        ;
+	reg [1:0] current_state, next_state;
 	wire               in_accm = (current_state == STATE_ACCM);
 	wire               acc_done = (acc_cnt == num_acc) && (num_acc != 0);
 	// FIFO interfaces
@@ -38,9 +39,6 @@ module GEMU #(parameter WIDTH = 32) (
 
 	wire is_a = fifo_a_valid && fifo_a_ready;
 	wire is_b = fifo_b_valid && fifo_b_ready;
-
-	// state registers
-	reg [1:0] current_state, next_state;
 
 	// combinational assign
 	assign fifo_m_in    = accm;

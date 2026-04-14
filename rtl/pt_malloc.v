@@ -1,0 +1,634 @@
+`include "param.vh"
+
+module PT_MALLOC #(
+	parameter GEMM_X_DIM   = 4,
+	parameter GEMM_Y_DIM   = 4,
+	parameter LUT_DEPTH    = 8,
+	parameter A_BANK_DEPTH = 16,
+	parameter B_BANK_DEPTH = 16
+) (
+	input  wire                       clk,
+	input  wire                       rstn,
+	input  wire                       clear,
+
+	input  wire                       malloc_cmd_valid,
+	output wire                       malloc_cmd_ready,
+	input  wire [`PT_MALLOC_KIND_W-1:0] malloc_cmd_kind,
+	input  wire [`INST_WIDTH-1:0]     malloc_cmd_inst,
+	input  wire [31:0]                malloc_cmd_id,
+
+	output wire                       fill_req_valid,
+	input  wire                       fill_req_ready,
+	output wire [`PT_DMA_KIND_W-1:0]  fill_req_kind,
+	output wire [31:0]                fill_req_id,
+	output wire [`PT_LOCAL_ADDR_W-1:0] fill_req_local_base,
+	output wire [`PT_SIZE_W-1:0]      fill_req_len,
+
+	input  wire                       fill_done_valid,
+	input  wire [`PT_DMA_KIND_W-1:0]  fill_done_kind,
+	input  wire [31:0]                fill_done_id,
+	input  wire                       fill_done_err,
+
+	output wire                       ce_cmd_valid,
+	input  wire                       ce_cmd_ready,
+	output wire [`INST_WIDTH-1:0]     ce_cmd_ctrl,
+	output wire [31:0]                ce_cmd_id,
+	output wire [`PT_LOCAL_ADDR_W-1:0] ce_a_local_base,
+	output wire [`PT_LOCAL_ADDR_W-1:0] ce_b_local_base,
+
+	input  wire                       ce_resp_valid,
+	input  wire [31:0]                ce_resp,
+
+	output reg                        malloc_resp_valid,
+	output reg  [31:0]                malloc_resp,
+	output reg                        malloc_irq
+);
+
+	localparam integer LUT_AW = (LUT_DEPTH <= 1) ? 1 : $clog2(LUT_DEPTH);
+	localparam integer A_CAPACITY = A_BANK_DEPTH * GEMM_X_DIM;
+	localparam integer B_CAPACITY = B_BANK_DEPTH * GEMM_Y_DIM;
+	localparam integer A_PTR_W = ((2 * A_CAPACITY) <= 1) ? 1 : $clog2((2 * A_CAPACITY) + 1);
+	localparam integer B_PTR_W = ((2 * B_CAPACITY) <= 1) ? 1 : $clog2((2 * B_CAPACITY) + 1);
+	localparam integer A_TILE_LEN = GEMM_X_DIM * GEMM_X_DIM;
+	localparam integer B_TILE_LEN = GEMM_Y_DIM * GEMM_Y_DIM;
+
+	localparam [3:0] ST_IDLE        = 4'd0;
+	localparam [3:0] ST_FILL_REQ_A  = 4'd1;
+	localparam [3:0] ST_FILL_WAIT_A = 4'd2;
+	localparam [3:0] ST_FILL_REQ_B  = 4'd3;
+	localparam [3:0] ST_FILL_WAIT_B = 4'd4;
+	localparam [3:0] ST_CE_REQ      = 4'd5;
+	localparam [3:0] ST_CE_WAIT     = 4'd6;
+	localparam [3:0] ST_RESP        = 4'd7;
+
+	reg [3:0] state_r;
+	reg [3:0] state_n;
+
+	reg        lut_valid [0:LUT_DEPTH-1];
+	reg [31:0] lut_id [0:LUT_DEPTH-1];
+	reg        lut_a_valid [0:LUT_DEPTH-1];
+	reg [`PT_LOCAL_ADDR_W-1:0] lut_a_base [0:LUT_DEPTH-1];
+	reg [`PT_SIZE_W-1:0] lut_a_len [0:LUT_DEPTH-1];
+	reg        lut_b_valid [0:LUT_DEPTH-1];
+	reg        lut_b_is_c [0:LUT_DEPTH-1];
+	reg [`PT_LOCAL_ADDR_W-1:0] lut_b_base [0:LUT_DEPTH-1];
+	reg [`PT_SIZE_W-1:0] lut_b_len [0:LUT_DEPTH-1];
+
+	reg [A_PTR_W-1:0] a_alloc_next_r;
+	reg [B_PTR_W-1:0] b_alloc_next_r;
+
+	reg [`PT_MALLOC_KIND_W-1:0] active_kind_r;
+	reg [`INST_WIDTH-1:0]       active_inst_r;
+	reg [31:0]                  active_id_r;
+	reg [LUT_AW-1:0]            active_slot_idx_r;
+	reg                         active_need_a_fill_r;
+	reg                         active_need_b_fill_r;
+	reg                         active_b_is_c_r;
+	reg [`PT_LOCAL_ADDR_W-1:0]  active_a_base_r;
+	reg [`PT_LOCAL_ADDR_W-1:0]  active_b_base_r;
+	reg [`PT_SIZE_W-1:0]        active_a_len_r;
+	reg [`PT_SIZE_W-1:0]        active_b_len_r;
+	reg [A_PTR_W-1:0]           active_a_alloc_next_r;
+	reg [B_PTR_W-1:0]           active_b_alloc_next_r;
+	reg [31:0]                  resp_word_r;
+	reg                         resp_irq_r;
+
+	reg                         slot_found;
+	reg [LUT_AW-1:0]            slot_idx;
+	reg                         free_found;
+	reg [LUT_AW-1:0]            free_idx;
+
+	reg                         cmd_error;
+	reg                         cmd_need_a_fill;
+	reg                         cmd_need_b_fill;
+	reg                         cmd_b_is_c;
+	reg [LUT_AW-1:0]            cmd_slot_idx;
+	reg [`PT_LOCAL_ADDR_W-1:0]  cmd_a_base;
+	reg [`PT_LOCAL_ADDR_W-1:0]  cmd_b_base;
+	reg [`PT_SIZE_W-1:0]        cmd_a_len;
+	reg [`PT_SIZE_W-1:0]        cmd_b_len;
+	reg [A_PTR_W-1:0]           cmd_a_alloc_next;
+	reg [B_PTR_W-1:0]           cmd_b_alloc_next;
+
+	reg                         a_alloc_ok;
+	reg [`PT_LOCAL_ADDR_W-1:0]  a_alloc_base;
+	reg [A_PTR_W-1:0]           a_alloc_next_after;
+	reg                         b_alloc_ok;
+	reg [`PT_LOCAL_ADDR_W-1:0]  b_alloc_base;
+	reg [B_PTR_W-1:0]           b_alloc_next_after;
+
+	wire [3:0] cmd_opcode = malloc_cmd_inst[`PT_INST_OPCODE_H:`PT_INST_OPCODE_L];
+	wire [1:0] cmd_m = malloc_cmd_inst[`PT_INST_M_H:`PT_INST_M_L];
+	wire [1:0] cmd_n = malloc_cmd_inst[`PT_INST_N_H:`PT_INST_N_L];
+	wire [1:0] cmd_k = malloc_cmd_inst[`PT_INST_K_H:`PT_INST_K_L];
+	wire [`PT_SIZE_W-1:0] cmd_load_a_size = malloc_cmd_inst[`PT_LOAD_A_SIZE_H:`PT_LOAD_A_SIZE_L];
+	wire [`PT_SIZE_W-1:0] cmd_load_b_size = malloc_cmd_inst[`PT_LOAD_B_SIZE_H:`PT_LOAD_B_SIZE_L];
+	wire cmd_load_need_a = malloc_cmd_inst[`PT_LOAD_NEED_A_BIT];
+	wire cmd_load_need_b = malloc_cmd_inst[`PT_LOAD_NEED_B_BIT];
+	wire [5:0] cmd_load_reserved = malloc_cmd_inst[`PT_LOAD_RSV_H:`PT_LOAD_RSV_L];
+	wire [9:0] cmd_m_off = malloc_cmd_inst[`PT_INST_A_OFF_H:`PT_INST_A_OFF_L];
+	wire [9:0] cmd_c_field = malloc_cmd_inst[`PT_INST_B_OFF_H:`PT_INST_B_OFF_L];
+	wire [5:0] cmd_matadd_reserved_hi = malloc_cmd_inst[27:22];
+	wire [1:0] cmd_reserved_lo = malloc_cmd_inst[1:0];
+
+	wire cmd_matmul_legal = (cmd_opcode == `PT_OP_MATMUL) &&
+	                        (cmd_m == `PT_SCALE_FULL) &&
+	                        (cmd_n == `PT_SCALE_FULL) &&
+	                        (cmd_k == `PT_SCALE_FULL) &&
+	                        (malloc_cmd_inst[`PT_INST_A_OFF_H:`PT_INST_A_OFF_L] == 10'd0) &&
+	                        (malloc_cmd_inst[`PT_INST_B_OFF_H:`PT_INST_B_OFF_L] == 10'd0) &&
+	                        (cmd_reserved_lo == 2'b00);
+	wire cmd_load_legal = (cmd_opcode == `PT_OP_LOAD) &&
+	                      (cmd_load_need_a || cmd_load_need_b) &&
+	                      (cmd_load_reserved == 6'd0) &&
+	                      (!cmd_load_need_a || (cmd_load_a_size != {`PT_SIZE_W{1'b0}})) &&
+	                      (!cmd_load_need_b || (cmd_load_b_size != {`PT_SIZE_W{1'b0}}));
+	wire cmd_matadd_legal = (cmd_opcode == `PT_OP_MATADD) &&
+	                        (cmd_matadd_reserved_hi == 6'd0) &&
+	                        (cmd_reserved_lo == 2'b00) &&
+	                        (cmd_c_field == 10'd0) &&
+	                        cmd_m_off[9] &&
+	                        (cmd_m_off[7:0] == 8'd0);
+
+	function [31:0] pack_resp;
+		input err;
+		input m_buf;
+		input [31:0] id;
+		begin
+			pack_resp = {err, m_buf, id[29:0]};
+		end
+	endfunction
+
+	function integer align_up;
+		input integer value;
+		input integer align;
+		integer rem;
+		begin
+			if (align <= 1) begin
+				align_up = value;
+			end else begin
+				rem = value % align;
+				align_up = (rem == 0) ? value : (value + (align - rem));
+			end
+		end
+	endfunction
+
+	function [`PT_LOCAL_ADDR_W-1:0] make_local_base;
+		input integer capacity;
+		input integer virt_base;
+		integer buf_sel;
+		integer elem_base;
+		begin
+			if (virt_base >= capacity) begin
+				buf_sel = 1;
+				elem_base = virt_base - capacity;
+			end else begin
+				buf_sel = 0;
+				elem_base = virt_base;
+			end
+			make_local_base = {1'b0, buf_sel[0], elem_base[7:0]};
+		end
+	endfunction
+
+	integer si;
+	always @(*) begin
+		slot_found = 1'b0;
+		slot_idx   = {LUT_AW{1'b0}};
+		free_found = 1'b0;
+		free_idx   = {LUT_AW{1'b0}};
+		for (si = 0; si < LUT_DEPTH; si = si + 1) begin
+			if (!slot_found && lut_valid[si] && (lut_id[si] == malloc_cmd_id)) begin
+				slot_found = 1'b1;
+				slot_idx   = si[LUT_AW-1:0];
+			end
+			if (!free_found && !lut_valid[si]) begin
+				free_found = 1'b1;
+				free_idx   = si[LUT_AW-1:0];
+			end
+		end
+	end
+
+	integer a_base_int;
+	integer a_buf_start;
+	always @(*) begin
+		a_alloc_ok = 1'b0;
+		a_alloc_base = {`PT_LOCAL_ADDR_W{1'b0}};
+		a_alloc_next_after = a_alloc_next_r;
+		a_base_int = align_up(a_alloc_next_r, GEMM_X_DIM);
+		a_buf_start = (a_base_int >= A_CAPACITY) ? A_CAPACITY : 0;
+		if (((a_base_int - a_buf_start) + cmd_a_len) > A_CAPACITY) begin
+			a_base_int = align_up(a_buf_start + A_CAPACITY, GEMM_X_DIM);
+		end
+		if ((cmd_a_len != {`PT_SIZE_W{1'b0}}) && ((a_base_int + cmd_a_len) <= (2 * A_CAPACITY))) begin
+			a_alloc_ok = 1'b1;
+			a_alloc_base = make_local_base(A_CAPACITY, a_base_int);
+			a_alloc_next_after = a_base_int + cmd_a_len;
+		end
+	end
+
+	integer b_base_int;
+	integer b_buf_start;
+	always @(*) begin
+		b_alloc_ok = 1'b0;
+		b_alloc_base = {`PT_LOCAL_ADDR_W{1'b0}};
+		b_alloc_next_after = b_alloc_next_r;
+		b_base_int = align_up(b_alloc_next_r, GEMM_Y_DIM);
+		b_buf_start = (b_base_int >= B_CAPACITY) ? B_CAPACITY : 0;
+		if (((b_base_int - b_buf_start) + cmd_b_len) > B_CAPACITY) begin
+			b_base_int = align_up(b_buf_start + B_CAPACITY, GEMM_Y_DIM);
+		end
+		if ((cmd_b_len != {`PT_SIZE_W{1'b0}}) && ((b_base_int + cmd_b_len) <= (2 * B_CAPACITY))) begin
+			b_alloc_ok = 1'b1;
+			b_alloc_base = make_local_base(B_CAPACITY, b_base_int);
+			b_alloc_next_after = b_base_int + cmd_b_len;
+		end
+	end
+
+	always @(*) begin
+		cmd_error        = 1'b0;
+		cmd_need_a_fill  = 1'b0;
+		cmd_need_b_fill  = 1'b0;
+		cmd_b_is_c       = 1'b0;
+		cmd_slot_idx     = slot_found ? slot_idx : free_idx;
+		cmd_a_base       = {`PT_LOCAL_ADDR_W{1'b0}};
+		cmd_b_base       = {`PT_LOCAL_ADDR_W{1'b0}};
+		cmd_a_len        = {`PT_SIZE_W{1'b0}};
+		cmd_b_len        = {`PT_SIZE_W{1'b0}};
+		cmd_a_alloc_next = a_alloc_next_r;
+		cmd_b_alloc_next = b_alloc_next_r;
+
+		case (malloc_cmd_kind)
+			`PT_MALLOC_KIND_LOAD: begin
+				cmd_a_len  = cmd_load_need_a ? cmd_load_a_size : {`PT_SIZE_W{1'b0}};
+				cmd_b_len  = cmd_load_need_b ? cmd_load_b_size : {`PT_SIZE_W{1'b0}};
+				cmd_b_is_c = 1'b0;
+				if (!cmd_load_legal) begin
+					cmd_error = 1'b1;
+				end else if (!slot_found && !free_found) begin
+					cmd_error = 1'b1;
+				end else begin
+					if (cmd_load_need_a) begin
+						if (slot_found && lut_a_valid[slot_idx]) begin
+							if (lut_a_len[slot_idx] == cmd_a_len) begin
+								cmd_a_base = lut_a_base[slot_idx];
+							end else begin
+								cmd_error = 1'b1;
+							end
+						end else if (a_alloc_ok) begin
+							cmd_need_a_fill  = 1'b1;
+							cmd_a_base       = a_alloc_base;
+							cmd_a_alloc_next = a_alloc_next_after;
+						end else begin
+							cmd_error = 1'b1;
+						end
+					end
+
+					if (cmd_load_need_b && !cmd_error) begin
+						if (slot_found && lut_b_valid[slot_idx] && !lut_b_is_c[slot_idx]) begin
+							if (lut_b_len[slot_idx] == cmd_b_len) begin
+								cmd_b_base = lut_b_base[slot_idx];
+							end else begin
+								cmd_error = 1'b1;
+							end
+						end else if (b_alloc_ok) begin
+							cmd_need_b_fill  = 1'b1;
+							cmd_b_base       = b_alloc_base;
+							cmd_b_alloc_next = b_alloc_next_after;
+						end else begin
+							cmd_error = 1'b1;
+						end
+					end
+				end
+			end
+
+			`PT_MALLOC_KIND_MATMUL: begin
+				cmd_a_len = A_TILE_LEN[`PT_SIZE_W-1:0];
+				cmd_b_len = B_TILE_LEN[`PT_SIZE_W-1:0];
+				cmd_b_is_c = 1'b0;
+				if (!cmd_matmul_legal) begin
+					cmd_error = 1'b1;
+				end else if (!slot_found && !free_found) begin
+					cmd_error = 1'b1;
+				end else begin
+					if (slot_found && lut_a_valid[slot_idx]) begin
+						if (lut_a_len[slot_idx] == cmd_a_len) begin
+							cmd_a_base = lut_a_base[slot_idx];
+						end else begin
+							cmd_error = 1'b1;
+						end
+					end else if (a_alloc_ok) begin
+						cmd_need_a_fill  = 1'b1;
+						cmd_a_base       = a_alloc_base;
+						cmd_a_alloc_next = a_alloc_next_after;
+					end else begin
+						cmd_error = 1'b1;
+					end
+
+					if (!cmd_error) begin
+						if (slot_found && lut_b_valid[slot_idx] && !lut_b_is_c[slot_idx]) begin
+							if (lut_b_len[slot_idx] == cmd_b_len) begin
+								cmd_b_base = lut_b_base[slot_idx];
+							end else begin
+								cmd_error = 1'b1;
+							end
+						end else if (b_alloc_ok) begin
+							cmd_need_b_fill  = 1'b1;
+							cmd_b_base       = b_alloc_base;
+							cmd_b_alloc_next = b_alloc_next_after;
+						end else begin
+							cmd_error = 1'b1;
+						end
+					end
+				end
+			end
+
+			`PT_MALLOC_KIND_MATADD: begin
+				cmd_b_len  = B_TILE_LEN[`PT_SIZE_W-1:0];
+				cmd_b_is_c = 1'b1;
+				if (!cmd_matadd_legal) begin
+					cmd_error = 1'b1;
+				end else if (!slot_found && !free_found) begin
+					cmd_error = 1'b1;
+				end else if (slot_found && lut_b_valid[slot_idx] && lut_b_is_c[slot_idx]) begin
+					if (lut_b_len[slot_idx] == cmd_b_len) begin
+						cmd_b_base = lut_b_base[slot_idx];
+					end else begin
+						cmd_error = 1'b1;
+					end
+				end else if (b_alloc_ok) begin
+					cmd_need_b_fill  = 1'b1;
+					cmd_b_base       = b_alloc_base;
+					cmd_b_alloc_next = b_alloc_next_after;
+				end else begin
+					cmd_error = 1'b1;
+				end
+			end
+
+			default: begin
+				cmd_error = 1'b1;
+			end
+		endcase
+	end
+
+	assign malloc_cmd_ready = (state_r == ST_IDLE);
+
+	assign fill_req_valid      = (state_r == ST_FILL_REQ_A) || (state_r == ST_FILL_REQ_B);
+	assign fill_req_kind       = (state_r == ST_FILL_REQ_A) ? `PT_DMA_KIND_A
+	                               : (active_b_is_c_r ? `PT_DMA_KIND_C : `PT_DMA_KIND_B);
+	assign fill_req_id         = active_id_r;
+	assign fill_req_local_base = (state_r == ST_FILL_REQ_A) ? active_a_base_r : active_b_base_r;
+	assign fill_req_len        = (state_r == ST_FILL_REQ_A) ? active_a_len_r : active_b_len_r;
+
+	assign ce_cmd_valid        = (state_r == ST_CE_REQ);
+	assign ce_cmd_ctrl         = active_inst_r;
+	assign ce_cmd_id           = active_id_r;
+	assign ce_a_local_base     = active_a_base_r;
+	assign ce_b_local_base     = active_b_base_r;
+
+	always @(posedge clk or negedge rstn) begin
+		if (!rstn) begin
+			state_r            <= ST_IDLE;
+		end else if (clear) begin
+			state_r            <= ST_IDLE;
+		end else begin
+			state_r            <= state_n;
+		end
+	end
+
+	always @(*) begin
+		state_n = state_r;
+		case (state_r)
+			ST_IDLE: begin
+				if (malloc_cmd_valid) begin
+					if (cmd_error || ((malloc_cmd_kind == `PT_MALLOC_KIND_LOAD) && !cmd_need_a_fill && !cmd_need_b_fill)) begin
+						state_n = ST_RESP;
+					end else if (cmd_need_a_fill) begin
+						state_n = ST_FILL_REQ_A;
+					end else if (cmd_need_b_fill) begin
+						state_n = ST_FILL_REQ_B;
+					end else begin
+						state_n = ST_CE_REQ;
+					end
+				end
+			end
+
+			ST_FILL_REQ_A: begin
+				if (fill_req_ready) begin
+					state_n = ST_FILL_WAIT_A;
+				end
+			end
+
+			ST_FILL_WAIT_A: begin
+				if (fill_done_valid && (fill_done_id == active_id_r) && (fill_done_kind == `PT_DMA_KIND_A)) begin
+					if (fill_done_err) begin
+						state_n = ST_RESP;
+					end else if (active_need_b_fill_r) begin
+						state_n = ST_FILL_REQ_B;
+					end else if (active_kind_r == `PT_MALLOC_KIND_LOAD) begin
+						state_n = ST_RESP;
+					end else begin
+						state_n = ST_CE_REQ;
+					end
+				end
+			end
+
+			ST_FILL_REQ_B: begin
+				if (fill_req_ready) begin
+					state_n = ST_FILL_WAIT_B;
+				end
+			end
+
+			ST_FILL_WAIT_B: begin
+				if (fill_done_valid &&
+				    (fill_done_id == active_id_r) &&
+				    (fill_done_kind == (active_b_is_c_r ? `PT_DMA_KIND_C : `PT_DMA_KIND_B))) begin
+					state_n = ST_RESP;
+					if (!fill_done_err && (active_kind_r != `PT_MALLOC_KIND_LOAD)) begin
+						state_n = ST_CE_REQ;
+					end
+				end
+			end
+
+			ST_CE_REQ: begin
+				if (ce_cmd_ready) begin
+					state_n = ST_CE_WAIT;
+				end
+			end
+
+			ST_CE_WAIT: begin
+				if (ce_resp_valid) begin
+					state_n = ST_RESP;
+				end
+			end
+
+			ST_RESP: begin
+				state_n = ST_IDLE;
+			end
+
+			default: begin
+				state_n = ST_IDLE;
+			end
+		endcase
+	end
+
+	integer li;
+	always @(posedge clk or negedge rstn) begin
+		if (!rstn) begin
+			malloc_resp_valid    <= 1'b0;
+			malloc_resp          <= 32'd0;
+			malloc_irq           <= 1'b0;
+			a_alloc_next_r       <= {A_PTR_W{1'b0}};
+			b_alloc_next_r       <= {B_PTR_W{1'b0}};
+			active_kind_r        <= {`PT_MALLOC_KIND_W{1'b0}};
+			active_inst_r        <= {`INST_WIDTH{1'b0}};
+			active_id_r          <= 32'd0;
+			active_slot_idx_r    <= {LUT_AW{1'b0}};
+			active_need_a_fill_r <= 1'b0;
+			active_need_b_fill_r <= 1'b0;
+			active_b_is_c_r      <= 1'b0;
+			active_a_base_r      <= {`PT_LOCAL_ADDR_W{1'b0}};
+			active_b_base_r      <= {`PT_LOCAL_ADDR_W{1'b0}};
+			active_a_len_r       <= {`PT_SIZE_W{1'b0}};
+			active_b_len_r       <= {`PT_SIZE_W{1'b0}};
+			active_a_alloc_next_r <= {A_PTR_W{1'b0}};
+			active_b_alloc_next_r <= {B_PTR_W{1'b0}};
+			resp_word_r          <= 32'd0;
+			resp_irq_r           <= 1'b0;
+			for (li = 0; li < LUT_DEPTH; li = li + 1) begin
+				lut_valid[li]   <= 1'b0;
+				lut_id[li]      <= 32'd0;
+				lut_a_valid[li] <= 1'b0;
+				lut_a_base[li]  <= {`PT_LOCAL_ADDR_W{1'b0}};
+				lut_a_len[li]   <= {`PT_SIZE_W{1'b0}};
+				lut_b_valid[li] <= 1'b0;
+				lut_b_is_c[li]  <= 1'b0;
+				lut_b_base[li]  <= {`PT_LOCAL_ADDR_W{1'b0}};
+				lut_b_len[li]   <= {`PT_SIZE_W{1'b0}};
+			end
+		end else if (clear) begin
+			malloc_resp_valid    <= 1'b0;
+			malloc_resp          <= 32'd0;
+			malloc_irq           <= 1'b0;
+			a_alloc_next_r       <= {A_PTR_W{1'b0}};
+			b_alloc_next_r       <= {B_PTR_W{1'b0}};
+			active_kind_r        <= {`PT_MALLOC_KIND_W{1'b0}};
+			active_inst_r        <= {`INST_WIDTH{1'b0}};
+			active_id_r          <= 32'd0;
+			active_slot_idx_r    <= {LUT_AW{1'b0}};
+			active_need_a_fill_r <= 1'b0;
+			active_need_b_fill_r <= 1'b0;
+			active_b_is_c_r      <= 1'b0;
+			active_a_base_r      <= {`PT_LOCAL_ADDR_W{1'b0}};
+			active_b_base_r      <= {`PT_LOCAL_ADDR_W{1'b0}};
+			active_a_len_r       <= {`PT_SIZE_W{1'b0}};
+			active_b_len_r       <= {`PT_SIZE_W{1'b0}};
+			active_a_alloc_next_r <= {A_PTR_W{1'b0}};
+			active_b_alloc_next_r <= {B_PTR_W{1'b0}};
+			resp_word_r          <= 32'd0;
+			resp_irq_r           <= 1'b0;
+			for (li = 0; li < LUT_DEPTH; li = li + 1) begin
+				lut_valid[li]   <= 1'b0;
+				lut_id[li]      <= 32'd0;
+				lut_a_valid[li] <= 1'b0;
+				lut_a_base[li]  <= {`PT_LOCAL_ADDR_W{1'b0}};
+				lut_a_len[li]   <= {`PT_SIZE_W{1'b0}};
+				lut_b_valid[li] <= 1'b0;
+				lut_b_is_c[li]  <= 1'b0;
+				lut_b_base[li]  <= {`PT_LOCAL_ADDR_W{1'b0}};
+				lut_b_len[li]   <= {`PT_SIZE_W{1'b0}};
+			end
+		end else begin
+			malloc_resp_valid <= 1'b0;
+			malloc_irq        <= 1'b0;
+
+			case (state_r)
+				ST_IDLE: begin
+					if (malloc_cmd_valid && malloc_cmd_ready) begin
+						active_kind_r         <= malloc_cmd_kind;
+						active_inst_r         <= malloc_cmd_inst;
+						active_id_r           <= malloc_cmd_id;
+						active_slot_idx_r     <= cmd_slot_idx;
+						active_need_a_fill_r  <= cmd_need_a_fill;
+						active_need_b_fill_r  <= cmd_need_b_fill;
+						active_b_is_c_r       <= cmd_b_is_c;
+						active_a_base_r       <= cmd_a_base;
+						active_b_base_r       <= cmd_b_base;
+						active_a_len_r        <= cmd_a_len;
+						active_b_len_r        <= cmd_b_len;
+						active_a_alloc_next_r <= cmd_a_alloc_next;
+						active_b_alloc_next_r <= cmd_b_alloc_next;
+						if (cmd_error) begin
+							resp_word_r <= pack_resp(1'b1, 1'b0, malloc_cmd_id);
+							resp_irq_r  <= 1'b1;
+						end else if ((malloc_cmd_kind == `PT_MALLOC_KIND_LOAD) && !cmd_need_a_fill && !cmd_need_b_fill) begin
+							resp_word_r <= pack_resp(1'b0, 1'b0, malloc_cmd_id);
+							resp_irq_r  <= 1'b0;
+						end
+					end
+				end
+
+				ST_FILL_WAIT_A: begin
+					if (fill_done_valid && (fill_done_id == active_id_r) && (fill_done_kind == `PT_DMA_KIND_A)) begin
+						if (fill_done_err) begin
+							resp_word_r <= pack_resp(1'b1, 1'b0, active_id_r);
+							resp_irq_r  <= 1'b1;
+						end else begin
+							lut_valid[active_slot_idx_r]   <= 1'b1;
+							lut_id[active_slot_idx_r]      <= active_id_r;
+							lut_a_valid[active_slot_idx_r] <= 1'b1;
+							lut_a_base[active_slot_idx_r]  <= active_a_base_r;
+							lut_a_len[active_slot_idx_r]   <= active_a_len_r;
+							a_alloc_next_r                 <= active_a_alloc_next_r;
+							active_need_a_fill_r          <= 1'b0;
+							if (!active_need_b_fill_r && (active_kind_r == `PT_MALLOC_KIND_LOAD)) begin
+								resp_word_r <= pack_resp(1'b0, 1'b0, active_id_r);
+								resp_irq_r  <= 1'b0;
+							end
+						end
+					end
+				end
+
+				ST_FILL_WAIT_B: begin
+					if (fill_done_valid &&
+					    (fill_done_id == active_id_r) &&
+					    (fill_done_kind == (active_b_is_c_r ? `PT_DMA_KIND_C : `PT_DMA_KIND_B))) begin
+						if (fill_done_err) begin
+							resp_word_r <= pack_resp(1'b1, 1'b0, active_id_r);
+							resp_irq_r  <= 1'b1;
+						end else begin
+							lut_valid[active_slot_idx_r]   <= 1'b1;
+							lut_id[active_slot_idx_r]      <= active_id_r;
+							lut_b_valid[active_slot_idx_r] <= 1'b1;
+							lut_b_is_c[active_slot_idx_r]  <= active_b_is_c_r;
+							lut_b_base[active_slot_idx_r]  <= active_b_base_r;
+							lut_b_len[active_slot_idx_r]   <= active_b_len_r;
+							b_alloc_next_r                 <= active_b_alloc_next_r;
+							active_need_b_fill_r          <= 1'b0;
+							if (active_kind_r == `PT_MALLOC_KIND_LOAD) begin
+								resp_word_r <= pack_resp(1'b0, 1'b0, active_id_r);
+								resp_irq_r  <= 1'b0;
+							end
+						end
+					end
+				end
+
+				ST_CE_WAIT: begin
+					if (ce_resp_valid) begin
+						resp_word_r <= ce_resp;
+						resp_irq_r  <= 1'b0;
+					end
+				end
+
+				ST_RESP: begin
+					malloc_resp_valid <= 1'b1;
+					malloc_resp       <= resp_word_r;
+					malloc_irq        <= resp_irq_r;
+				end
+
+				default: begin
+				end
+			endcase
+		end
+	end
+
+endmodule

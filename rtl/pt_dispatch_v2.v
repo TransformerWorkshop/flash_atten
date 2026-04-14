@@ -1,25 +1,22 @@
 `include "param.vh"
 
-module PT_DISPATCH #(
+module PT_DISPATCH_V2 #(
 	parameter GEMM_X_DIM = 4,
 	parameter GEMM_Y_DIM = 4
 ) (
 	input  wire                       clk,
 	input  wire                       rstn,
 	input  wire                       clear,
-
 	input  wire                       ctrl_valid,
 	output wire                       ctrl_ready,
 	input  wire [`INST_WIDTH-1:0]     ctrl_inst,
 	input  wire [31:0]                ctrl_id,
-
 	output wire                       md_cmd_valid,
 	input  wire                       md_cmd_ready,
 	output wire [`PT_MEM_KIND_W-1:0]  md_cmd_kind,
 	output wire [`INST_WIDTH-1:0]     md_cmd_inst,
 	output wire [31:0]                md_cmd_id,
 	input  wire                       md_cmd_resp_valid,
-
 	output wire                       malloc_cmd_valid,
 	input  wire                       malloc_cmd_ready,
 	output wire [`PT_MALLOC_KIND_W-1:0] malloc_cmd_kind,
@@ -32,7 +29,6 @@ module PT_DISPATCH #(
 	localparam integer QCFG_CNT_W = (MAX_DIM <= 1) ? 1 : $clog2(MAX_DIM + 1);
 	localparam integer CMD_KIND_W = 1 + `PT_MEM_KIND_W + `PT_MALLOC_KIND_W;
 	localparam integer CMDQ_W = CMD_KIND_W + `INST_WIDTH + 32;
-
 	localparam [1:0] ACTIVE_NONE   = 2'd0;
 	localparam [1:0] ACTIVE_MD     = 2'd1;
 	localparam [1:0] ACTIVE_MALLOC = 2'd2;
@@ -41,7 +37,7 @@ module PT_DISPATCH #(
 	wire [1:0] ctrl_m = ctrl_inst[`PT_INST_M_H:`PT_INST_M_L];
 	wire [1:0] ctrl_n = ctrl_inst[`PT_INST_N_H:`PT_INST_N_L];
 	wire [1:0] ctrl_k = ctrl_inst[`PT_INST_K_H:`PT_INST_K_L];
-	wire [9:0] ctrl_m_off = ctrl_inst[`PT_INST_A_OFF_H:`PT_INST_A_OFF_L];
+	wire [9:0] ctrl_a_field = ctrl_inst[`PT_INST_A_OFF_H:`PT_INST_A_OFF_L];
 	wire [9:0] ctrl_b_field = ctrl_inst[`PT_INST_B_OFF_H:`PT_INST_B_OFF_L];
 	wire [5:0] ctrl_matadd_reserved_hi = ctrl_inst[27:22];
 	wire [1:0] ctrl_reserved_lo = ctrl_inst[1:0];
@@ -58,7 +54,7 @@ module PT_DISPATCH #(
 	                         (ctrl_m == `PT_SCALE_FULL) &&
 	                         (ctrl_n == `PT_SCALE_FULL) &&
 	                         (ctrl_k == `PT_SCALE_FULL) &&
-	                         (ctrl_m_off == 10'd0) &&
+	                         (ctrl_a_field == 10'd0) &&
 	                         (ctrl_b_field == 10'd0) &&
 	                         (ctrl_reserved_lo == 2'b00);
 	wire ctrl_load_legal = (ctrl_opcode == `PT_OP_LOAD) &&
@@ -70,8 +66,8 @@ module PT_DISPATCH #(
 	                         (ctrl_matadd_reserved_hi == 6'd0) &&
 	                         (ctrl_reserved_lo == 2'b00) &&
 	                         (ctrl_b_field == 10'd0) &&
-	                         ctrl_m_off[9] &&
-	                         (ctrl_m_off[7:0] == 8'd0);
+	                         ctrl_a_field[9] &&
+	                         (ctrl_a_field[7:0] == 8'd0);
 
 	reg qcfg_hdr_ok;
 	reg qcfg_hdr_err;
@@ -119,16 +115,15 @@ module PT_DISPATCH #(
 		end
 	end
 
-	reg                        ingress_is_md;
-	reg [`PT_MEM_KIND_W-1:0]   ingress_md_kind;
-	reg [`PT_MALLOC_KIND_W-1:0] ingress_malloc_kind;
-
 	reg qcfg_capture_active_r;
 	reg [QCFG_CNT_W-1:0] qcfg_capture_rem_r;
+	reg ingress_is_md;
+	reg [`PT_MEM_KIND_W-1:0] ingress_md_kind;
+	reg [`PT_MALLOC_KIND_W-1:0] ingress_malloc_kind;
 
 	always @(*) begin
-		ingress_is_md      = 1'b1;
-		ingress_md_kind    = `PT_MEM_KIND_REJECT;
+		ingress_is_md       = 1'b1;
+		ingress_md_kind     = `PT_MEM_KIND_REJECT;
 		ingress_malloc_kind = `PT_MALLOC_KIND_LOAD;
 		if (qcfg_capture_active_r) begin
 			ingress_is_md   = 1'b1;
@@ -180,10 +175,10 @@ module PT_DISPATCH #(
 	end
 
 	wire [CMDQ_W-1:0] cmd_q_in_data = {ingress_is_md, ingress_md_kind, ingress_malloc_kind, ctrl_inst, ctrl_id};
-	wire              cmd_q_in_ready;
+	wire cmd_q_in_ready;
 	wire [CMDQ_W-1:0] cmd_q_out_data;
-	wire              cmd_q_out_valid;
-	wire              cmd_q_out_ready;
+	wire cmd_q_out_valid;
+	wire cmd_q_out_ready;
 
 	sync_fifo #(
 		.WIDTH(CMDQ_W),
@@ -203,23 +198,25 @@ module PT_DISPATCH #(
 	assign ctrl_ready = cmd_q_in_ready;
 
 	wire q_out_is_md = cmd_q_out_data[CMDQ_W-1];
-	wire [`PT_MEM_KIND_W-1:0] q_out_md_kind = cmd_q_out_data[CMDQ_W-2:CMDQ_W-1-`PT_MEM_KIND_W+1];
+	wire [`PT_MEM_KIND_W-1:0] q_out_md_kind =
+		cmd_q_out_data[CMDQ_W-2 -: `PT_MEM_KIND_W];
 	wire [`PT_MALLOC_KIND_W-1:0] q_out_malloc_kind =
-		cmd_q_out_data[CMDQ_W-1-`PT_MEM_KIND_W:CMDQ_W-1-`PT_MEM_KIND_W-`PT_MALLOC_KIND_W+1];
+		cmd_q_out_data[CMDQ_W-2-`PT_MEM_KIND_W -: `PT_MALLOC_KIND_W];
 	wire [`INST_WIDTH-1:0] q_out_inst = cmd_q_out_data[32+`INST_WIDTH-1:32];
 	wire [31:0] q_out_id = cmd_q_out_data[31:0];
 
 	reg [1:0] active_dst_r;
+	wire allow_md_issue = (active_dst_r != ACTIVE_MALLOC);
+	wire allow_malloc_issue = (active_dst_r == ACTIVE_NONE);
+	wire issue_md = cmd_q_out_valid && q_out_is_md && allow_md_issue && md_cmd_ready;
+	wire issue_malloc = cmd_q_out_valid && !q_out_is_md && allow_malloc_issue && malloc_cmd_ready;
 
-	wire issue_md = cmd_q_out_valid && (active_dst_r == ACTIVE_NONE) && q_out_is_md && md_cmd_ready;
-	wire issue_malloc = cmd_q_out_valid && (active_dst_r == ACTIVE_NONE) && !q_out_is_md && malloc_cmd_ready;
+	assign md_cmd_valid = cmd_q_out_valid && q_out_is_md && allow_md_issue;
+	assign md_cmd_kind  = q_out_md_kind;
+	assign md_cmd_inst  = q_out_inst;
+	assign md_cmd_id    = q_out_id;
 
-	assign md_cmd_valid   = cmd_q_out_valid && (active_dst_r == ACTIVE_NONE) && q_out_is_md;
-	assign md_cmd_kind    = q_out_md_kind;
-	assign md_cmd_inst    = q_out_inst;
-	assign md_cmd_id      = q_out_id;
-
-	assign malloc_cmd_valid = cmd_q_out_valid && (active_dst_r == ACTIVE_NONE) && !q_out_is_md;
+	assign malloc_cmd_valid = cmd_q_out_valid && !q_out_is_md && allow_malloc_issue;
 	assign malloc_cmd_kind  = q_out_malloc_kind;
 	assign malloc_cmd_inst  = q_out_inst;
 	assign malloc_cmd_id    = q_out_id;
@@ -253,10 +250,10 @@ module PT_DISPATCH #(
 				end
 			end
 
-			if (issue_md) begin
-				active_dst_r <= ACTIVE_MD;
-			end else if (issue_malloc) begin
+			if (issue_malloc) begin
 				active_dst_r <= ACTIVE_MALLOC;
+			end else if (issue_md && (active_dst_r == ACTIVE_NONE)) begin
+				active_dst_r <= ACTIVE_MD;
 			end else if ((active_dst_r == ACTIVE_MD) && md_cmd_resp_valid) begin
 				active_dst_r <= ACTIVE_NONE;
 			end else if ((active_dst_r == ACTIVE_MALLOC) && malloc_resp_valid) begin

@@ -1,7 +1,6 @@
 `include "param.vh"
 
-`ifdef PT_KEEP_LEGACY
-module PT_LEGACY #(
+module PT #(
 	parameter DATA_WIDTH   = 32,
 	parameter GEMM_X_DIM   = 4,
 	parameter GEMM_Y_DIM   = 4,
@@ -14,7 +13,6 @@ module PT_LEGACY #(
 	input  wire                       clk,
 	input  wire                       rstn,
 	input  wire                       clear,
-
 	input  wire                       s_axis_tvalid,
 	output wire                       s_axis_tready,
 	input  wire [DATA_WIDTH-1:0]      s_axis_tdata,
@@ -24,7 +22,6 @@ module PT_LEGACY #(
 	input  wire                       s_axis_tid,
 	input  wire                       s_axis_tdest,
 	input  wire [1:0]                 s_axis_tuser,
-
 	output wire                       m_axis_tvalid,
 	input  wire                       m_axis_tready,
 	output wire [DATA_WIDTH-1:0]      m_axis_tdata,
@@ -34,24 +31,18 @@ module PT_LEGACY #(
 	output wire                       m_axis_tid,
 	output wire                       m_axis_tdest,
 	output wire [1:0]                 m_axis_tuser,
-
 	input  wire                       ctrl_valid,
 	output wire                       ctrl_ready,
 	input  wire [`INST_WIDTH-1:0]     ctrl_inst,
 	input  wire [31:0]                ctrl_id,
 	output wire [31:0]                ctrl_resp,
 	output wire                       ctrl_resp_valid,
-
 	output wire                       dma_req_valid,
 	input  wire                       dma_req_ready,
-	output wire [1:0]                 dma_req_tuser,
+	output wire [`PT_DMA_KIND_W-1:0]  dma_req_kind,
 	output wire [31:0]                dma_req_id,
-	output wire [EXT_ADDR_W-1:0]      dma_req_ext_addr,
-	output wire [9:0]                 dma_req_local_addr,
-	output wire [DMA_BEATS_W-1:0]     dma_req_beats,
 	input  wire                       dma_done,
 	input  wire                       dma_error,
-
 	output wire                       m_dma_req_valid,
 	input  wire                       m_dma_req_ready,
 	output wire [31:0]                m_dma_req_id,
@@ -59,7 +50,6 @@ module PT_LEGACY #(
 	output wire [DMA_BEATS_W-1:0]     m_dma_req_beats,
 	input  wire                       m_dma_done,
 	input  wire                       m_dma_error,
-
 	output wire                       irq
 );
 
@@ -87,20 +77,39 @@ module PT_LEGACY #(
 	wire                  b_mem_rd_en;
 	wire                  exec_b_buf;
 	wire [B_AW-1:0]       exec_b_addr;
-
-	wire                  exec_a_is_m;
-	wire                  exec_b_is_m;
-	wire                  exec_m_a_buf;
 	wire                  exec_m_b_buf;
-	wire [A_AW-1:0]       exec_m_a_addr;
 	wire [B_AW-1:0]       exec_m_b_addr;
-	wire                  exec_m_a_rd_en;
 	wire                  exec_m_b_rd_en;
 
-	wire                  ce_inst_valid;
-	wire                  ce_inst_ready;
-	wire [`INST_WIDTH-1:0] ce_inst;
-	wire [31:0]           ce_id;
+	wire                  md_cmd_valid;
+	wire                  md_cmd_ready;
+	wire [`PT_MEM_KIND_W-1:0] md_cmd_kind;
+	wire [`INST_WIDTH-1:0] md_cmd_inst;
+	wire [31:0]           md_cmd_id;
+
+	wire                  malloc_cmd_valid;
+	wire                  malloc_cmd_ready;
+	wire [`PT_MALLOC_KIND_W-1:0] malloc_cmd_kind;
+	wire [`INST_WIDTH-1:0] malloc_cmd_inst;
+	wire [31:0]           malloc_cmd_id;
+
+	wire                  fill_req_valid;
+	wire                  fill_req_ready;
+	wire [`PT_DMA_KIND_W-1:0] fill_req_kind;
+	wire [31:0]           fill_req_id;
+	wire [`PT_LOCAL_ADDR_W-1:0] fill_req_local_base;
+	wire [`PT_SIZE_W-1:0] fill_req_len;
+	wire                  fill_done_valid;
+	wire [`PT_DMA_KIND_W-1:0] fill_done_kind;
+	wire [31:0]           fill_done_id;
+	wire                  fill_done_err;
+
+	wire                  ce_cmd_valid;
+	wire                  ce_cmd_ready;
+	wire [`INST_WIDTH-1:0] ce_cmd_ctrl;
+	wire [31:0]           ce_cmd_id;
+	wire [`PT_LOCAL_ADDR_W-1:0] ce_a_local_base;
+	wire [`PT_LOCAL_ADDR_W-1:0] ce_b_local_base;
 
 	wire                  gemm_start;
 	wire [DATA_WIDTH-1:0] gemm_num_acc;
@@ -147,204 +156,183 @@ module PT_LEGACY #(
 	wire [B_LW-1:0]       m_mem_wr_lane;
 	wire [A_AW-1:0]       m_mem_wr_addr;
 	wire [DATA_WIDTH-1:0] m_mem_wr_data;
-
 	wire                  exp_rd_en;
 	wire                  exp_rd_buf;
 	wire [A_AW-1:0]       exp_rd_addr;
 
-	wire                  md_resp_valid;
-	wire [31:0]           md_resp;
+	wire                  md_cmd_resp_valid;
+	wire [31:0]           md_cmd_resp;
+	wire                  md_cmd_irq;
+	wire                  md_async_resp_valid;
+	wire [31:0]           md_async_resp;
+	wire                  md_async_irq;
+	wire                  malloc_resp_valid;
+	wire [31:0]           malloc_resp;
+	wire                  malloc_irq;
 	wire                  ce_resp_valid;
 	wire [31:0]           ce_resp;
+	wire                  ce_irq;
 	reg  [31:0]           ctrl_resp_r;
 	reg                   ctrl_resp_valid_r;
 	assign ctrl_resp = ctrl_resp_r;
 	assign ctrl_resp_valid = ctrl_resp_valid_r;
-
-	wire                  md_irq;
-	wire                  ce_irq;
-	assign irq = md_irq | ce_irq;
+	assign irq = md_cmd_irq | md_async_irq | malloc_irq | ce_irq;
 
 	wire [GEMM_X_DIM*DATA_WIDTH-1:0] a_mem_rd_data;
 	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] b_mem_rd_data;
-
-	wire [GEMM_X_DIM*DATA_WIDTH-1:0] m_a_mem_rd_data;
 	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] m_b_mem_rd_data;
 	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] m_exp_rd_data;
-	wire [GEMM_X_DIM*DATA_WIDTH-1:0] gemm_a_data = exec_a_is_m ? m_a_mem_rd_data : a_mem_rd_data;
-	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] gemm_b_data = exec_b_is_m ? m_b_mem_rd_data : b_mem_rd_data;
+	wire dummy_m_a_rd_en = 1'b0;
+	wire dummy_m_a_rd_buf = 1'b0;
+	wire [A_AW-1:0] dummy_m_a_rd_addr = {A_AW{1'b0}};
+	wire [GEMM_X_DIM*DATA_WIDTH-1:0] unused_m_a_mem_rd_data;
 
-	wire                       mem_cmd_valid;
-	wire                       mem_cmd_ready;
-	wire [`PT_MEM_KIND_W-1:0]  mem_cmd_kind;
-	wire [`INST_WIDTH-1:0]     mem_cmd_inst;
-	wire [31:0]                mem_cmd_id;
-	wire [15:0]                mem_cmd_seq;
-	wire                       miss_req_valid;
-	wire                       miss_req_ready;
-	wire [31:0]                miss_req_id;
-	wire [9:0]                 miss_req_a_off;
-	wire [9:0]                 miss_req_b_off;
-	wire                       miss_req_need_a;
-	wire                       miss_req_need_b;
-	wire                       mem_done_valid;
-	wire [31:0]                mem_done_id;
-	wire [15:0]                mem_done_seq;
-	wire                       mem_done_err;
-	wire                       load_done_valid;
-	wire [31:0]                load_done_id;
-	wire                       load_done_side;
-	wire                       load_done_buf;
-	wire [9:0]                 load_done_local_off;
-	wire [9:0]                 load_done_ext_off;
-	wire                       miss_done_valid;
-	wire [31:0]                miss_done_id;
-	wire                       miss_done_err;
-	wire                       ce_issue_ok;
-
-	PT_DISPATCH #(
+	PT_DISPATCH_V2 #(
 		.GEMM_X_DIM(GEMM_X_DIM),
-		.GEMM_Y_DIM(GEMM_Y_DIM),
-		.LUT_DEPTH (LUT_DEPTH)
+		.GEMM_Y_DIM(GEMM_Y_DIM)
 	) u_dispatch (
-		.clk               (clk),
-		.rstn              (rstn),
-		.clear             (clear),
-		.ctrl_valid        (ctrl_valid),
-		.ctrl_ready        (ctrl_ready),
-		.ctrl_inst         (ctrl_inst),
-		.ctrl_id           (ctrl_id),
-		.mem_cmd_valid     (mem_cmd_valid),
-		.mem_cmd_ready     (mem_cmd_ready),
-		.mem_cmd_kind      (mem_cmd_kind),
-		.mem_cmd_inst      (mem_cmd_inst),
-		.mem_cmd_id        (mem_cmd_id),
-		.mem_cmd_seq       (mem_cmd_seq),
-		.miss_req_valid    (miss_req_valid),
-		.miss_req_ready    (miss_req_ready),
-		.miss_req_id       (miss_req_id),
-		.miss_req_a_off    (miss_req_a_off),
-		.miss_req_b_off    (miss_req_b_off),
-		.miss_req_need_a   (miss_req_need_a),
-		.miss_req_need_b   (miss_req_need_b),
-		.mem_done_valid    (mem_done_valid),
-		.mem_done_id       (mem_done_id),
-		.mem_done_seq      (mem_done_seq),
-		.mem_done_err      (mem_done_err),
-		.load_done_valid   (load_done_valid),
-		.load_done_id      (load_done_id),
-		.load_done_side    (load_done_side),
-		.load_done_buf     (load_done_buf),
-		.load_done_local_off(load_done_local_off),
-		.load_done_ext_off (load_done_ext_off),
-		.miss_done_valid   (miss_done_valid),
-		.miss_done_id      (miss_done_id),
-		.miss_done_err     (miss_done_err),
-		.ce_issue_ok       (ce_issue_ok),
-		.ce_inst_valid     (ce_inst_valid),
-		.ce_inst_ready     (ce_inst_ready),
-		.ce_inst           (ce_inst),
-		.ce_id             (ce_id)
+		.clk            (clk),
+		.rstn           (rstn),
+		.clear          (clear),
+		.ctrl_valid     (ctrl_valid),
+		.ctrl_ready     (ctrl_ready),
+		.ctrl_inst      (ctrl_inst),
+		.ctrl_id        (ctrl_id),
+		.md_cmd_valid   (md_cmd_valid),
+		.md_cmd_ready   (md_cmd_ready),
+		.md_cmd_kind    (md_cmd_kind),
+		.md_cmd_inst    (md_cmd_inst),
+		.md_cmd_id      (md_cmd_id),
+		.md_cmd_resp_valid(md_cmd_resp_valid),
+		.malloc_cmd_valid(malloc_cmd_valid),
+		.malloc_cmd_ready(malloc_cmd_ready),
+		.malloc_cmd_kind(malloc_cmd_kind),
+		.malloc_cmd_inst(malloc_cmd_inst),
+		.malloc_cmd_id  (malloc_cmd_id),
+		.malloc_resp_valid(malloc_resp_valid)
 	);
 
-	PT_MD #(
-		.DATA_WIDTH  (DATA_WIDTH),
-		.GEMM_X_DIM  (GEMM_X_DIM),
-		.GEMM_Y_DIM  (GEMM_Y_DIM),
-		.EXT_ADDR_W  (EXT_ADDR_W),
-		.DMA_BEATS_W (DMA_BEATS_W),
-		.A_BANK_DEPTH(A_BANK_DEPTH),
-		.B_BANK_DEPTH(B_BANK_DEPTH)
+	PT_MALLOC #(
+		.GEMM_X_DIM   (GEMM_X_DIM),
+		.GEMM_Y_DIM   (GEMM_Y_DIM),
+		.LUT_DEPTH    (LUT_DEPTH),
+		.A_BANK_DEPTH (A_BANK_DEPTH),
+		.B_BANK_DEPTH (B_BANK_DEPTH)
+	) u_malloc (
+		.clk            (clk),
+		.rstn           (rstn),
+		.clear          (clear),
+		.malloc_cmd_valid(malloc_cmd_valid),
+		.malloc_cmd_ready(malloc_cmd_ready),
+		.malloc_cmd_kind(malloc_cmd_kind),
+		.malloc_cmd_inst(malloc_cmd_inst),
+		.malloc_cmd_id  (malloc_cmd_id),
+		.fill_req_valid (fill_req_valid),
+		.fill_req_ready (fill_req_ready),
+		.fill_req_kind  (fill_req_kind),
+		.fill_req_id    (fill_req_id),
+		.fill_req_local_base(fill_req_local_base),
+		.fill_req_len   (fill_req_len),
+		.fill_done_valid(fill_done_valid),
+		.fill_done_kind (fill_done_kind),
+		.fill_done_id   (fill_done_id),
+		.fill_done_err  (fill_done_err),
+		.ce_cmd_valid   (ce_cmd_valid),
+		.ce_cmd_ready   (ce_cmd_ready),
+		.ce_cmd_ctrl    (ce_cmd_ctrl),
+		.ce_cmd_id      (ce_cmd_id),
+		.ce_a_local_base(ce_a_local_base),
+		.ce_b_local_base(ce_b_local_base),
+		.ce_resp_valid  (ce_resp_valid),
+		.ce_resp        (ce_resp),
+		.malloc_resp_valid(malloc_resp_valid),
+		.malloc_resp    (malloc_resp),
+		.malloc_irq     (malloc_irq)
+	);
+
+	PT_MD_V2 #(
+		.DATA_WIDTH   (DATA_WIDTH),
+		.GEMM_X_DIM   (GEMM_X_DIM),
+		.GEMM_Y_DIM   (GEMM_Y_DIM),
+		.DMA_BEATS_W  (DMA_BEATS_W),
+		.A_BANK_DEPTH (A_BANK_DEPTH),
+		.B_BANK_DEPTH (B_BANK_DEPTH)
 	) u_md (
-		.clk               (clk),
-		.rstn              (rstn),
-		.clear             (clear),
-		.mem_cmd_valid     (mem_cmd_valid),
-		.mem_cmd_ready     (mem_cmd_ready),
-		.mem_cmd_kind      (mem_cmd_kind),
-		.mem_cmd_inst      (mem_cmd_inst),
-		.mem_cmd_id        (mem_cmd_id),
-		.mem_cmd_seq       (mem_cmd_seq),
-		.miss_req_valid    (miss_req_valid),
-		.miss_req_ready    (miss_req_ready),
-		.miss_req_id       (miss_req_id),
-		.miss_req_a_off    (miss_req_a_off),
-		.miss_req_b_off    (miss_req_b_off),
-		.miss_req_need_a   (miss_req_need_a),
-		.miss_req_need_b   (miss_req_need_b),
-		.mem_done_valid    (mem_done_valid),
-		.mem_done_id       (mem_done_id),
-		.mem_done_seq      (mem_done_seq),
-		.mem_done_err      (mem_done_err),
-		.load_done_valid   (load_done_valid),
-		.load_done_id      (load_done_id),
-		.load_done_side    (load_done_side),
-		.load_done_buf     (load_done_buf),
-		.load_done_local_off(load_done_local_off),
-		.load_done_ext_off (load_done_ext_off),
-		.miss_done_valid   (miss_done_valid),
-		.miss_done_id      (miss_done_id),
-		.miss_done_err     (miss_done_err),
-		.ce_issue_ok       (ce_issue_ok),
-		.md_resp_valid     (md_resp_valid),
-		.md_resp           (md_resp),
-		.s_axis_tvalid     (s_axis_tvalid),
-		.s_axis_tdata      (s_axis_tdata),
-		.s_axis_tuser      (s_axis_tuser),
-		.s_axis_tready     (s_axis_tready),
-		.dma_req_valid     (dma_req_valid),
-		.dma_req_ready     (dma_req_ready),
-		.dma_req_tuser     (dma_req_tuser),
-		.dma_req_id        (dma_req_id),
-		.dma_req_ext_addr  (dma_req_ext_addr),
-		.dma_req_local_addr(dma_req_local_addr),
-		.dma_req_beats     (dma_req_beats),
-		.dma_done          (dma_done),
-		.dma_error         (dma_error),
-		.a_mem_wr_en       (a_mem_wr_en),
-		.a_mem_wr_buf      (a_mem_wr_buf),
-		.a_mem_wr_lane     (a_mem_wr_lane),
-		.a_mem_wr_addr     (a_mem_wr_addr),
-		.a_mem_wr_data     (a_mem_wr_data),
-		.b_mem_wr_en       (b_mem_wr_en),
-		.b_mem_wr_buf      (b_mem_wr_buf),
-		.b_mem_wr_lane     (b_mem_wr_lane),
-		.b_mem_wr_addr     (b_mem_wr_addr),
-		.b_mem_wr_data     (b_mem_wr_data),
-		.ce_resp_valid     (ce_resp_valid),
-		.ce_resp           (ce_resp),
-		.m_dma_req_valid   (m_dma_req_valid),
-		.m_dma_req_ready   (m_dma_req_ready),
-		.m_dma_req_id      (m_dma_req_id),
-		.m_dma_req_buf     (m_dma_req_buf),
-		.m_dma_req_beats   (m_dma_req_beats),
-		.m_dma_done        (m_dma_done),
-		.m_dma_error       (m_dma_error),
-		.m_axis_tvalid     (m_axis_tvalid),
-		.m_axis_tready     (m_axis_tready),
-		.m_axis_tdata      (m_axis_tdata),
-		.m_axis_tstrb      (m_axis_tstrb),
-		.m_axis_tlast      (m_axis_tlast),
-		.m_axis_tkeep      (m_axis_tkeep),
-		.m_axis_tid        (m_axis_tid),
-		.m_axis_tdest      (m_axis_tdest),
-		.m_axis_tuser      (m_axis_tuser),
-		.exp_rd_en         (exp_rd_en),
-		.exp_rd_buf        (exp_rd_buf),
-		.exp_rd_addr       (exp_rd_addr),
-		.exp_rd_data       (m_exp_rd_data),
-		.pcsr_a_base       (pcsr_a_base),
-		.pcsr_b_base       (pcsr_b_base),
+		.clk            (clk),
+		.rstn           (rstn),
+		.clear          (clear),
+		.md_cmd_valid   (md_cmd_valid),
+		.md_cmd_ready   (md_cmd_ready),
+		.md_cmd_kind    (md_cmd_kind),
+		.md_cmd_inst    (md_cmd_inst),
+		.md_cmd_id      (md_cmd_id),
+		.md_cmd_resp_valid(md_cmd_resp_valid),
+		.md_cmd_resp    (md_cmd_resp),
+		.md_cmd_irq     (md_cmd_irq),
+		.md_async_resp_valid(md_async_resp_valid),
+		.md_async_resp  (md_async_resp),
+		.md_async_irq   (md_async_irq),
+		.fill_req_valid (fill_req_valid),
+		.fill_req_ready (fill_req_ready),
+		.fill_req_kind  (fill_req_kind),
+		.fill_req_id    (fill_req_id),
+		.fill_req_local_base(fill_req_local_base),
+		.fill_req_len   (fill_req_len),
+		.fill_done_valid(fill_done_valid),
+		.fill_done_kind (fill_done_kind),
+		.fill_done_id   (fill_done_id),
+		.fill_done_err  (fill_done_err),
+		.s_axis_tvalid  (s_axis_tvalid),
+		.s_axis_tdata   (s_axis_tdata),
+		.s_axis_tuser   (s_axis_tuser),
+		.s_axis_tready  (s_axis_tready),
+		.dma_req_valid  (dma_req_valid),
+		.dma_req_ready  (dma_req_ready),
+		.dma_req_kind   (dma_req_kind),
+		.dma_req_id     (dma_req_id),
+		.dma_done       (dma_done),
+		.dma_error      (dma_error),
+		.a_mem_wr_en    (a_mem_wr_en),
+		.a_mem_wr_buf   (a_mem_wr_buf),
+		.a_mem_wr_lane  (a_mem_wr_lane),
+		.a_mem_wr_addr  (a_mem_wr_addr),
+		.a_mem_wr_data  (a_mem_wr_data),
+		.b_mem_wr_en    (b_mem_wr_en),
+		.b_mem_wr_buf   (b_mem_wr_buf),
+		.b_mem_wr_lane  (b_mem_wr_lane),
+		.b_mem_wr_addr  (b_mem_wr_addr),
+		.b_mem_wr_data  (b_mem_wr_data),
+		.ce_resp_valid  (ce_resp_valid),
+		.ce_resp        (ce_resp),
+		.m_dma_req_valid(m_dma_req_valid),
+		.m_dma_req_ready(m_dma_req_ready),
+		.m_dma_req_id   (m_dma_req_id),
+		.m_dma_req_buf  (m_dma_req_buf),
+		.m_dma_req_beats(m_dma_req_beats),
+		.m_dma_done     (m_dma_done),
+		.m_dma_error    (m_dma_error),
+		.m_axis_tvalid  (m_axis_tvalid),
+		.m_axis_tready  (m_axis_tready),
+		.m_axis_tdata   (m_axis_tdata),
+		.m_axis_tstrb   (m_axis_tstrb),
+		.m_axis_tlast   (m_axis_tlast),
+		.m_axis_tkeep   (m_axis_tkeep),
+		.m_axis_tid     (m_axis_tid),
+		.m_axis_tdest   (m_axis_tdest),
+		.m_axis_tuser   (m_axis_tuser),
+		.exp_rd_en      (exp_rd_en),
+		.exp_rd_buf     (exp_rd_buf),
+		.exp_rd_addr    (exp_rd_addr),
+		.exp_rd_data    (m_exp_rd_data),
 		.csr_quant_inv_scale(quant_inv_scale),
-		.csr_a_base_lo_we  (csr_a_base_lo_we),
-		.csr_a_base_hi_we  (csr_a_base_hi_we),
-		.csr_b_base_lo_we  (csr_b_base_lo_we),
-		.csr_b_base_hi_we  (csr_b_base_hi_we),
-		.csr_cfg_wdata16   (csr_cfg_wdata16),
+		.csr_a_base_lo_we(csr_a_base_lo_we),
+		.csr_a_base_hi_we(csr_a_base_hi_we),
+		.csr_b_base_lo_we(csr_b_base_lo_we),
+		.csr_b_base_hi_we(csr_b_base_hi_we),
+		.csr_cfg_wdata16(csr_cfg_wdata16),
 		.csr_quant_commit_we(csr_quant_commit_we),
 		.csr_quant_mode_wdata(csr_quant_mode_wdata),
-		.csr_quant_inv_scale_wdata(csr_quant_inv_scale_wdata),
-		.irq               (md_irq)
+		.csr_quant_inv_scale_wdata(csr_quant_inv_scale_wdata)
 	);
 
 	CSR_BANK #(
@@ -369,33 +357,30 @@ module PT_LEGACY #(
 		.quant_inv_scale     (quant_inv_scale)
 	);
 
-	PT_CE #(
-		.DATA_WIDTH  (DATA_WIDTH),
-		.GEMM_X_DIM  (GEMM_X_DIM),
-		.GEMM_Y_DIM  (GEMM_Y_DIM),
-		.A_BANK_DEPTH(A_BANK_DEPTH),
-		.B_BANK_DEPTH(B_BANK_DEPTH)
+	PT_CE_V2 #(
+		.DATA_WIDTH   (DATA_WIDTH),
+		.GEMM_X_DIM   (GEMM_X_DIM),
+		.GEMM_Y_DIM   (GEMM_Y_DIM),
+		.A_BANK_DEPTH (A_BANK_DEPTH),
+		.B_BANK_DEPTH (B_BANK_DEPTH)
 	) u_ce (
 		.clk            (clk),
 		.rstn           (rstn),
 		.clear          (clear),
-		.ce_inst_valid  (ce_inst_valid),
-		.ce_inst_ready  (ce_inst_ready),
-		.ce_inst        (ce_inst),
-		.ce_id          (ce_id),
+		.ce_cmd_valid   (ce_cmd_valid),
+		.ce_cmd_ready   (ce_cmd_ready),
+		.ce_cmd_ctrl    (ce_cmd_ctrl),
+		.ce_cmd_id      (ce_cmd_id),
+		.ce_a_local_base(ce_a_local_base),
+		.ce_b_local_base(ce_b_local_base),
 		.a_mem_rd_en    (a_mem_rd_en),
 		.exec_a_buf     (exec_a_buf),
 		.exec_a_addr    (exec_a_addr),
 		.b_mem_rd_en    (b_mem_rd_en),
 		.exec_b_buf     (exec_b_buf),
 		.exec_b_addr    (exec_b_addr),
-		.exec_a_is_m    (exec_a_is_m),
-		.exec_b_is_m    (exec_b_is_m),
-		.exec_m_a_buf   (exec_m_a_buf),
 		.exec_m_b_buf   (exec_m_b_buf),
-		.exec_m_a_addr  (exec_m_a_addr),
 		.exec_m_b_addr  (exec_m_b_addr),
-		.exec_m_a_rd_en (exec_m_a_rd_en),
 		.exec_m_b_rd_en (exec_m_b_rd_en),
 		.gemm_a_valid   (gemm_a_valid),
 		.gemm_b_valid   (gemm_b_valid),
@@ -483,10 +468,10 @@ module PT_LEGACY #(
 		.wr_lane  (m_mem_wr_lane),
 		.wr_addr  (m_mem_wr_addr),
 		.wr_data  (m_mem_wr_data),
-		.rd_a_en  (exec_m_a_rd_en),
-		.rd_a_buf (exec_m_a_buf),
-		.rd_a_addr(exec_m_a_addr),
-		.rd_a_data(m_a_mem_rd_data),
+		.rd_a_en  (dummy_m_a_rd_en),
+		.rd_a_buf (dummy_m_a_rd_buf),
+		.rd_a_addr(dummy_m_a_rd_addr),
+		.rd_a_data(unused_m_a_mem_rd_data),
 		.rd_b_en  (exec_m_b_rd_en),
 		.rd_b_buf (exec_m_b_buf),
 		.rd_b_addr(exec_m_b_addr),
@@ -510,10 +495,10 @@ module PT_LEGACY #(
 		.num_acc      (gemm_num_acc),
 		.a_valid      (gemm_a_valid),
 		.a_ready      (gemm_a_ready),
-		.a            (gemm_a_data),
+		.a            (a_mem_rd_data),
 		.b_valid      (gemm_b_valid),
 		.b_ready      (gemm_b_ready),
-		.b            (gemm_b_data),
+		.b            (b_mem_rd_data),
 		.m_group_data (gemm_m_data),
 		.m_group_valid(gemm_m_valid),
 		.m_group_ready(gemm_m_ready),
@@ -572,23 +557,25 @@ module PT_LEGACY #(
 			ctrl_resp_valid_r <= 1'b0;
 		end else begin
 			ctrl_resp_valid_r <= 1'b0;
-			if (md_resp_valid && md_resp[31]) begin
-				ctrl_resp_r       <= md_resp;
+			if (md_async_resp_valid) begin
+				ctrl_resp_r       <= md_async_resp;
 				ctrl_resp_valid_r <= 1'b1;
-			end else if (ce_resp_valid) begin
-				ctrl_resp_r       <= ce_resp;
+			end else if (malloc_resp_valid && malloc_resp[31]) begin
+				ctrl_resp_r       <= malloc_resp;
 				ctrl_resp_valid_r <= 1'b1;
-			end else if (md_resp_valid) begin
-				ctrl_resp_r       <= md_resp;
+			end else if (md_cmd_resp_valid && md_cmd_resp[31]) begin
+				ctrl_resp_r       <= md_cmd_resp;
+				ctrl_resp_valid_r <= 1'b1;
+			end else if (malloc_resp_valid) begin
+				ctrl_resp_r       <= malloc_resp;
+				ctrl_resp_valid_r <= 1'b1;
+			end else if (md_cmd_resp_valid) begin
+				ctrl_resp_r       <= md_cmd_resp;
 				ctrl_resp_valid_r <= 1'b1;
 			end
 		end
 	end
 
-	wire _unused_ok = &{1'b0, s_axis_tstrb[0], s_axis_tlast, s_axis_tkeep, s_axis_tid, s_axis_tdest};
+	wire _unused_ok = &{1'b0, pcsr_a_base[0], pcsr_b_base[0], s_axis_tstrb[0], s_axis_tlast, s_axis_tkeep, s_axis_tid, s_axis_tdest};
 
 endmodule
-`else
-module PT_LEGACY;
-endmodule
-`endif

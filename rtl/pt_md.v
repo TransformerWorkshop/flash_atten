@@ -1,5 +1,6 @@
 `include "param.vh"
 
+`ifdef PT_KEEP_LEGACY
 module PT_MD #(
 	parameter DATA_WIDTH   = 32,
 	parameter GEMM_X_DIM   = 4,
@@ -939,3 +940,7 @@ module PT_MD #(
 	wire _unused_ok = &{1'b0, dma_done};
 
 endmodule
+`else
+module PT_MD;
+endmodule
+`endif

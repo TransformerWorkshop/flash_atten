@@ -3,12 +3,19 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import shutil
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Mapping, Optional
 
-from cocotb_tools.runner import get_runner
+try:
+	from cocotb_tools.runner import get_runner
+except ModuleNotFoundError as exc:
+	get_runner = None
+	IMPORT_ERROR = exc
+else:
+	IMPORT_ERROR = None
 from coverage_report import generate_coverage_reports
 
 from tests.pt_case_catalog import GUARD_PROFILES, RANDOMIZED_PROFILE_BY_NAME, RANDOMIZED_PROFILES
@@ -62,8 +69,33 @@ def parse_args() -> argparse.Namespace:
 	return parser.parse_args()
 
 
+def normalize_sim_name(sim_name: str) -> str:
+	name = sim_name.strip().lower()
+	if name in {"icarus", "iverilog"}:
+		return "icarus"
+	if name in {"questa", "questasim", "modelsim"}:
+		return "questa"
+	if name == "verilator":
+		return "verilator"
+	return name
+
+
 def rtl_sources() -> List[Path]:
 	return sorted(RTL_DIR.glob("*.v"))
+
+
+def sync_tests_into_build(build_dir: Path) -> None:
+	dst = build_dir / "tests"
+	if dst.exists():
+		shutil.rmtree(dst)
+	shutil.copytree(TEST_DIR, dst)
+
+
+def sync_tests_into_dir(target_dir: Path) -> None:
+	dst = target_dir / "tests"
+	if dst.exists():
+		shutil.rmtree(dst)
+	shutil.copytree(TEST_DIR, dst)
 
 
 def suite_configs(suite: str, seed_override: Optional[int]) -> List[RunConfig]:
@@ -321,7 +353,14 @@ def merge_coverage_files(suite: str, coverage_files: List[Path]) -> None:
 
 
 def run_case(sim_name: str, waves: bool, verbose: bool, config: RunConfig) -> List[Path]:
-	runner = get_runner(sim_name)
+	if get_runner is None:
+		venv_hint = REPO_ROOT / ".venv" / "Scripts" / "python.exe"
+		raise SystemExit(
+			"cocotb_tools is not installed for the selected Python interpreter. "
+			f"Import error: {IMPORT_ERROR}. "
+			f"If this repo's virtualenv is populated, try running with {venv_hint}."
+		)
+	runner = get_runner(normalize_sim_name(sim_name))
 	build_dir = BUILD_ROOT / (config.build_name or config.name)
 	params = {
 		"DATA_WIDTH": 32,
@@ -335,10 +374,9 @@ def run_case(sim_name: str, waves: bool, verbose: bool, config: RunConfig) -> Li
 	}
 
 	build_dir.mkdir(parents=True, exist_ok=True)
+	sync_tests_into_build(build_dir)
 	build_args = ["-Wall", *(config.build_args or [])]
-	if sim_name != "verilator":
-		build_args.insert(0, "-g2001")
-	else:
+	if normalize_sim_name(sim_name) == "verilator":
 		build_args.append("-Wno-fatal")
 	runner.build(
 		sources=rtl_sources(),
@@ -362,6 +400,7 @@ def run_case(sim_name: str, waves: bool, verbose: bool, config: RunConfig) -> Li
 		log_file = LOG_ROOT / f"{test_suffix}.test.log"
 		test_dir = build_dir / f"seed_{seed}"
 		test_dir.mkdir(parents=True, exist_ok=True)
+		sync_tests_into_dir(test_dir)
 		existing_pythonpath = os.getenv("PYTHONPATH", "")
 		extra_env = {
 			"PYTHONPATH": str(COCOTB_ROOT) if not existing_pythonpath else f"{COCOTB_ROOT}{os.pathsep}{existing_pythonpath}",

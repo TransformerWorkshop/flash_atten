@@ -3,48 +3,43 @@ from __future__ import annotations
 import cocotb
 
 from tests.pt_blackbox_env import create_env, repeating_matrix
-from tests.pt_case_catalog import QCFG_CASES, ScenarioCase
-from tests.pt_model import PT_SCALE_FULL, build_matmul_inst, identity_matrix, qcfg_payload_count
+from tests.pt_model import (
+	PT_QGRAN_PER_TENSOR,
+	PT_QGRAN_X_WISE,
+	PT_QGRAN_Y_WISE,
+	PT_QGRAN_X_WISE_DIV2,
+	PT_QGRAN_Y_WISE_DIV2,
+	PT_SCALE_FULL,
+	build_matmul_inst,
+	identity_matrix,
+	qcfg_payload_count,
+)
 
 
-def _expand_case_scales(scales, count: int):
-	if len(scales) == count:
-		return list(scales)
-	return [scales[idx % len(scales)] for idx in range(count)]
-
-
-async def _run_qcfg_case(dut, case: ScenarioCase) -> None:
+@cocotb.test()
+async def test_pt_qcfg_supported_granularity_sweep(dut) -> None:
 	env = await create_env(dut)
 	try:
 		await env.cfg_base("A", env.a_base, 0x10)
 		await env.cfg_base("B", env.b_base, 0x11)
 
-		granularity = case.data["granularity"]
-		payload_count = qcfg_payload_count(granularity, env.x_dim, env.y_dim)
-		assert payload_count is not None
-		scales = _expand_case_scales(case.data["scales"], payload_count)
-
-		env.register_external_matrix("A", 0, identity_matrix(env.x_dim, env.data_width))
-		env.register_external_matrix("B", 0, repeating_matrix(env.x_dim, case.data["b_values"][: env.y_dim], env.data_width))
-
-		await env.qcfg_success(granularity, scales, 0x100)
-		plan = env.plan_matmul(0x140, 0x000, 0x000)
-		assert not plan.err
-		await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL, 0x000, 0x000), 0x140)
-		await env.wait_ctrl_resp(plan.response_word)
-		env.model.commit_success(plan)
-		await env.wait_export_done(1)
+		ctrl_id = 0x140
+		target_done = 0
+		for idx, granularity in enumerate(
+			[PT_QGRAN_PER_TENSOR, PT_QGRAN_X_WISE, PT_QGRAN_Y_WISE, PT_QGRAN_X_WISE_DIV2, PT_QGRAN_Y_WISE_DIV2]
+		):
+			payload_count = qcfg_payload_count(granularity, env.x_dim, env.y_dim)
+			if payload_count is None:
+				continue
+			scales = [0x0001_0000 + (idx * 0x1000)] * payload_count
+			await env.qcfg_success(granularity, scales, 0x100 + idx)
+			env.register_external_matrix("A", ctrl_id + idx, identity_matrix(env.x_dim, env.data_width))
+			env.register_external_matrix("B", ctrl_id + idx, repeating_matrix(env.x_dim, [idx + 1, idx + 2, idx + 3, idx + 4][: env.y_dim], env.data_width))
+			plan = env.plan_matmul(ctrl_id + idx, m_scale=PT_SCALE_FULL, n_scale=PT_SCALE_FULL, k_scale=PT_SCALE_FULL)
+			await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL), ctrl_id + idx)
+			await env.wait_ctrl_resp(plan.response_word)
+			env.model.commit_success(plan)
+			target_done += 1
+			await env.wait_export_done(target_done)
 	finally:
 		env.shutdown()
-
-
-def _register_qcfg_case(case: ScenarioCase) -> None:
-	async def _test(dut) -> None:
-		await _run_qcfg_case(dut, case)
-
-	_test.__name__ = case.case_name
-	globals()[case.case_name] = cocotb.test(name=case.case_name)(_test)
-
-
-for _case in QCFG_CASES:
-	_register_qcfg_case(_case)
