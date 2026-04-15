@@ -117,6 +117,43 @@ Legal builds must satisfy:
 - `0 < M_EXPORT_LANES <= GEMM_Y_DIM`
 - `M_PHYSICAL_COPIES in {2, 3}`
 
+### 5.1 Internal CSR State
+
+PT contains an internal CSR bank implemented by [`CSR_BANK`](../../rtl/csr_bank.v). This is PT-local state, not an AXI-Lite register block, and it is not read back through a dedicated public CSR interface.
+
+The current CSR state elements are:
+
+- `pcsr_a_base[31:0]`
+- `pcsr_b_base[31:0]`
+- `quant_mode[2:0]`
+- `quant_inv_scale[MAX_DIM*32-1:0]`
+
+Current write paths:
+
+- `CFG` updates the A/B base registers through:
+  - `PT_CFG_A_BASE_LO`
+  - `PT_CFG_A_BASE_HI`
+  - `PT_CFG_B_BASE_LO`
+  - `PT_CFG_B_BASE_HI`
+- `QCFG` commits:
+  - `quant_mode`
+  - `quant_inv_scale`
+
+Current reset/default behavior:
+
+- on `rstn` deassertion or `clear`
+  - `pcsr_a_base = 0`
+  - `pcsr_b_base = 0`
+  - `quant_mode = PT_QGRAN_PER_TENSOR`
+  - every `quant_inv_scale` slot resets to `0x0001_0000`
+
+Current consumers of this state:
+
+- `PT_MD` uses the base CSRs to interpret external operand addressing
+- `QUANT` uses `quant_mode` and `quant_inv_scale` for post-GEMM quantization
+
+Architecturally, this means PT has mutable internal configuration state even though its public programming model is command-stream based rather than memory-mapped.
+
 ## 6. Current Execution Model
 
 ### 6.1 Main Flow
