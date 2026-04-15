@@ -32,11 +32,17 @@ smoke:
 full:
 	$(RUNNER) full --sim $(SIM) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG)
 
+ci:
+	$(RUNNER) ci --sim $(SIM) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG)
+
 randomized:
 	$(RUNNER) randomized --sim $(SIM) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG)
 
 extended:
 	$(RUNNER) extended --sim $(SIM) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG)
+
+soak:
+	$(RUNNER) soak --sim $(SIM) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG)
 
 coverage:
 	$(RUNNER) coverage --sim verilator $(SEED_ARG) $(VERBOSE_ARG)
@@ -44,4 +50,4 @@ coverage:
 clean:
 	rm -rf build results logs waves coverage
 
-.PHONY: all smoke full randomized extended coverage clean
+.PHONY: all smoke full ci randomized extended soak coverage clean

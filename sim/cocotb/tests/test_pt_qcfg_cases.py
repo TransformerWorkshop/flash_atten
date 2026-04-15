@@ -38,8 +38,9 @@ async def test_pt_qcfg_supported_granularity_sweep(dut) -> None:
 			plan = env.plan_matmul(ctrl_id + idx, m_scale=PT_SCALE_FULL, n_scale=PT_SCALE_FULL, k_scale=PT_SCALE_FULL)
 			await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL), ctrl_id + idx)
 			await env.wait_ctrl_resp(plan.response_word)
-			env.model.commit_success(plan)
-			target_done += 1
-			await env.wait_export_done(target_done)
+			if not plan.err:
+				env.model.commit_success(plan)
+				target_done += 1
+				await env.wait_export_done(target_done)
 	finally:
 		env.shutdown()

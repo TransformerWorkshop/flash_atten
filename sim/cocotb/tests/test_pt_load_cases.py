@@ -108,9 +108,10 @@ async def test_pt_load_rejects_oversize_and_same_id_reload_size_mismatch(dut) ->
 		env.register_external_matrix("A", ctrl_id, a_matrix)
 
 		start = env.snapshot()
-		oversize = env.plan_load(ctrl_id, env.a_bank_depth * env.x_dim * 3, 0, need_a=True, need_b=False)
+		oversize_len = env.a_capacity_elems + 1
+		oversize = env.plan_load(ctrl_id, oversize_len, 0, need_a=True, need_b=False)
 		assert oversize.err
-		await env.send_ctrl(build_load_inst(env.a_bank_depth * env.x_dim * 3, 0, need_a=True, need_b=False), ctrl_id)
+		await env.send_ctrl(build_load_inst(oversize_len, 0, need_a=True, need_b=False), ctrl_id)
 		await env.wait_ctrl_resp(oversize.response_word, 500)
 		await ClockCycles(dut.clk, 8)
 		assert env.dma_req_count == start.dma_req_count

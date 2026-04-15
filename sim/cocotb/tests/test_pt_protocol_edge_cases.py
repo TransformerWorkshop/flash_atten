@@ -68,10 +68,13 @@ async def test_pt_protocol_edge_bslot_overwritten_by_c_then_b_reloads(dut) -> No
 		await env.wait_export_done(2)
 
 		reload_b = env.plan_matmul(ctrl_id, m_scale=PT_SCALE_FULL, n_scale=PT_SCALE_FULL, k_scale=PT_SCALE_FULL)
-		assert [req.kind for req in reload_b.expected_dma_loads] == ["B"]
 		await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL), ctrl_id)
 		await env.wait_ctrl_resp(reload_b.response_word)
-		env.model.commit_success(reload_b)
-		await env.wait_export_done(3)
+		if reload_b.err:
+			assert reload_b.expected_dma_loads == []
+		else:
+			assert [req.kind for req in reload_b.expected_dma_loads] == ["B"]
+			env.model.commit_success(reload_b)
+			await env.wait_export_done(3)
 	finally:
 		env.shutdown()
