@@ -1,6 +1,6 @@
 # Processing Tile Documentation
 
-`Processing Tile (PT)` is the tile-level matrix engine used by the repository's Flash-Attention datapath. This document is the canonical architecture overview for the current RTL implementation in [`rtl/pt.v`](../../rtl/pt.v).
+`Processing Tile (PT)` is the tile-level matrix engine used by this repository's Flash-Attention datapath. This document is the canonical architecture overview for the current RTL rooted at [`rtl/pt.v`](../../rtl/pt.v).
 
 ## 1. Documentation Map
 
@@ -9,186 +9,197 @@
 - Verification methodology: [verification_methodology.md](./verification_methodology.md)
 - Top-level block diagram: [block_diagram.svg](./block_diagram.svg)
 
-This directory is the authoritative home for PT documentation. Architecture, programming, and verification are split into three coordinated documents.
+This directory is the authoritative home for PT documentation. Architecture, programming, and verification are kept as separate but aligned documents.
+
+The SVG block diagram is a conceptual aid. For exact signal widths, parameter semantics, and currently supported behaviors, treat the written documentation and RTL as authoritative.
 
 ## 2. Role In The System
 
-PT accepts tile-level control commands, fetches operand tiles A/B on demand, executes a full-tile GEMM, applies programmable quantization, can optionally run a post-quantization `MATADD` against an external B-style tile, retains the result in a dual-buffered M window, and automatically streams finished M tiles to an export DMA channel.
+PT accepts tile-level control commands, fetches operand tiles A and B on demand, executes a full-tile GEMM, applies programmable quantization, optionally performs a post-quantization `MATADD` against an external B-style tile, retains the result in a dual-buffered M window, and automatically exports completed M tiles over a dedicated DMA-backed stream.
 
-### 2.1 Main Submodules
+## 3. Main Submodules
 
 | Module | Role | Current behavior |
 | --- | --- | --- |
-| [`PT`](../../rtl/pt.v) | Top wrapper | Connects the control plane, DMA interfaces, A/B/M storage, GEMM, QUANT, and merged response/interrupt handling |
-| [`PT_DISPATCH`](../../rtl/pt_dispatch.v) | Front-end dispatch | Owns `ctrl_*` ingress, dual command FIFOs, the `ctrl_id`-keyed LUT, QCFG capture/barrier, miss detection, and the internal CE issue queue |
-| [`PT_MD`](../../rtl/pt_md.v) | Memory/control executor | Executes `CFG/QCFG/LOAD/REJECT`, services compute misses, writes A/B banks, exposes `ce_issue_ok`, and schedules M export |
-| [`PT_CE`](../../rtl/pt_ce.v) | Compute engine | Reads operands from A/B banks or the M window, drives GEMM/QUANT, and writes quantized results into an M buffer |
-| [`CSR_BANK`](../../rtl/csr_bank.v) | Internal PT CSR bank | Stores A/B base addresses and quantization state, and restores defaults after `clear` or `rstn` |
-| [`PT_MEM_BANK`](../../rtl/pt_mem.v) | A/B bank primitive | Provides a dual-buffered lane SRAM view with lane writes and full-row reads |
-| [`PT_M_MEM`](../../rtl/pt_mem.v) | M result storage | Stores row-major and column-major views simultaneously for M-window reuse and export |
-| [`GEMM`](../../rtl/gemm.v) | Tile GEMM array | Runs with `OUTPUT_BY_ROW=1` and emits wide row groups |
-| [`QUANT`](../../rtl/quant.v) | Post-GEMM quantizer | Applies inverse-scale Q16.16 rounding and saturation based on QCFG |
+| [`PT`](../../rtl/pt.v) | Public top-level wrapper | Exposes the native PT control interface plus A/B load and M export DMA/stream ports |
+| [`PT_V2`](../../rtl/pt_top_v2.v) | Canonical assembled implementation | Connects dispatch, allocation, memory/control execution, compute, storage, and response merge |
+| [`PT_DISPATCH`](../../rtl/pt_dispatch.v) | Front-end dispatch | Owns `ctrl_*` ingress, command classification, ordering, and QCFG barrier handling |
+| [`PT_MALLOC`](../../rtl/pt_malloc.v) | Residency and allocation control | Tracks A/B cache entries by `ctrl_id`, allocates local buffer space, and issues fill/compute work |
+| [`PT_MD`](../../rtl/pt_md.v) | Memory/control executor | Handles `CFG`, `QCFG`, `LOAD`, DMA-backed A/B fills, and M export scheduling |
+| [`PT_CE`](../../rtl/pt_ce.v) | Compute engine | Runs `MATMUL` from A/B banks and `MATADD` from retained M plus external/B-bank rows, then writes quantized results into M |
+| [`CSR_BANK`](../../rtl/csr_bank.v) | Internal PT CSR state | Holds A/B base registers and quantization configuration |
+| [`PT_MEM_BANK`](../../rtl/pt_mem.v) | Bank primitive | Standard SRAM-backed ping/pong lane storage with lane-selective writes and full-row reads |
+| [`PT_M_MEM`](../../rtl/pt_mem.v) | M result storage | Standard SRAM-backed row-major M storage with one always-present reuse view and an optional dedicated export copy |
+| [`GEMM`](../../rtl/gemm.v) | Tile GEMM array | Operates with `OUTPUT_BY_ROW=1` and emits row-wide result groups |
+| [`QUANT`](../../rtl/quant.v) | Post-GEMM quantizer | Applies inverse-scale Q16.16 rounding and saturation |
 | [`GEMA`](../../rtl/gema.v) | Post-quant add | Applies signed lane-wise saturating add for `MATADD` |
 
-`PT_DISPATCH` owns command admission and residency metadata. `PT_MD` owns memory-side execution plus export scheduling. `PT_CE` owns execution and writeback. `CSR_BANK` is internal PT state, not an AXI-Lite front-end.
+`PT_DISPATCH` and `PT_MALLOC` decide what work is legal and resident, `PT_MD` owns memory-side execution and export, and `PT_CE` owns compute and result writeback.
 
-## 3. Top-Level Interfaces
+## 4. Public Interfaces
 
-![Processing Tile block diagram](./block_diagram.svg)
-
-### 3.1 Interface Groups
+### 4.1 Interface Groups
 
 | Group | Ports | Meaning |
 | --- | --- | --- |
-| Clock and reset | `clk`, `rstn`, `clear` | `rstn` is the active-low global reset, and `clear` is a soft runtime flush |
-| Control stream | `ctrl_valid`, `ctrl_ready`, `ctrl_inst`, `ctrl_id`, `ctrl_resp`, `ctrl_resp_valid` | Native PT command interface, not AXI-Lite |
-| A/B load AXIS | `s_axis_*` | Tile payload return path after an A/B load DMA request is accepted |
-| M export AXIS | `m_axis_*` | Automatic row-major export of quantized M tiles |
-| A/B DMA request | `dma_req_*`, `dma_done`, `dma_error` | Requests external A/B tile loads; current RTL uses `dma_error`, while `dma_done` is only retained as wiring |
-| M export DMA request | `m_dma_req_*`, `m_dma_done`, `m_dma_error` | Requests export of the currently ready M buffer |
-| Completion and error notification | `irq` | Pulses on successful `MATMUL` completion and on error paths |
+| Clock and reset | `clk`, `rstn`, `clear` | `rstn` is the active-low reset; `clear` is a runtime flush |
+| Control stream | `ctrl_valid`, `ctrl_ready`, `ctrl_inst`, `ctrl_id`, `ctrl_resp`, `ctrl_resp_valid` | Native PT control interface, not AXI-Lite |
+| A/B load stream | `s_axis_*` | Return payload path for A/B load DMA requests |
+| M export stream | `m_axis_*` | Automatic M-tile export stream |
+| A/B DMA request | `dma_req_*`, `dma_done`, `dma_error` | External A/B load request interface; `dma_done` is kept for compatibility but is not part of load completion in current RTL |
+| M export DMA request | `m_dma_req_*`, `m_dma_done`, `m_dma_error` | Export request interface for the active ready M buffer |
+| Completion/error indication | `irq` | Pulses on successful compute completion and error paths |
 
-PT uses a native command/response interface plus two DMA-facing channels. It is not programmed directly through `csr_array`.
+PT is programmed through its native command interface. It is not driven through [`csr_array.v`](../../rtl/csr_array.v).
 
-### 3.2 Parameters
+### 4.2 Width And Streaming Semantics
+
+The top-level stream widths are parameterized:
+
+- `s_axis_tdata` width = `max(A_LOAD_LANES, B_LOAD_LANES) * DATA_WIDTH`
+- `m_axis_tdata` width = `M_EXPORT_LANES * DATA_WIDTH`
+
+Semantically:
+
+- A-load beats carry up to `A_LOAD_LANES` elements from one logical A-column slice.
+- B/C-load beats carry up to `B_LOAD_LANES` elements from one logical B-row slice.
+- M-export beats carry up to `M_EXPORT_LANES` elements from one row-major M row chunk.
+
+The external byte count does not change when widening these paths; widening reduces beat count and protocol overhead.
+
+## 5. Parameters
 
 | Parameter | Meaning |
 | --- | --- |
-| `DATA_WIDTH` | Datapath width for A/B input words and quantized M output words |
-| `GEMM_X_DIM` | Tile row count, A operand height, and M output row count |
-| `GEMM_Y_DIM` | Tile column count, B operand width, and M output column count |
-| `EXT_ADDR_W` | External address width used by `dma_req_ext_addr` |
-| `DMA_BEATS_W` | Width of DMA beat counters |
-| `LUT_DEPTH` | Number of cache/LUT entries in `PT_DISPATCH` |
-| `A_BANK_DEPTH` | Depth of each A-bank buffer |
-| `B_BANK_DEPTH` | Depth of each B-bank buffer |
+| `DATA_WIDTH` | Scalar element width for A, B, C, and quantized M |
+| `GEMM_X_DIM` | Tile row count and accumulation depth |
+| `GEMM_Y_DIM` | Tile column count |
+| `EXT_ADDR_W` | External address width |
+| `DMA_BEATS_W` | DMA beat counter width |
+| `LUT_DEPTH` | A/B cache metadata depth in `PT_MALLOC` |
+| `A_BANK_DEPTH` | Per-bank SRAM depth for A storage |
+| `B_BANK_DEPTH` | Per-bank SRAM depth for B/C storage |
+| `M_BANK_DEPTH` | Per-buffer row depth for M storage |
+| `A_LOAD_LANES` | Number of A elements accepted per load beat |
+| `B_LOAD_LANES` | Number of B/C elements accepted per load beat |
+| `M_WRITE_LANES` | Number of M elements committed per CE writeback step |
+| `M_EXPORT_LANES` | Number of M elements emitted per export beat |
+| `M_PHYSICAL_COPIES` | Number of physical M row-major copies; legal values are `2` or `3` |
 
-The current top level also derives:
+Important distinctions:
 
-- `M_DEPTH = A_BANK_DEPTH`
-- `MAX_DIM = max(GEMM_X_DIM, GEMM_Y_DIM)`
-- `QUEUE_LEN = 4`, defined in [`rtl/param.vh`](../../rtl/param.vh)
+- RTL top-level defaults are performance-oriented:
+  - `A_LOAD_LANES = GEMM_X_DIM`
+  - `B_LOAD_LANES = GEMM_Y_DIM`
+  - `M_WRITE_LANES = GEMM_Y_DIM`
+  - `M_EXPORT_LANES = GEMM_Y_DIM`
+  - `M_PHYSICAL_COPIES = 2`
+- The cocotb legacy regression profile intentionally overrides these to conservative compatibility settings:
+  - `A_LOAD_LANES = 1`
+  - `B_LOAD_LANES = 1`
+  - `M_WRITE_LANES = 1`
+  - `M_EXPORT_LANES = 1`
+  - `M_PHYSICAL_COPIES = 3`
 
-PT assumes square A and B tiles sized by `GEMM_X_DIM` and `GEMM_Y_DIM`, while M storage depth is tied to `A_BANK_DEPTH`.
+Depth semantics remain intentionally different across A/B and M:
 
-## 4. Internal Dataflow
+- `A_BANK_DEPTH` and `B_BANK_DEPTH` are per-bank SRAM row depths, not byte counts.
+- `M_BANK_DEPTH` is the row address depth for each logical M buffer.
+- PT still owns only two logical M buffers. Increasing `M_BANK_DEPTH` increases retained row capacity, not the number of retained tiles.
 
-### 4.1 Main Path
+Legal builds must satisfy:
 
-1. `ctrl_*` commands enter `PT_DISPATCH`, which classifies them into memory/control or compute work and assigns a monotonically increasing `seq`.
-2. `PT_DISPATCH` handles legality, LUT hit/miss lookup, `LOAD` prefetch bookkeeping, QCFG capture, and the program-order barrier rules.
-3. `PT_MD` updates `CSR_BANK` directly for `CFG`, executes `QCFG` payload commits, performs explicit `LOAD`, and services compute misses by issuing `dma_req_*` plus receiving payload through `s_axis_*`.
-4. Once a compute command is fully patched and the target M buffer is writable, `PT_DISPATCH` forwards it through the internal CE issue queue into `PT_CE`.
-5. `PT_CE` executes one of two datapaths:
-   - `MATMUL`: reads operands from the A/B banks or from `PT_M_MEM`, drives [`GEMM`](../../rtl/gemm.v), then [`QUANT`](../../rtl/quant.v).
-   - `MATADD`: reads one retained M row plus one external/B-bank row and drives [`GEMA`](../../rtl/gema.v).
-6. `PT_CE` serializes each result row into the active M write buffer and returns a success `ctrl_resp` when the final row/final lane has been written.
-7. After `ce_resp_valid`, `PT_MD` marks the corresponding M buffer as `READY` and automatically launches `m_dma_req_*` plus `m_axis_*` export.
+- `GEMM_X_DIM` and `GEMM_Y_DIM` are powers of two
+- `M_BANK_DEPTH * GEMM_X_DIM >= max(GEMM_X_DIM, GEMM_Y_DIM)`
+- `0 < A_LOAD_LANES <= GEMM_X_DIM`
+- `0 < B_LOAD_LANES <= GEMM_Y_DIM`
+- `0 < M_WRITE_LANES <= GEMM_Y_DIM`
+- `0 < M_EXPORT_LANES <= GEMM_Y_DIM`
+- `M_PHYSICAL_COPIES in {2, 3}`
 
-Command processing is split into dispatch/residency (`PT_DISPATCH`), memory/control execution plus export (`PT_MD`), and compute (`PT_CE`). Export is automatic after a successful compute; there is no separate export command.
+## 6. Current Execution Model
 
-### 4.2 Residency Model
+### 6.1 Main Flow
 
-- The A/B external tile cache is keyed primarily by `ctrl_id` and stores the most recent successfully loaded A/B external offset plus the patched local offset for that ID.
-- When a later command with the same `ctrl_id` references the same external tile, `PT_DISPATCH` can hit and skip the corresponding DMA.
-- M-window reuse does not depend on the LUT. It is declared explicitly by bit 9 of `a_off` or `b_off`.
-- `PT_DISPATCH` only hands work to `PT_CE` when `PT_MD.ce_issue_ok=1`, preventing overwrite of a result that has not been exported yet.
+1. `ctrl_*` commands enter `PT_DISPATCH`, which classifies them into memory/control or compute traffic and preserves ordering.
+2. `PT_MALLOC` checks legality, allocates or reuses A/B residency, and emits either fill requests or compute work.
+3. `PT_MD` performs `CFG`, `QCFG`, and `LOAD`, and services compute-side A/B misses through `dma_req_*` plus `s_axis_*`.
+4. Once operands are resident and compute is legal to issue, `PT_MALLOC` forwards the work into `PT_CE`.
+5. `PT_CE` executes:
+   - `MATMUL`: reads only from the A and B banks, drives [`GEMM`](../../rtl/gemm.v), then [`QUANT`](../../rtl/quant.v)
+   - `MATADD`: reads one retained M row plus one B/C-bank row and drives [`GEMA`](../../rtl/gema.v)
+6. `PT_CE` writes each result row back into M in chunks of `M_WRITE_LANES` and returns a success `ctrl_resp` when the final row chunk has committed.
+7. `PT_MD` marks the returned M buffer `READY` and automatically launches `m_dma_req_*` plus `m_axis_*` export.
 
-A/B reuse is cache-by-`ctrl_id`, while M reuse is explicit through the offset encoding.
+There is no separate export command. Export is a post-compute side effect once a result buffer becomes ready.
 
-## 5. Storage And Double Buffering
+### 6.2 Residency Model
 
-### 5.1 A/B Banks
-
-- `PT_MEM_BANK` builds two SRAM groups per lane to implement ping/pong buffering.
-- The A bank writes are organized as row-selected lanes with column-progressing addresses.
-- The B bank writes are organized as column-selected lanes with row-progressing addresses, matching the GEMM read pattern.
-- `make_a_local_off()` and `make_b_local_off()` generate internal local offsets using the format `{1'b0, buf_sel, row_base_elem_off}`.
-
-### 5.2 M Bank
-
-- `PT_M_MEM` maintains three views:
-  - `u_mem_col` for using retained M as an A operand
-  - `u_mem_row_b` for using retained M as a B operand
-  - `u_mem_row_exp` for row-major export
-- `PT_CE` flips `m_wr_buf_ptr` after each successful completion, creating alternating M write buffers.
+- A/B reuse is cache-by-`ctrl_id` inside `PT_MALLOC`.
+- For the same `ctrl_id`, B and C share the B-side residency slot. A later `MATADD` may therefore overwrite B metadata with C metadata, which can force a later B reload.
+- M retention is not cache-by-`ctrl_id`. It is a dual-buffer lifetime model owned by `PT_MD`.
 - `PT_MD` tracks `m_buf_state{0,1}` as `FREE`, `READY`, or `EXPORTING`.
-- When both buffers are `READY`, the export scheduler prefers the buffer selected by `next_wr_buf` so the next compute can recover a writable buffer sooner.
 
-The M store is not just a scratchpad. It keeps both row-wise and column-wise access patterns so a previous result tile can be reused as either operand without reshaping.
+## 7. Storage Organization
 
-## 6. Execution State Summary
+### 7.1 A/B Banks
 
-### 6.1 `PT_MD` Main FSM
+`PT_MEM_BANK` builds standard-SRAM-backed ping/pong lane storage:
 
-| State | Function |
-| --- | --- |
-| `ST_IDLE` | Accepts one `mem_cmd` or `miss_req`, handles `CFG/QCFG/REJECT` directly, or starts a load/miss DMA service |
-| `ST_DMA_REQ` | Issues the current A/B DMA request |
-| `ST_DMA_RECV` | Accepts `s_axis_tdata` into the A/B banks, emits `load_done`, and may switch from side A to side B |
+- A writes are lane-masked row updates indexed by logical column progress.
+- B/C writes are lane-masked row updates indexed by logical row progress.
+- Reads return full logical rows to the compute engine.
 
-`PT_MD` also contains an independent export sub-FSM:
+The widened load path is implemented by `PT_MD_V2`: one external beat is expanded into lane-masked writes at a single bank row address.
 
-| Export substate | Function |
-| --- | --- |
-| `EXP_IDLE` | Waits for any M buffer to become `READY` |
-| `EXP_REQ` | Issues `m_dma_req_*` |
-| `EXP_STREAM` | Drives the full tile over `m_axis_*` |
-| `EXP_WAIT_DONE` | Waits for `m_dma_done` or `m_dma_error` to complete export |
+### 7.2 M Storage
 
-`PT_MD` multiplexes two jobs: memory/control execution and post-compute export scheduling.
+The current M storage is intentionally simpler than earlier experimental versions:
 
-### 6.2 `PT_CE` FSM
+- PT does **not** implement `M`-as-`A` reuse for `MATMUL`
+- `PT_M_MEM` therefore no longer carries a dummy A-side read path
+- The active physical views are:
+  - one row-major view for `MATADD`/retained-M reads
+  - one row-major view for export when `M_PHYSICAL_COPIES = 3`
+  - or a shared row-major view for both purposes when `M_PHYSICAL_COPIES = 2`
 
-| State | Function |
-| --- | --- |
-| `ST_IDLE` | Waits for a valid command in the CE issue queue |
-| `ST_EXEC_START` | Latches opcode, operand source selection, row bases, and the target M buffer |
-| `ST_EXEC_FEED` | Feeds `GEMM_X_DIM` accumulation steps into GEMM for `MATMUL` |
-| `ST_ADD_REQ/CAPTURE/SEND` | Reads one M row plus one B row and launches a `GEMA` transaction for `MATADD` |
-| `ST_WAIT_RESULT` | Waits for the next result row from `QUANT` or `GEMA` |
-| `ST_M_STORE` | Serializes one result row lane-by-lane into the M buffer |
+Implementation detail:
 
-When the final row and final lane are written, `PT_CE` produces:
-
-- `ce_resp_valid = 1`
-- `ce_resp = {err=0, m_buf=<target>, ctrl_id[29:0]}`
-- `ce_irq = 1`
-
-`PT_CE` is intentionally narrow: it only executes admitted work and does not own external DMA or QCFG parsing.
-
-## 7. Reset And `clear`
-
-- With active-low `rstn`, the runtime state of `PT_DISPATCH`, `PT_MD`, `PT_CE`, `CSR_BANK`, `GEMM`, and `QUANT` returns to defaults.
-- `clear` is a soft flush that resets:
-  - command queues and runtime registers
-  - dispatch LUT/cache residency and issue sequence state
-  - A/B base CSR contents
-  - `quant_mode` back to `PT_QGRAN_PER_TENSOR`
-  - `quant_inv_scale` back to `0x0001_0000`
-  - M buffer ownership state back to `FREE`
-- The underlying SRAM macros in `PT_MEM_BANK` and `PT_M_MEM` are not physically scrubbed. `clear` only resets logical visibility and ownership/accounting state.
-
-After `clear`, stale SRAM contents may still exist physically, but PT must treat them as unreachable because cache state, buffer ownership, and CSR state are reset.
+- `PT_M_MEM` is now backed by standard [`PT_MEM_BANK`](../../rtl/pt_mem.v) instances, and therefore by the standard [`sram`](../../rtl/sram.v) primitive
+- Export in `PT_MD_V2` uses a synchronous row-fetch pipeline to account for SRAM read latency
 
 ## 8. Current Architectural Constraints
 
-- `GEMM_X_DIM` and `GEMM_Y_DIM` must be powers of two. [`PT_MD`](../../rtl/pt_md.v) and [`PT_CE`](../../rtl/pt_ce.v) both raise `$fatal` during simulation startup for invalid dimensions.
-- PT currently accepts only full-tile `MATMUL`: `M/N/K` must all be `PT_SCALE_FULL`.
-- `MATADD` currently accepts only `M-window + external/B-style tile`.
-- External A/B offsets must be tile-row aligned:
-  - A must align to `GEMM_X_DIM` elements
-  - B must align to `GEMM_Y_DIM` elements
-- `QCFG` currently supports only `PT_QTYPE_SYMMETRIC` with a `PT_QCFG_CMD_HDR` header.
-- `ctrl_resp` returns only `ctrl_id[29:0]`; if exact round-trip ID recovery matters, constrain `ctrl_id` to 30 bits.
-- `dma_done` is not part of A/B load completion logic in the current RTL; load completion is determined by received beat count.
+- `MATMUL` currently accepts only full-tile `M/N/K = PT_SCALE_FULL`
+- `MATMUL` currently requires `a_off == 0` and `b_off == 0`
+- `M` as a `MATMUL` operand is **not** implemented in the current RTL
+- `MATADD` accepts only `M-window + external/B-style tile`
+- External A/B offsets must remain tile-row aligned
+- `QCFG` supports only `PT_QTYPE_SYMMETRIC` with the `PT_QCFG_CMD_HDR` header format
+- `ctrl_resp` returns only `ctrl_id[29:0]`; exact round-trip recovery therefore assumes IDs are constrained to 30 bits
+- `dma_done` is not part of A/B load completion; fill completion is determined by received beat count
 
-These constraints are architectural facts of the current RTL, not just testbench assumptions.
+These are architectural facts of the current RTL, not just testbench assumptions.
 
-## 9. Related Sources
+## 9. Reset And `clear`
+
+- `rstn` resets runtime state across dispatch, allocation, memory/control, compute, and CSR storage
+- `clear` is a soft flush that resets:
+  - command queues and runtime registers
+  - A/B cache metadata and sequencing state
+  - A/B base CSRs
+  - quantization mode and inverse-scale defaults
+  - M-buffer ownership state
+- Underlying SRAM contents are not physically scrubbed; only logical visibility and ownership reset
+
+After `clear`, stale data may still exist in SRAM physically, but PT must treat it as unreachable.
+
+## 10. Related Sources
 
 - Top level: [`rtl/pt.v`](../../rtl/pt.v)
+- Assembled implementation: [`rtl/pt_top_v2.v`](../../rtl/pt_top_v2.v)
 - Front-end dispatch: [`rtl/pt_dispatch.v`](../../rtl/pt_dispatch.v)
+- Residency/allocation: [`rtl/pt_malloc.v`](../../rtl/pt_malloc.v)
 - Memory/control executor: [`rtl/pt_md.v`](../../rtl/pt_md.v)
 - Compute engine: [`rtl/pt_ce.v`](../../rtl/pt_ce.v)
 - PT storage: [`rtl/pt_mem.v`](../../rtl/pt_mem.v)
