@@ -226,8 +226,9 @@ class PTBlackBoxEnv:
 		beats: List[Tuple[int, int]] = []
 		byte_mask = (1 << (self.data_width // 8)) - 1
 		if kind == "A":
-			if len(matrix) == (self.x_dim * self.x_dim):
-				stream_words = [int(matrix[row * self.x_dim + col]) for col in range(self.x_dim) for row in range(self.x_dim)]
+			if len(matrix) % self.x_dim == 0:
+				k_dim = len(matrix) // self.x_dim
+				stream_words = [int(matrix[row * k_dim + col]) for col in range(k_dim) for row in range(self.x_dim)]
 			else:
 				stream_words = [int(word) for word in matrix]
 			for start in range(0, len(stream_words), self.a_load_lanes):
@@ -821,8 +822,17 @@ class PTBlackBoxEnv:
 				await self.expect_no_ctrl_resp(2)
 		self.model.set_qcfg(granularity, inv_scales)
 
-	def plan_matmul(self, ctrl_id: int, *, m_scale: int, n_scale: int, k_scale: int, a_field: int = 0, b_field: int = 0):
-		plan = self.model.issue_matmul(ctrl_id, self.external_a_tiles, self.external_b_tiles, m_scale, n_scale, k_scale, a_field, b_field)
+	def plan_matmul(self, ctrl_id: int, *, m_scale: int, n_scale: int, k_scale: int, reserved_a: int = 0, reserved_b: int = 0):
+		plan = self.model.issue_matmul(
+			ctrl_id,
+			self.external_a_tiles,
+			self.external_b_tiles,
+			m_scale,
+			n_scale,
+			k_scale,
+			reserved_a,
+			reserved_b,
+		)
 		self.coverage.hit_many(plan.coverage_tags)
 		if plan.reject_reason:
 			self.coverage.hit(plan.reject_reason)

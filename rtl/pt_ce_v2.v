@@ -95,6 +95,10 @@ module PT_CE_V2 #(
 	reg [M_AW-1:0] store_row_addr_r;
 	reg store_row_last_r;
 	reg [STORE_BASE_W-1:0] store_chunk_base_r;
+	localparam integer MATMUL_ACC_W = 16;
+	wire [3:0] cur_matmul_k_tiles = cur_ctrl_r[`PT_MATMUL_K_TILES_H:`PT_MATMUL_K_TILES_L];
+	wire [MATMUL_ACC_W-1:0] cur_matmul_total_accs = cur_matmul_k_tiles * GEMM_X_DIM;
+	wire [DATA_WIDTH-1:0] cur_matmul_total_accs_w = {{(DATA_WIDTH-MATMUL_ACC_W){1'b0}}, cur_matmul_total_accs};
 
 	wire cur_is_matmul = (cur_opcode_r == `PT_OP_MATMUL);
 	wire cur_is_matadd = (cur_opcode_r == `PT_OP_MATADD);
@@ -102,7 +106,7 @@ module PT_CE_V2 #(
 	wire mm_exec_rsp_fire  = mm_exec_rsp_valid && gemm_a_ready && gemm_b_ready;
 	wire mm_exec_req_fire  = cur_is_matmul &&
 	                         (state_r == ST_EXEC_FEED) &&
-	                         (exec_issue_cnt_r < GEMM_X_DIM) &&
+	                         (exec_issue_cnt_r < cur_matmul_total_accs) &&
 	                         ((exec_issue_cnt_r == 0) || mm_exec_rsp_fire);
 	wire add_send_fire = (state_r == ST_ADD_SEND) && gema_in_ready;
 	wire res_valid = cur_is_matadd ? add_m_valid : quant_m_valid;
@@ -143,7 +147,7 @@ module PT_CE_V2 #(
 
 	assign ce_cmd_ready = (state_r == ST_IDLE);
 	assign gemm_start   = (state_r == ST_EXEC_START) && cur_is_matmul;
-	assign gemm_num_acc = GEMM_X_DIM[DATA_WIDTH-1:0];
+	assign gemm_num_acc = cur_is_matmul ? cur_matmul_total_accs_w : {DATA_WIDTH{1'b0}};
 	assign gemm_a_valid = mm_exec_rsp_valid;
 	assign gemm_b_valid = mm_exec_rsp_valid;
 	assign a_mem_rd_en  = mm_exec_req_fire;
@@ -172,7 +176,7 @@ module PT_CE_V2 #(
 		case (state_r)
 			ST_IDLE: if (ce_cmd_valid) state_n = ST_EXEC_START;
 			ST_EXEC_START: state_n = cur_is_matadd ? ST_ADD_REQ : ST_EXEC_FEED;
-			ST_EXEC_FEED: if (mm_exec_rsp_fire && (exec_rsp_cnt_r == (GEMM_X_DIM - 1))) state_n = ST_WAIT_RESULT;
+			ST_EXEC_FEED: if (mm_exec_rsp_fire && ((exec_rsp_cnt_r + 1'b1) >= cur_matmul_total_accs)) state_n = ST_WAIT_RESULT;
 			ST_WAIT_RESULT: if (res_fire) state_n = ST_M_STORE;
 			ST_M_STORE: begin
 				if (store_chunk_last) begin
@@ -275,7 +279,7 @@ module PT_CE_V2 #(
 						cur_id_r         <= ce_cmd_id;
 						cur_a_buf_r      <= ce_a_local_base[`PT_LOCAL_BUF_BIT];
 						cur_b_buf_r      <= ce_b_local_base[`PT_LOCAL_BUF_BIT];
-						cur_m_src_buf_r  <= ce_cmd_ctrl[`PT_INST_A_OFF_L+8];
+						cur_m_src_buf_r  <= ce_cmd_ctrl[`PT_MATADD_M_OFF_L+8];
 						cur_a_row_base_r <= ce_a_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] >> A_DIM_SHIFT;
 						cur_b_row_base_r <= ce_b_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] >> B_DIM_SHIFT;
 						cur_m_wr_buf_r   <= m_wr_buf_ptr_r;
@@ -297,7 +301,7 @@ module PT_CE_V2 #(
 				ST_EXEC_FEED: begin
 					if (mm_exec_req_fire) begin
 						exec_issue_cnt_r <= exec_issue_cnt_r + 1'b1;
-						if (exec_issue_cnt_r != (GEMM_X_DIM - 1)) begin
+						if ((exec_issue_cnt_r + 1'b1) < cur_matmul_total_accs) begin
 							exec_a_addr <= cur_a_row_base_r[A_AW-1:0] + exec_issue_cnt_r[A_AW-1:0] + 1'b1;
 							exec_b_addr <= cur_b_row_base_r[B_AW-1:0] + exec_issue_cnt_r[B_AW-1:0] + 1'b1;
 						end

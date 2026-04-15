@@ -26,9 +26,9 @@ async def test_pt_protocol_rejects_nonzero_reserved_matmul_and_bad_qtype(dut) ->
 	env = await _prepare_env(dut)
 	try:
 		start = env.snapshot()
-		plan = env.plan_matmul(0x200, m_scale=PT_SCALE_FULL, n_scale=PT_SCALE_FULL, k_scale=PT_SCALE_FULL, a_field=1)
+		plan = env.plan_matmul(0x200, m_scale=PT_SCALE_FULL, n_scale=PT_SCALE_FULL, k_scale=PT_SCALE_FULL, reserved_a=1)
 		assert plan.err
-		await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL, a_field=1), 0x200)
+		await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL, reserved_a=1), 0x200)
 		await env.wait_ctrl_resp(plan.response_word, 500)
 		await ClockCycles(dut.clk, 4)
 		assert env.dma_req_count == start.dma_req_count

@@ -51,6 +51,7 @@ EXTENDED_PROFILE_NAMES = [
 FULL_4X4_MODULES = [
 	"tests.test_pt_smoke_cases",
 	"tests.test_pt_load_cases",
+	"tests.test_pt_multik_cases",
 	"tests.test_pt_numeric_cases",
 	"tests.test_pt_qcfg_cases",
 	"tests.test_pt_protocol_cases",
@@ -61,6 +62,7 @@ FULL_4X4_MODULES = [
 FULL_8X8_MODULES = [
 	"tests.test_pt_smoke_cases",
 	"tests.test_pt_load_cases",
+	"tests.test_pt_multik_cases",
 	"tests.test_pt_numeric_cases",
 	"tests.test_pt_qcfg_cases",
 	"tests.test_pt_protocol_edge_cases",
@@ -202,8 +204,8 @@ def suite_configs(suite: str, seed_override: Optional[int]) -> List[RunConfig]:
 
 	if suite == "smoke":
 		return [
-			RunConfig(name="smoke_4x4", x_dim=4, y_dim=4, test_modules=["tests.test_pt_smoke_cases", "tests.test_pt_load_cases"], seeds=[default_seed]),
-			RunConfig(name="smoke_8x8", x_dim=8, y_dim=8, test_modules=["tests.test_pt_smoke_cases", "tests.test_pt_load_cases"], seeds=[default_seed]),
+			RunConfig(name="smoke_4x4", x_dim=4, y_dim=4, test_modules=["tests.test_pt_smoke_cases", "tests.test_pt_load_cases", "tests.test_pt_multik_cases"], seeds=[default_seed]),
+			RunConfig(name="smoke_8x8", x_dim=8, y_dim=8, test_modules=["tests.test_pt_smoke_cases", "tests.test_pt_load_cases", "tests.test_pt_multik_cases"], seeds=[default_seed]),
 		]
 
 	if suite == "full":

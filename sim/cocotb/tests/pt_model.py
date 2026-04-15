@@ -10,10 +10,15 @@ PT_OP_MATADD = 0x3
 PT_OP_LOAD = 0x4
 PT_OP_CFG = 0xF
 
-PT_SCALE_SCALAR = 0b00
-PT_SCALE_FULL_DIV4 = 0b01
-PT_SCALE_FULL_DIV2 = 0b10
-PT_SCALE_FULL = 0b11
+PT_TILES_1 = 0x1
+PT_TILES_2 = 0x2
+PT_TILES_4 = 0x4
+
+# Legacy aliases kept for older tests that have not been renamed yet.
+PT_SCALE_SCALAR = 0x0
+PT_SCALE_FULL_DIV4 = PT_TILES_4
+PT_SCALE_FULL_DIV2 = PT_TILES_2
+PT_SCALE_FULL = PT_TILES_1
 
 PT_CFG_A_BASE_LO = 0x0
 PT_CFG_A_BASE_HI = 0x1
@@ -66,14 +71,14 @@ def build_qcfg_header(granularity: int, qtype: int = PT_QTYPE_SYMMETRIC, cmd: in
 	)
 
 
-def build_matmul_inst(m_scale: int, n_scale: int, k_scale: int, a_field: int = 0, b_field: int = 0) -> int:
+def build_matmul_inst(m_tiles: int, n_tiles: int, k_tiles: int, reserved_a: int = 0, reserved_b: int = 0) -> int:
 	return (
 		((PT_OP_MATMUL & 0xF) << 28)
-		| ((m_scale & 0x3) << 26)
-		| ((n_scale & 0x3) << 24)
-		| ((k_scale & 0x3) << 22)
-		| ((a_field & 0x3FF) << 12)
-		| ((b_field & 0x3FF) << 2)
+		| ((m_tiles & 0xF) << 24)
+		| ((n_tiles & 0xF) << 20)
+		| ((k_tiles & 0xF) << 16)
+		| ((reserved_a & 0xFF) << 8)
+		| (reserved_b & 0xFF)
 	)
 
 
@@ -415,19 +420,28 @@ class PTBlackBoxModel:
 		ctrl_id: int,
 		external_a_tiles: Dict[int, List[int]],
 		external_b_tiles: Dict[int, List[int]],
-		m_scale: int = PT_SCALE_FULL,
-		n_scale: int = PT_SCALE_FULL,
-		k_scale: int = PT_SCALE_FULL,
-		a_field: int = 0,
-		b_field: int = 0,
+		m_tiles: int = PT_TILES_1,
+		n_tiles: int = PT_TILES_1,
+		k_tiles: int = PT_TILES_1,
+		reserved_a: int = 0,
+		reserved_b: int = 0,
 	) -> ExecPlan:
 		coverage_tags = ["cmd:matmul", "operand:matmul_ab"]
-		if (m_scale, n_scale, k_scale) != (PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL) or a_field != 0 or b_field != 0:
+		if (
+			m_tiles != PT_TILES_1
+			or n_tiles != PT_TILES_1
+			or k_tiles not in (PT_TILES_1, PT_TILES_2, PT_TILES_4)
+			or reserved_a != 0
+			or reserved_b != 0
+		):
 			return self._make_exec_error(ctrl_id, coverage_tags, "reject:illegal_matmul")
 
 		if ctrl_id not in self.cache_by_id and len(self.cache_by_id) >= self.lut_depth:
 			return self._make_exec_error(ctrl_id, coverage_tags, "reject:lut_full_miss")
 
+		expected_a_len = self.a_tile_len * k_tiles
+		expected_b_len = self.b_tile_len * k_tiles
+		k_dim = self.x_dim * k_tiles
 		entry = self.cache_by_id.get(ctrl_id, ResidencyEntry())
 		expected_dma: List[DmaLoadExpectation] = []
 		a_base = entry.a_base
@@ -439,37 +453,43 @@ class PTBlackBoxModel:
 
 		if not entry.a_valid:
 			coverage_tags.append("cache:a_miss")
-			a_base, next_ptr = self._alloc_base(self.a_alloc_next, self.a_capacity, self.x_dim, self.a_tile_len)
+			a_base, next_ptr = self._alloc_base(self.a_alloc_next, self.a_capacity, self.x_dim, expected_a_len)
 			if a_base is None:
 				return self._make_exec_error(ctrl_id, coverage_tags, "reject:a_capacity")
 			a_alloc_next = next_ptr
 			a_matrix = self._get_external(external_a_tiles, ctrl_id, "A")
+			if len(a_matrix) != expected_a_len:
+				return self._make_exec_error(ctrl_id, coverage_tags, "reject:a_size_mismatch")
 			expected_dma.append(DmaLoadExpectation(ctrl_id, "A"))
 		else:
 			coverage_tags.append("cache:a_hit")
-			if entry.a_len != self.a_tile_len:
+			if entry.a_len != expected_a_len:
 				return self._make_exec_error(ctrl_id, coverage_tags, "reject:a_size_mismatch")
 
 		if not entry.b_valid:
 			coverage_tags.append("cache:b_miss")
-			b_base, next_ptr = self._alloc_base(self.b_alloc_next, self.b_capacity, self.y_dim, self.b_tile_len)
+			b_base, next_ptr = self._alloc_base(self.b_alloc_next, self.b_capacity, self.y_dim, expected_b_len)
 			if b_base is None:
 				return self._make_exec_error(ctrl_id, coverage_tags, "reject:b_capacity")
 			b_alloc_next = next_ptr
 			b_matrix = self._get_external(external_b_tiles, ctrl_id, "B")
+			if len(b_matrix) != expected_b_len:
+				return self._make_exec_error(ctrl_id, coverage_tags, "reject:b_size_mismatch")
 			expected_dma.append(DmaLoadExpectation(ctrl_id, "B"))
 		elif entry.b_is_c:
 			coverage_tags.extend(["cache:b_miss", "reuse:b_reload_after_c"])
 			b_matrix = self._get_external(external_b_tiles, ctrl_id, "B")
+			if len(b_matrix) != expected_b_len:
+				return self._make_exec_error(ctrl_id, coverage_tags, "reject:b_size_mismatch")
 			expected_dma.append(DmaLoadExpectation(ctrl_id, "B"))
 		else:
 			coverage_tags.append("cache:b_hit")
-			if entry.b_len != self.b_tile_len:
+			if entry.b_len != expected_b_len:
 				return self._make_exec_error(ctrl_id, coverage_tags, "reject:b_size_mismatch")
 
 		assert a_matrix is not None
 		assert b_matrix is not None
-		result_matrix = self._quantize_matrix(matmul_row_major(a_matrix, b_matrix, self.x_dim, self.y_dim, self.x_dim))
+		result_matrix = self._quantize_matrix(matmul_row_major(a_matrix, b_matrix, self.x_dim, self.y_dim, k_dim))
 		success_buffer = self.next_write_buf
 		return ExecPlan(
 			ctrl_id=ctrl_id,
@@ -483,8 +503,8 @@ class PTBlackBoxModel:
 			b_is_c=False,
 			a_base=a_base,
 			b_base=b_base,
-			a_len=self.a_tile_len,
-			b_len=self.b_tile_len,
+			a_len=expected_a_len,
+			b_len=expected_b_len,
 			a_alloc_next=a_alloc_next,
 			b_alloc_next=b_alloc_next,
 			coverage_tags=coverage_tags,

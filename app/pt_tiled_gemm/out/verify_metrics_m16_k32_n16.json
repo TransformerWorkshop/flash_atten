@@ -1,0 +1,57 @@
+{
+  "algorithms": {
+    "host_reduce_direct_tiled_matmul": {
+      "dma_req_count": 4,
+      "export_beats": 32,
+      "export_req_count": 2,
+      "matadd_count": 0,
+      "total_cycles": 273
+    },
+    "host_reduce_load_then_matmul": {
+      "dma_req_count": 4,
+      "export_beats": 32,
+      "export_req_count": 2,
+      "matadd_count": 0,
+      "total_cycles": 283
+    },
+    "pt_matadd_reduce": {
+      "dma_req_count": 5,
+      "export_beats": 48,
+      "export_req_count": 3,
+      "matadd_count": 1,
+      "total_cycles": 415
+    }
+  },
+  "metadata": {
+    "problem": {
+      "k_dim": 32,
+      "k_tiles": 2,
+      "m_dim": 16,
+      "m_tiles": 1,
+      "n_dim": 16,
+      "n_tiles": 1
+    }
+  },
+  "tests": {
+    "algorithm_compare_reduction_strategies": {
+      "status": "passed",
+      "winner": "host_reduce_direct_tiled_matmul"
+    },
+    "numeric_host_reduce_per_tensor": {
+      "status": "passed",
+      "total_cycles": 273
+    },
+    "numeric_pt_matadd_reduce_per_tensor": {
+      "status": "passed",
+      "total_cycles": 415
+    }
+  },
+  "unsupported_paths": {
+    "same_id_k_slice_swap": {
+      "observed_dma_increment": 0,
+      "observed_result_changed": false,
+      "observed_same_result": true,
+      "status": "unsupported"
+    }
+  }
+}

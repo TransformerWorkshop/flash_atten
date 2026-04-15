@@ -38,13 +38,15 @@ module PT_DISPATCH_V2 #(
 	localparam [1:0] ACTIVE_MALLOC = 2'd2;
 
 	wire [3:0] ctrl_opcode = ctrl_inst[`PT_INST_OPCODE_H:`PT_INST_OPCODE_L];
-	wire [1:0] ctrl_m = ctrl_inst[`PT_INST_M_H:`PT_INST_M_L];
-	wire [1:0] ctrl_n = ctrl_inst[`PT_INST_N_H:`PT_INST_N_L];
-	wire [1:0] ctrl_k = ctrl_inst[`PT_INST_K_H:`PT_INST_K_L];
-	wire [9:0] ctrl_a_field = ctrl_inst[`PT_INST_A_OFF_H:`PT_INST_A_OFF_L];
-	wire [9:0] ctrl_b_field = ctrl_inst[`PT_INST_B_OFF_H:`PT_INST_B_OFF_L];
-	wire [5:0] ctrl_matadd_reserved_hi = ctrl_inst[27:22];
-	wire [1:0] ctrl_reserved_lo = ctrl_inst[1:0];
+	wire [3:0] ctrl_matmul_m_tiles = ctrl_inst[`PT_MATMUL_M_TILES_H:`PT_MATMUL_M_TILES_L];
+	wire [3:0] ctrl_matmul_n_tiles = ctrl_inst[`PT_MATMUL_N_TILES_H:`PT_MATMUL_N_TILES_L];
+	wire [3:0] ctrl_matmul_k_tiles = ctrl_inst[`PT_MATMUL_K_TILES_H:`PT_MATMUL_K_TILES_L];
+	wire [7:0] ctrl_matmul_reserved_a = ctrl_inst[`PT_MATMUL_RESERVED_A_H:`PT_MATMUL_RESERVED_A_L];
+	wire [7:0] ctrl_matmul_reserved_b = ctrl_inst[`PT_MATMUL_RESERVED_B_H:`PT_MATMUL_RESERVED_B_L];
+	wire [5:0] ctrl_matadd_reserved_hi = ctrl_inst[`PT_MATADD_RESERVED_HI_H:`PT_MATADD_RESERVED_HI_L];
+	wire [9:0] ctrl_matadd_m_off = ctrl_inst[`PT_MATADD_M_OFF_H:`PT_MATADD_M_OFF_L];
+	wire [9:0] ctrl_matadd_c_field = ctrl_inst[`PT_MATADD_C_FIELD_H:`PT_MATADD_C_FIELD_L];
+	wire [1:0] ctrl_matadd_reserved_lo = ctrl_inst[`PT_MATADD_RESERVED_LO_H:`PT_MATADD_RESERVED_LO_L];
 	wire ctrl_load_need_a = ctrl_inst[`PT_LOAD_NEED_A_BIT];
 	wire ctrl_load_need_b = ctrl_inst[`PT_LOAD_NEED_B_BIT];
 	wire [`PT_SIZE_W-1:0] ctrl_load_a_size = ctrl_inst[`PT_LOAD_A_SIZE_H:`PT_LOAD_A_SIZE_L];
@@ -55,12 +57,11 @@ module PT_DISPATCH_V2 #(
 	wire [2:0] ctrl_qcfg_gran = ctrl_inst[`PT_QCFG_GRAN_H:`PT_QCFG_GRAN_L];
 
 	wire ctrl_matmul_legal = (ctrl_opcode == `PT_OP_MATMUL) &&
-	                         (ctrl_m == `PT_SCALE_FULL) &&
-	                         (ctrl_n == `PT_SCALE_FULL) &&
-	                         (ctrl_k == `PT_SCALE_FULL) &&
-	                         (ctrl_a_field == 10'd0) &&
-	                         (ctrl_b_field == 10'd0) &&
-	                         (ctrl_reserved_lo == 2'b00);
+	                         (ctrl_matmul_m_tiles == `PT_TILES_1) &&
+	                         (ctrl_matmul_n_tiles == `PT_TILES_1) &&
+	                         ((ctrl_matmul_k_tiles == `PT_TILES_1) || (ctrl_matmul_k_tiles == `PT_TILES_2) || (ctrl_matmul_k_tiles == `PT_TILES_4)) &&
+	                         (ctrl_matmul_reserved_a == 8'd0) &&
+	                         (ctrl_matmul_reserved_b == 8'd0);
 	wire ctrl_load_legal = (ctrl_opcode == `PT_OP_LOAD) &&
 	                       (ctrl_load_need_a || ctrl_load_need_b) &&
 	                       (ctrl_load_reserved == 6'd0) &&
@@ -68,10 +69,10 @@ module PT_DISPATCH_V2 #(
 	                       (!ctrl_load_need_b || (ctrl_load_b_size != {`PT_SIZE_W{1'b0}}));
 	wire ctrl_matadd_legal = (ctrl_opcode == `PT_OP_MATADD) &&
 	                         (ctrl_matadd_reserved_hi == 6'd0) &&
-	                         (ctrl_reserved_lo == 2'b00) &&
-	                         (ctrl_b_field == 10'd0) &&
-	                         ctrl_a_field[9] &&
-	                         (ctrl_a_field[7:0] == 8'd0);
+	                         (ctrl_matadd_reserved_lo == 2'b00) &&
+	                         (ctrl_matadd_c_field == 10'd0) &&
+	                         ctrl_matadd_m_off[9] &&
+	                         (ctrl_matadd_m_off[7:0] == 8'd0);
 
 	reg qcfg_hdr_ok;
 	reg qcfg_hdr_err;

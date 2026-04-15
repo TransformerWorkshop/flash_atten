@@ -18,26 +18,43 @@
 `define             PT_OP_LOAD              4'h4
 `define             PT_OP_CFG               4'hf
 
-// PT instruction fields for MATMUL opcode:
+// Shared PT instruction fields:
 // [31:28] opcode
-// [27:26] M scale
-// [25:24] N scale
-// [23:22] K scale
-// [21:12] reserved A field (must be zero)
-// [11: 2] reserved B field (must be zero)
-// [ 1: 0] reserved
 `define             PT_INST_OPCODE_H        31
 `define             PT_INST_OPCODE_L        28
-`define             PT_INST_M_H             27
-`define             PT_INST_M_L             26
-`define             PT_INST_N_H             25
-`define             PT_INST_N_L             24
-`define             PT_INST_K_H             23
-`define             PT_INST_K_L             22
-`define             PT_INST_A_OFF_H         21
-`define             PT_INST_A_OFF_L         12
-`define             PT_INST_B_OFF_H         11
-`define             PT_INST_B_OFF_L         2
+
+// PT instruction fields for MATMUL opcode:
+// [31:28] opcode
+// [27:24] M tile count
+// [23:20] N tile count
+// [19:16] K tile count
+// [15: 8] reserved A field (must be zero)
+// [ 7: 0] reserved B field (must be zero)
+`define             PT_MATMUL_M_TILES_H     27
+`define             PT_MATMUL_M_TILES_L     24
+`define             PT_MATMUL_N_TILES_H     23
+`define             PT_MATMUL_N_TILES_L     20
+`define             PT_MATMUL_K_TILES_H     19
+`define             PT_MATMUL_K_TILES_L     16
+`define             PT_MATMUL_RESERVED_A_H  15
+`define             PT_MATMUL_RESERVED_A_L  8
+`define             PT_MATMUL_RESERVED_B_H  7
+`define             PT_MATMUL_RESERVED_B_L  0
+
+// PT instruction fields for MATADD opcode:
+// [31:28] opcode
+// [27:22] reserved_hi, must be zero
+// [21:12] m_off
+// [11: 2] c_field, must be zero
+// [ 1: 0] reserved_lo, must be zero
+`define             PT_MATADD_RESERVED_HI_H 27
+`define             PT_MATADD_RESERVED_HI_L 22
+`define             PT_MATADD_M_OFF_H       21
+`define             PT_MATADD_M_OFF_L       12
+`define             PT_MATADD_C_FIELD_H     11
+`define             PT_MATADD_C_FIELD_L     2
+`define             PT_MATADD_RESERVED_LO_H 1
+`define             PT_MATADD_RESERVED_LO_L 0
 
 // PT LOAD fields:
 // [31:28] opcode
@@ -55,11 +72,16 @@
 `define             PT_LOAD_RSV_H           5
 `define             PT_LOAD_RSV_L           0
 
-// PT MNK encoding
-`define             PT_SCALE_SCALAR         2'b00
-`define             PT_SCALE_FULL_DIV4      2'b01
-`define             PT_SCALE_FULL_DIV2      2'b10
-`define             PT_SCALE_FULL           2'b11
+// PT MATMUL raw tile-count encodings
+`define             PT_TILES_1              4'h1
+`define             PT_TILES_2              4'h2
+`define             PT_TILES_4              4'h4
+
+// Legacy aliases kept for compatibility with older tests/helpers.
+`define             PT_SCALE_SCALAR         4'h0
+`define             PT_SCALE_FULL_DIV4      `PT_TILES_4
+`define             PT_SCALE_FULL_DIV2      `PT_TILES_2
+`define             PT_SCALE_FULL           `PT_TILES_1
 
 // PT CFG selector (used when opcode == PT_OP_CFG)
 `define             PT_CFG_A_BASE_LO        4'h0
