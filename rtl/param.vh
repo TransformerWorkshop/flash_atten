@@ -6,7 +6,10 @@
 `define             INST_WIDTH              32
 `define             QUEUE_LEN               4
 `define             PT_SIZE_W               10
-`define             PT_LOCAL_ADDR_W         10
+`define             PT_LOCAL_ADDR_W         12
+`define             PT_LOCAL_BUF_BIT        11
+`define             PT_LOCAL_ELEM_H         10
+`define             PT_LOCAL_ELEM_L         0
 
 // PT opcode definitions
 `define             PT_OP_MATMUL            4'h1

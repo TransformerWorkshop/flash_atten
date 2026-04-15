@@ -4,7 +4,7 @@ module PT_MALLOC #(
 	parameter GEMM_X_DIM   = 4,
 	parameter GEMM_Y_DIM   = 4,
 	parameter LUT_DEPTH    = 8,
-	parameter A_BANK_DEPTH = 16,
+	parameter A_BANK_DEPTH = 8,
 	parameter B_BANK_DEPTH = 16
 ) (
 	input  wire                       clk,
@@ -45,12 +45,12 @@ module PT_MALLOC #(
 );
 
 	localparam integer LUT_AW = (LUT_DEPTH <= 1) ? 1 : $clog2(LUT_DEPTH);
-	localparam integer A_CAPACITY = A_BANK_DEPTH * GEMM_X_DIM;
-	localparam integer B_CAPACITY = B_BANK_DEPTH * GEMM_Y_DIM;
-	localparam integer A_PTR_W = ((2 * A_CAPACITY) <= 1) ? 1 : $clog2((2 * A_CAPACITY) + 1);
-	localparam integer B_PTR_W = ((2 * B_CAPACITY) <= 1) ? 1 : $clog2((2 * B_CAPACITY) + 1);
 	localparam integer A_TILE_LEN = GEMM_X_DIM * GEMM_X_DIM;
 	localparam integer B_TILE_LEN = GEMM_Y_DIM * GEMM_Y_DIM;
+	localparam integer A_CAPACITY = A_BANK_DEPTH * A_TILE_LEN;
+	localparam integer B_CAPACITY = B_BANK_DEPTH * B_TILE_LEN;
+	localparam integer A_PTR_W = ((2 * A_CAPACITY) <= 1) ? 1 : $clog2((2 * A_CAPACITY) + 1);
+	localparam integer B_PTR_W = ((2 * B_CAPACITY) <= 1) ? 1 : $clog2((2 * B_CAPACITY) + 1);
 
 	localparam [3:0] ST_IDLE        = 4'd0;
 	localparam [3:0] ST_FILL_REQ_A  = 4'd1;
@@ -102,11 +102,17 @@ module PT_MALLOC #(
 	reg                         cmd_need_a_fill;
 	reg                         cmd_need_b_fill;
 	reg                         cmd_b_is_c;
+	reg                         dec_error;
+	reg                         dec_need_a;
+	reg                         dec_need_b;
+	reg                         dec_b_is_c;
 	reg [LUT_AW-1:0]            cmd_slot_idx;
 	reg [`PT_LOCAL_ADDR_W-1:0]  cmd_a_base;
 	reg [`PT_LOCAL_ADDR_W-1:0]  cmd_b_base;
 	reg [`PT_SIZE_W-1:0]        cmd_a_len;
 	reg [`PT_SIZE_W-1:0]        cmd_b_len;
+	reg [`PT_SIZE_W-1:0]        dec_a_len;
+	reg [`PT_SIZE_W-1:0]        dec_b_len;
 	reg [A_PTR_W-1:0]           cmd_a_alloc_next;
 	reg [B_PTR_W-1:0]           cmd_b_alloc_next;
 
@@ -186,7 +192,7 @@ module PT_MALLOC #(
 				buf_sel = 0;
 				elem_base = virt_base;
 			end
-			make_local_base = {1'b0, buf_sel[0], elem_base[7:0]};
+			make_local_base = {buf_sel[0], elem_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L]};
 		end
 	endfunction
 
@@ -216,13 +222,13 @@ module PT_MALLOC #(
 		a_alloc_next_after = a_alloc_next_r;
 		a_base_int = align_up(a_alloc_next_r, GEMM_X_DIM);
 		a_buf_start = (a_base_int >= A_CAPACITY) ? A_CAPACITY : 0;
-		if (((a_base_int - a_buf_start) + cmd_a_len) > A_CAPACITY) begin
+		if (((a_base_int - a_buf_start) + dec_a_len) > A_CAPACITY) begin
 			a_base_int = align_up(a_buf_start + A_CAPACITY, GEMM_X_DIM);
 		end
-		if ((cmd_a_len != {`PT_SIZE_W{1'b0}}) && ((a_base_int + cmd_a_len) <= (2 * A_CAPACITY))) begin
+		if ((dec_a_len != {`PT_SIZE_W{1'b0}}) && ((a_base_int + dec_a_len) <= (2 * A_CAPACITY))) begin
 			a_alloc_ok = 1'b1;
 			a_alloc_base = make_local_base(A_CAPACITY, a_base_int);
-			a_alloc_next_after = a_base_int + cmd_a_len;
+			a_alloc_next_after = a_base_int + dec_a_len;
 		end
 	end
 
@@ -234,42 +240,111 @@ module PT_MALLOC #(
 		b_alloc_next_after = b_alloc_next_r;
 		b_base_int = align_up(b_alloc_next_r, GEMM_Y_DIM);
 		b_buf_start = (b_base_int >= B_CAPACITY) ? B_CAPACITY : 0;
-		if (((b_base_int - b_buf_start) + cmd_b_len) > B_CAPACITY) begin
+		if (((b_base_int - b_buf_start) + dec_b_len) > B_CAPACITY) begin
 			b_base_int = align_up(b_buf_start + B_CAPACITY, GEMM_Y_DIM);
 		end
-		if ((cmd_b_len != {`PT_SIZE_W{1'b0}}) && ((b_base_int + cmd_b_len) <= (2 * B_CAPACITY))) begin
+		if ((dec_b_len != {`PT_SIZE_W{1'b0}}) && ((b_base_int + dec_b_len) <= (2 * B_CAPACITY))) begin
 			b_alloc_ok = 1'b1;
 			b_alloc_base = make_local_base(B_CAPACITY, b_base_int);
-			b_alloc_next_after = b_base_int + cmd_b_len;
+			b_alloc_next_after = b_base_int + dec_b_len;
 		end
 	end
 
 	always @(*) begin
-		cmd_error        = 1'b0;
+		case (malloc_cmd_kind)
+			`PT_MALLOC_KIND_LOAD: begin
+				dec_need_a = cmd_load_need_a;
+				dec_need_b = cmd_load_need_b;
+				dec_b_is_c = 1'b0;
+				dec_a_len  = cmd_load_need_a ? cmd_load_a_size : {`PT_SIZE_W{1'b0}};
+				dec_b_len  = cmd_load_need_b ? cmd_load_b_size : {`PT_SIZE_W{1'b0}};
+				dec_error  = !cmd_load_legal;
+			end
+
+			`PT_MALLOC_KIND_MATMUL: begin
+				dec_need_a = 1'b1;
+				dec_need_b = 1'b1;
+				dec_b_is_c = 1'b0;
+				dec_a_len  = A_TILE_LEN[`PT_SIZE_W-1:0];
+				dec_b_len  = B_TILE_LEN[`PT_SIZE_W-1:0];
+				dec_error  = !cmd_matmul_legal;
+			end
+
+			`PT_MALLOC_KIND_MATADD: begin
+				dec_need_a = 1'b0;
+				dec_need_b = 1'b1;
+				dec_b_is_c = 1'b1;
+				dec_a_len  = {`PT_SIZE_W{1'b0}};
+				dec_b_len  = B_TILE_LEN[`PT_SIZE_W-1:0];
+				dec_error  = !cmd_matadd_legal;
+			end
+
+			default: begin
+				dec_need_a = 1'b0;
+				dec_need_b = 1'b0;
+				dec_b_is_c = 1'b0;
+				dec_a_len  = {`PT_SIZE_W{1'b0}};
+				dec_b_len  = {`PT_SIZE_W{1'b0}};
+				dec_error  = 1'b1;
+			end
+		endcase
+	end
+
+	always @(*) begin
+		cmd_error        = dec_error;
 		cmd_need_a_fill  = 1'b0;
 		cmd_need_b_fill  = 1'b0;
-		cmd_b_is_c       = 1'b0;
+		cmd_b_is_c       = dec_b_is_c;
 		cmd_slot_idx     = slot_found ? slot_idx : free_idx;
 		cmd_a_base       = {`PT_LOCAL_ADDR_W{1'b0}};
 		cmd_b_base       = {`PT_LOCAL_ADDR_W{1'b0}};
-		cmd_a_len        = {`PT_SIZE_W{1'b0}};
-		cmd_b_len        = {`PT_SIZE_W{1'b0}};
+		cmd_a_len        = dec_a_len;
+		cmd_b_len        = dec_b_len;
 		cmd_a_alloc_next = a_alloc_next_r;
 		cmd_b_alloc_next = b_alloc_next_r;
 
-		case (malloc_cmd_kind)
-			`PT_MALLOC_KIND_LOAD: begin
-				cmd_a_len  = cmd_load_need_a ? cmd_load_a_size : {`PT_SIZE_W{1'b0}};
-				cmd_b_len  = cmd_load_need_b ? cmd_load_b_size : {`PT_SIZE_W{1'b0}};
-				cmd_b_is_c = 1'b0;
-				if (!cmd_load_legal) begin
-					cmd_error = 1'b1;
-				end else if (!slot_found && !free_found) begin
-					cmd_error = 1'b1;
-				end else begin
-					if (cmd_load_need_a) begin
+		if (!dec_error) begin
+			if (!slot_found && !free_found) begin
+				cmd_error = 1'b1;
+			end else begin
+				case (malloc_cmd_kind)
+					`PT_MALLOC_KIND_LOAD: begin
+						if (dec_need_a) begin
+							if (slot_found && lut_a_valid[slot_idx]) begin
+								if (lut_a_len[slot_idx] == dec_a_len) begin
+									cmd_a_base = lut_a_base[slot_idx];
+								end else begin
+									cmd_error = 1'b1;
+								end
+							end else if (a_alloc_ok) begin
+								cmd_need_a_fill  = 1'b1;
+								cmd_a_base       = a_alloc_base;
+								cmd_a_alloc_next = a_alloc_next_after;
+							end else begin
+								cmd_error = 1'b1;
+							end
+						end
+
+						if (dec_need_b && !cmd_error) begin
+							if (slot_found && lut_b_valid[slot_idx] && !lut_b_is_c[slot_idx]) begin
+								if (lut_b_len[slot_idx] == dec_b_len) begin
+									cmd_b_base = lut_b_base[slot_idx];
+								end else begin
+									cmd_error = 1'b1;
+								end
+							end else if (b_alloc_ok) begin
+								cmd_need_b_fill  = 1'b1;
+								cmd_b_base       = b_alloc_base;
+								cmd_b_alloc_next = b_alloc_next_after;
+							end else begin
+								cmd_error = 1'b1;
+							end
+						end
+					end
+
+					`PT_MALLOC_KIND_MATMUL: begin
 						if (slot_found && lut_a_valid[slot_idx]) begin
-							if (lut_a_len[slot_idx] == cmd_a_len) begin
+							if (lut_a_len[slot_idx] == dec_a_len) begin
 								cmd_a_base = lut_a_base[slot_idx];
 							end else begin
 								cmd_error = 1'b1;
@@ -281,11 +356,27 @@ module PT_MALLOC #(
 						end else begin
 							cmd_error = 1'b1;
 						end
+
+						if (!cmd_error) begin
+							if (slot_found && lut_b_valid[slot_idx] && !lut_b_is_c[slot_idx]) begin
+								if (lut_b_len[slot_idx] == dec_b_len) begin
+									cmd_b_base = lut_b_base[slot_idx];
+								end else begin
+									cmd_error = 1'b1;
+								end
+							end else if (b_alloc_ok) begin
+								cmd_need_b_fill  = 1'b1;
+								cmd_b_base       = b_alloc_base;
+								cmd_b_alloc_next = b_alloc_next_after;
+							end else begin
+								cmd_error = 1'b1;
+							end
+						end
 					end
 
-					if (cmd_load_need_b && !cmd_error) begin
-						if (slot_found && lut_b_valid[slot_idx] && !lut_b_is_c[slot_idx]) begin
-							if (lut_b_len[slot_idx] == cmd_b_len) begin
+					`PT_MALLOC_KIND_MATADD: begin
+						if (slot_found && lut_b_valid[slot_idx] && lut_b_is_c[slot_idx]) begin
+							if (lut_b_len[slot_idx] == dec_b_len) begin
 								cmd_b_base = lut_b_base[slot_idx];
 							end else begin
 								cmd_error = 1'b1;
@@ -298,76 +389,13 @@ module PT_MALLOC #(
 							cmd_error = 1'b1;
 						end
 					end
-				end
-			end
 
-			`PT_MALLOC_KIND_MATMUL: begin
-				cmd_a_len = A_TILE_LEN[`PT_SIZE_W-1:0];
-				cmd_b_len = B_TILE_LEN[`PT_SIZE_W-1:0];
-				cmd_b_is_c = 1'b0;
-				if (!cmd_matmul_legal) begin
-					cmd_error = 1'b1;
-				end else if (!slot_found && !free_found) begin
-					cmd_error = 1'b1;
-				end else begin
-					if (slot_found && lut_a_valid[slot_idx]) begin
-						if (lut_a_len[slot_idx] == cmd_a_len) begin
-							cmd_a_base = lut_a_base[slot_idx];
-						end else begin
-							cmd_error = 1'b1;
-						end
-					end else if (a_alloc_ok) begin
-						cmd_need_a_fill  = 1'b1;
-						cmd_a_base       = a_alloc_base;
-						cmd_a_alloc_next = a_alloc_next_after;
-					end else begin
+					default: begin
 						cmd_error = 1'b1;
 					end
-
-					if (!cmd_error) begin
-						if (slot_found && lut_b_valid[slot_idx] && !lut_b_is_c[slot_idx]) begin
-							if (lut_b_len[slot_idx] == cmd_b_len) begin
-								cmd_b_base = lut_b_base[slot_idx];
-							end else begin
-								cmd_error = 1'b1;
-							end
-						end else if (b_alloc_ok) begin
-							cmd_need_b_fill  = 1'b1;
-							cmd_b_base       = b_alloc_base;
-							cmd_b_alloc_next = b_alloc_next_after;
-						end else begin
-							cmd_error = 1'b1;
-						end
-					end
-				end
+				endcase
 			end
-
-			`PT_MALLOC_KIND_MATADD: begin
-				cmd_b_len  = B_TILE_LEN[`PT_SIZE_W-1:0];
-				cmd_b_is_c = 1'b1;
-				if (!cmd_matadd_legal) begin
-					cmd_error = 1'b1;
-				end else if (!slot_found && !free_found) begin
-					cmd_error = 1'b1;
-				end else if (slot_found && lut_b_valid[slot_idx] && lut_b_is_c[slot_idx]) begin
-					if (lut_b_len[slot_idx] == cmd_b_len) begin
-						cmd_b_base = lut_b_base[slot_idx];
-					end else begin
-						cmd_error = 1'b1;
-					end
-				end else if (b_alloc_ok) begin
-					cmd_need_b_fill  = 1'b1;
-					cmd_b_base       = b_alloc_base;
-					cmd_b_alloc_next = b_alloc_next_after;
-				end else begin
-					cmd_error = 1'b1;
-				end
-			end
-
-			default: begin
-				cmd_error = 1'b1;
-			end
-		endcase
+		end
 	end
 
 	assign malloc_cmd_ready = (state_r == ST_IDLE);

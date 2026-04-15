@@ -4,8 +4,10 @@ module PT_CE_V2 #(
 	parameter DATA_WIDTH   = 32,
 	parameter GEMM_X_DIM   = 4,
 	parameter GEMM_Y_DIM   = 4,
-	parameter A_BANK_DEPTH = 16,
-	parameter B_BANK_DEPTH = 16
+	parameter A_BANK_DEPTH = 8,
+	parameter B_BANK_DEPTH = 16,
+	parameter M_BANK_DEPTH = 16,
+	parameter M_WRITE_LANES = GEMM_Y_DIM
 ) (
 	input  wire                       clk,
 	input  wire                       rstn,
@@ -18,12 +20,12 @@ module PT_CE_V2 #(
 	input  wire [`PT_LOCAL_ADDR_W-1:0] ce_b_local_base,
 	output wire                       a_mem_rd_en,
 	output reg                        exec_a_buf,
-	output reg  [((A_BANK_DEPTH <= 1) ? 1 : $clog2(A_BANK_DEPTH))-1:0] exec_a_addr,
+	output reg  [(((A_BANK_DEPTH * GEMM_X_DIM) <= 1) ? 1 : $clog2(A_BANK_DEPTH * GEMM_X_DIM))-1:0] exec_a_addr,
 	output wire                       b_mem_rd_en,
 	output reg                        exec_b_buf,
-	output reg  [((B_BANK_DEPTH <= 1) ? 1 : $clog2(B_BANK_DEPTH))-1:0] exec_b_addr,
+	output reg  [(((B_BANK_DEPTH * GEMM_Y_DIM) <= 1) ? 1 : $clog2(B_BANK_DEPTH * GEMM_Y_DIM))-1:0] exec_b_addr,
 	output reg                        exec_m_b_buf,
-	output reg  [((B_BANK_DEPTH <= 1) ? 1 : $clog2(B_BANK_DEPTH))-1:0] exec_m_b_addr,
+	output reg  [(((M_BANK_DEPTH * GEMM_X_DIM) <= 1) ? 1 : $clog2(M_BANK_DEPTH * GEMM_X_DIM))-1:0] exec_m_b_addr,
 	output wire                       exec_m_b_rd_en,
 	output wire                       gemm_a_valid,
 	output wire                       gemm_b_valid,
@@ -51,19 +53,23 @@ module PT_CE_V2 #(
 	output wire                       add_m_ready,
 	output reg                        m_mem_wr_en,
 	output reg                        m_mem_wr_buf,
-	output reg  [((GEMM_Y_DIM <= 1) ? 1 : $clog2(GEMM_Y_DIM))-1:0] m_mem_wr_lane,
-	output reg  [((A_BANK_DEPTH <= 1) ? 1 : $clog2(A_BANK_DEPTH))-1:0] m_mem_wr_addr,
-	output reg  [DATA_WIDTH-1:0]      m_mem_wr_data,
+	output reg  [GEMM_Y_DIM-1:0]      m_mem_wr_mask,
+	output reg  [(((M_BANK_DEPTH * GEMM_X_DIM) <= 1) ? 1 : $clog2(M_BANK_DEPTH * GEMM_X_DIM))-1:0] m_mem_wr_addr,
+	output reg  [GEMM_Y_DIM*DATA_WIDTH-1:0]      m_mem_wr_data,
 	output reg                        ce_resp_valid,
 	output reg  [31:0]                ce_resp,
 	output reg                        ce_irq
 );
 
-	localparam integer A_AW = (A_BANK_DEPTH <= 1) ? 1 : $clog2(A_BANK_DEPTH);
-	localparam integer B_AW = (B_BANK_DEPTH <= 1) ? 1 : $clog2(B_BANK_DEPTH);
-	localparam integer B_LW = (GEMM_Y_DIM <= 1) ? 1 : $clog2(GEMM_Y_DIM);
+	localparam integer A_DEPTH = A_BANK_DEPTH * GEMM_X_DIM;
+	localparam integer B_DEPTH = B_BANK_DEPTH * GEMM_Y_DIM;
+	localparam integer M_DEPTH = M_BANK_DEPTH * GEMM_X_DIM;
+	localparam integer A_AW = (A_DEPTH <= 1) ? 1 : $clog2(A_DEPTH);
+	localparam integer B_AW = (B_DEPTH <= 1) ? 1 : $clog2(B_DEPTH);
+	localparam integer M_AW = (M_DEPTH <= 1) ? 1 : $clog2(M_DEPTH);
 	localparam integer A_DIM_SHIFT = $clog2((GEMM_X_DIM <= 0) ? 1 : GEMM_X_DIM);
 	localparam integer B_DIM_SHIFT = $clog2((GEMM_Y_DIM <= 0) ? 1 : GEMM_Y_DIM);
+	localparam integer STORE_BASE_W = (GEMM_Y_DIM <= 1) ? 1 : $clog2(GEMM_Y_DIM + 1);
 
 	localparam [2:0] ST_IDLE        = 3'd0;
 	localparam [2:0] ST_EXEC_START  = 3'd1;
@@ -80,14 +86,15 @@ module PT_CE_V2 #(
 	reg [31:0] cur_id_r;
 	reg [15:0] exec_issue_cnt_r, exec_rsp_cnt_r;
 	reg cur_a_buf_r, cur_b_buf_r, cur_m_src_buf_r;
-	reg [7:0] cur_a_row_base_r, cur_b_row_base_r;
+	reg [A_AW-1:0] cur_a_row_base_r;
+	reg [B_AW-1:0] cur_b_row_base_r;
 	reg m_wr_buf_ptr_r, cur_m_wr_buf_r;
-	reg [A_AW-1:0] add_row_idx_r;
+	reg [M_AW-1:0] add_row_idx_r;
 	reg [GEMM_Y_DIM*DATA_WIDTH-1:0] add_lhs_row_r, add_rhs_row_r;
 	reg [GEMM_Y_DIM*DATA_WIDTH-1:0] store_result_row_r;
-	reg [A_AW-1:0] store_row_addr_r;
+	reg [M_AW-1:0] store_row_addr_r;
 	reg store_row_last_r;
-	reg [B_LW-1:0] store_lane_cnt_r;
+	reg [STORE_BASE_W-1:0] store_chunk_base_r;
 
 	wire cur_is_matmul = (cur_opcode_r == `PT_OP_MATMUL);
 	wire cur_is_matadd = (cur_opcode_r == `PT_OP_MATADD);
@@ -104,6 +111,8 @@ module PT_CE_V2 #(
 	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] res_data = cur_is_matadd ? add_m_data : quant_m_data;
 	wire [31:0] res_idx = cur_is_matadd ? add_m_idx : quant_m_idx;
 	wire res_last = cur_is_matadd ? add_m_last : quant_m_last;
+	wire [STORE_BASE_W:0] store_chunk_limit = store_chunk_base_r + M_WRITE_LANES;
+	wire store_chunk_last = (store_chunk_limit >= GEMM_Y_DIM);
 
 	function is_pow2;
 		input integer value;
@@ -116,6 +125,9 @@ module PT_CE_V2 #(
 		if (!is_pow2(GEMM_X_DIM) || !is_pow2(GEMM_Y_DIM)) begin
 			$fatal(1, "PT_CE_V2 requires power-of-two GEMM_X_DIM/GEMM_Y_DIM, got %0d x %0d", GEMM_X_DIM, GEMM_Y_DIM);
 		end
+		if ((M_WRITE_LANES <= 0) || (M_WRITE_LANES > GEMM_Y_DIM)) begin
+			$fatal(1, "PT_CE_V2 requires 0 < M_WRITE_LANES <= GEMM_Y_DIM, got %0d for Y=%0d", M_WRITE_LANES, GEMM_Y_DIM);
+		end
 	end
 
 	function [31:0] pack_resp;
@@ -126,6 +138,8 @@ module PT_CE_V2 #(
 			pack_resp = {err, m_buf, id[29:0]};
 		end
 	endfunction
+
+	integer wi;
 
 	assign ce_cmd_ready = (state_r == ST_IDLE);
 	assign gemm_start   = (state_r == ST_EXEC_START) && cur_is_matmul;
@@ -139,7 +153,7 @@ module PT_CE_V2 #(
 	assign add_m_ready   = (state_r == ST_WAIT_RESULT) && cur_is_matadd;
 	assign gema_lhs_data = add_lhs_row_r;
 	assign gema_rhs_data = add_rhs_row_r;
-	assign gema_in_idx   = {{(32-A_AW){1'b0}}, add_row_idx_r};
+	assign gema_in_idx   = {{(32-M_AW){1'b0}}, add_row_idx_r};
 	assign gema_in_last  = (add_row_idx_r == (GEMM_X_DIM - 1));
 	assign gema_in_valid = (state_r == ST_ADD_SEND);
 
@@ -161,7 +175,7 @@ module PT_CE_V2 #(
 			ST_EXEC_FEED: if (mm_exec_rsp_fire && (exec_rsp_cnt_r == (GEMM_X_DIM - 1))) state_n = ST_WAIT_RESULT;
 			ST_WAIT_RESULT: if (res_fire) state_n = ST_M_STORE;
 			ST_M_STORE: begin
-				if (store_lane_cnt_r == (GEMM_Y_DIM - 1)) begin
+				if (store_chunk_last) begin
 					if (store_row_last_r) begin
 						state_n = ST_IDLE;
 					end else if (cur_is_matadd) begin
@@ -190,26 +204,26 @@ module PT_CE_V2 #(
 			exec_a_addr       <= {A_AW{1'b0}};
 			exec_b_addr       <= {B_AW{1'b0}};
 			exec_m_b_buf      <= 1'b0;
-			exec_m_b_addr     <= {B_AW{1'b0}};
+			exec_m_b_addr     <= {M_AW{1'b0}};
 			cur_a_buf_r       <= 1'b0;
 			cur_b_buf_r       <= 1'b0;
 			cur_m_src_buf_r   <= 1'b0;
-			cur_a_row_base_r  <= 8'd0;
-			cur_b_row_base_r  <= 8'd0;
+			cur_a_row_base_r  <= {A_AW{1'b0}};
+			cur_b_row_base_r  <= {B_AW{1'b0}};
 			m_wr_buf_ptr_r    <= 1'b0;
 			cur_m_wr_buf_r    <= 1'b0;
-			add_row_idx_r     <= {A_AW{1'b0}};
+			add_row_idx_r     <= {M_AW{1'b0}};
 			add_lhs_row_r     <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
 			add_rhs_row_r     <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
 			store_result_row_r <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
-			store_row_addr_r  <= {A_AW{1'b0}};
+			store_row_addr_r  <= {M_AW{1'b0}};
 			store_row_last_r  <= 1'b0;
-			store_lane_cnt_r  <= {B_LW{1'b0}};
+			store_chunk_base_r <= {STORE_BASE_W{1'b0}};
 			m_mem_wr_en       <= 1'b0;
 			m_mem_wr_buf      <= 1'b0;
-			m_mem_wr_lane     <= {B_LW{1'b0}};
-			m_mem_wr_addr     <= {A_AW{1'b0}};
-			m_mem_wr_data     <= {DATA_WIDTH{1'b0}};
+			m_mem_wr_mask     <= {GEMM_Y_DIM{1'b0}};
+			m_mem_wr_addr     <= {M_AW{1'b0}};
+			m_mem_wr_data     <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
 			ce_resp_valid     <= 1'b0;
 			ce_resp           <= 32'd0;
 			ce_irq            <= 1'b0;
@@ -224,26 +238,26 @@ module PT_CE_V2 #(
 			exec_a_addr       <= {A_AW{1'b0}};
 			exec_b_addr       <= {B_AW{1'b0}};
 			exec_m_b_buf      <= 1'b0;
-			exec_m_b_addr     <= {B_AW{1'b0}};
+			exec_m_b_addr     <= {M_AW{1'b0}};
 			cur_a_buf_r       <= 1'b0;
 			cur_b_buf_r       <= 1'b0;
 			cur_m_src_buf_r   <= 1'b0;
-			cur_a_row_base_r  <= 8'd0;
-			cur_b_row_base_r  <= 8'd0;
+			cur_a_row_base_r  <= {A_AW{1'b0}};
+			cur_b_row_base_r  <= {B_AW{1'b0}};
 			m_wr_buf_ptr_r    <= 1'b0;
 			cur_m_wr_buf_r    <= 1'b0;
-			add_row_idx_r     <= {A_AW{1'b0}};
+			add_row_idx_r     <= {M_AW{1'b0}};
 			add_lhs_row_r     <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
 			add_rhs_row_r     <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
 			store_result_row_r <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
-			store_row_addr_r  <= {A_AW{1'b0}};
+			store_row_addr_r  <= {M_AW{1'b0}};
 			store_row_last_r  <= 1'b0;
-			store_lane_cnt_r  <= {B_LW{1'b0}};
+			store_chunk_base_r <= {STORE_BASE_W{1'b0}};
 			m_mem_wr_en       <= 1'b0;
 			m_mem_wr_buf      <= 1'b0;
-			m_mem_wr_lane     <= {B_LW{1'b0}};
-			m_mem_wr_addr     <= {A_AW{1'b0}};
-			m_mem_wr_data     <= {DATA_WIDTH{1'b0}};
+			m_mem_wr_mask     <= {GEMM_Y_DIM{1'b0}};
+			m_mem_wr_addr     <= {M_AW{1'b0}};
+			m_mem_wr_data     <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
 			ce_resp_valid     <= 1'b0;
 			ce_resp           <= 32'd0;
 			ce_irq            <= 1'b0;
@@ -251,6 +265,7 @@ module PT_CE_V2 #(
 			ce_resp_valid <= 1'b0;
 			ce_irq        <= 1'b0;
 			m_mem_wr_en   <= 1'b0;
+			m_mem_wr_mask <= {GEMM_Y_DIM{1'b0}};
 
 			case (state_r)
 				ST_IDLE: begin
@@ -258,11 +273,11 @@ module PT_CE_V2 #(
 						cur_opcode_r     <= ce_cmd_ctrl[`PT_INST_OPCODE_H:`PT_INST_OPCODE_L];
 						cur_ctrl_r       <= ce_cmd_ctrl;
 						cur_id_r         <= ce_cmd_id;
-						cur_a_buf_r      <= ce_a_local_base[8];
-						cur_b_buf_r      <= ce_b_local_base[8];
+						cur_a_buf_r      <= ce_a_local_base[`PT_LOCAL_BUF_BIT];
+						cur_b_buf_r      <= ce_b_local_base[`PT_LOCAL_BUF_BIT];
 						cur_m_src_buf_r  <= ce_cmd_ctrl[`PT_INST_A_OFF_L+8];
-						cur_a_row_base_r <= ce_a_local_base[7:0] >> A_DIM_SHIFT;
-						cur_b_row_base_r <= ce_b_local_base[7:0] >> B_DIM_SHIFT;
+						cur_a_row_base_r <= ce_a_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] >> A_DIM_SHIFT;
+						cur_b_row_base_r <= ce_b_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] >> B_DIM_SHIFT;
 						cur_m_wr_buf_r   <= m_wr_buf_ptr_r;
 					end
 				end
@@ -270,13 +285,13 @@ module PT_CE_V2 #(
 				ST_EXEC_START: begin
 					exec_issue_cnt_r <= 16'd0;
 					exec_rsp_cnt_r   <= 16'd0;
-					add_row_idx_r    <= {A_AW{1'b0}};
+					add_row_idx_r    <= {M_AW{1'b0}};
 					exec_a_buf       <= cur_a_buf_r;
 					exec_b_buf       <= cur_b_buf_r;
 					exec_a_addr      <= cur_a_row_base_r[A_AW-1:0];
 					exec_b_addr      <= cur_b_row_base_r[B_AW-1:0];
 					exec_m_b_buf     <= cur_m_src_buf_r;
-					exec_m_b_addr    <= {B_AW{1'b0}};
+					exec_m_b_addr    <= {M_AW{1'b0}};
 				end
 
 				ST_EXEC_FEED: begin
@@ -295,19 +310,24 @@ module PT_CE_V2 #(
 				ST_WAIT_RESULT: begin
 					if (res_fire) begin
 						store_result_row_r <= res_data;
-						store_row_addr_r   <= res_idx[A_AW-1:0];
+						store_row_addr_r   <= res_idx[M_AW-1:0];
 						store_row_last_r   <= res_last;
-						store_lane_cnt_r   <= {B_LW{1'b0}};
+						store_chunk_base_r <= {STORE_BASE_W{1'b0}};
 					end
 				end
 
 				ST_M_STORE: begin
 					m_mem_wr_en   <= 1'b1;
 					m_mem_wr_buf  <= cur_m_wr_buf_r;
-					m_mem_wr_lane <= store_lane_cnt_r;
+					m_mem_wr_mask <= {GEMM_Y_DIM{1'b0}};
 					m_mem_wr_addr <= store_row_addr_r;
-					m_mem_wr_data <= store_result_row_r[store_lane_cnt_r*DATA_WIDTH +: DATA_WIDTH];
-					if (store_lane_cnt_r == (GEMM_Y_DIM - 1)) begin
+					m_mem_wr_data <= store_result_row_r;
+					for (wi = 0; wi < GEMM_Y_DIM; wi = wi + 1) begin
+						if ((wi >= store_chunk_base_r) && (wi < (store_chunk_base_r + M_WRITE_LANES))) begin
+							m_mem_wr_mask[wi] <= 1'b1;
+						end
+					end
+					if (store_chunk_last) begin
 						if (store_row_last_r) begin
 							ce_resp       <= pack_resp(1'b0, cur_m_wr_buf_r, cur_id_r);
 							ce_resp_valid <= 1'b1;
@@ -315,10 +335,10 @@ module PT_CE_V2 #(
 							m_wr_buf_ptr_r <= ~m_wr_buf_ptr_r;
 						end else if (cur_is_matadd) begin
 							exec_b_addr   <= cur_b_row_base_r[B_AW-1:0] + add_row_idx_r[B_AW-1:0];
-							exec_m_b_addr <= add_row_idx_r[B_AW-1:0];
+							exec_m_b_addr <= add_row_idx_r;
 						end
 					end else begin
-						store_lane_cnt_r <= store_lane_cnt_r + 1'b1;
+						store_chunk_base_r <= store_chunk_base_r + M_WRITE_LANES;
 					end
 				end
 

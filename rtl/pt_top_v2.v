@@ -1,22 +1,28 @@
 `include "param.vh"
 
-module PT #(
+module PT_V2 #(
 	parameter DATA_WIDTH   = 32,
 	parameter GEMM_X_DIM   = 4,
 	parameter GEMM_Y_DIM   = 4,
 	parameter EXT_ADDR_W   = 32,
 	parameter DMA_BEATS_W  = 16,
 	parameter LUT_DEPTH    = 8,
-	parameter A_BANK_DEPTH = 16,
-	parameter B_BANK_DEPTH = 16
+	parameter A_BANK_DEPTH = 8,
+	parameter B_BANK_DEPTH = 16,
+	parameter M_BANK_DEPTH = 16,
+	parameter A_LOAD_LANES = GEMM_X_DIM,
+	parameter B_LOAD_LANES = GEMM_Y_DIM,
+	parameter M_WRITE_LANES = GEMM_Y_DIM,
+	parameter M_EXPORT_LANES = GEMM_Y_DIM,
+	parameter M_PHYSICAL_COPIES = 2
 ) (
 	input  wire                       clk,
 	input  wire                       rstn,
 	input  wire                       clear,
 	input  wire                       s_axis_tvalid,
 	output wire                       s_axis_tready,
-	input  wire [DATA_WIDTH-1:0]      s_axis_tdata,
-	input  wire [DATA_WIDTH/8-1:0]    s_axis_tstrb,
+	input  wire [(((A_LOAD_LANES >= B_LOAD_LANES) ? A_LOAD_LANES : B_LOAD_LANES)*DATA_WIDTH)-1:0]      s_axis_tdata,
+	input  wire [(((A_LOAD_LANES >= B_LOAD_LANES) ? A_LOAD_LANES : B_LOAD_LANES)*DATA_WIDTH/8)-1:0]    s_axis_tstrb,
 	input  wire                       s_axis_tlast,
 	input  wire                       s_axis_tkeep,
 	input  wire                       s_axis_tid,
@@ -24,8 +30,8 @@ module PT #(
 	input  wire [1:0]                 s_axis_tuser,
 	output wire                       m_axis_tvalid,
 	input  wire                       m_axis_tready,
-	output wire [DATA_WIDTH-1:0]      m_axis_tdata,
-	output wire [DATA_WIDTH/8-1:0]    m_axis_tstrb,
+	output wire [M_EXPORT_LANES*DATA_WIDTH-1:0]      m_axis_tdata,
+	output wire [M_EXPORT_LANES*DATA_WIDTH/8-1:0]    m_axis_tstrb,
 	output wire                       m_axis_tlast,
 	output wire                       m_axis_tkeep,
 	output wire                       m_axis_tid,
@@ -55,21 +61,25 @@ module PT #(
 
 	localparam integer A_LW = (GEMM_X_DIM <= 1) ? 1 : $clog2(GEMM_X_DIM);
 	localparam integer B_LW = (GEMM_Y_DIM <= 1) ? 1 : $clog2(GEMM_Y_DIM);
-	localparam integer A_AW = (A_BANK_DEPTH <= 1) ? 1 : $clog2(A_BANK_DEPTH);
-	localparam integer B_AW = (B_BANK_DEPTH <= 1) ? 1 : $clog2(B_BANK_DEPTH);
-	localparam integer M_DEPTH = A_BANK_DEPTH;
+	localparam integer LOAD_STREAM_LANES = (A_LOAD_LANES >= B_LOAD_LANES) ? A_LOAD_LANES : B_LOAD_LANES;
+	localparam integer A_DEPTH = A_BANK_DEPTH * GEMM_X_DIM;
+	localparam integer B_DEPTH = B_BANK_DEPTH * GEMM_Y_DIM;
+	localparam integer M_DEPTH = M_BANK_DEPTH * GEMM_X_DIM;
+	localparam integer A_AW = (A_DEPTH <= 1) ? 1 : $clog2(A_DEPTH);
+	localparam integer B_AW = (B_DEPTH <= 1) ? 1 : $clog2(B_DEPTH);
+	localparam integer M_AW = (M_DEPTH <= 1) ? 1 : $clog2(M_DEPTH);
 	localparam integer MAX_DIM = (GEMM_X_DIM >= GEMM_Y_DIM) ? GEMM_X_DIM : GEMM_Y_DIM;
 
 	wire                  a_mem_wr_en;
 	wire                  a_mem_wr_buf;
-	wire [A_LW-1:0]       a_mem_wr_lane;
+	wire [GEMM_X_DIM-1:0] a_mem_wr_mask;
 	wire [A_AW-1:0]       a_mem_wr_addr;
-	wire [DATA_WIDTH-1:0] a_mem_wr_data;
+	wire [GEMM_X_DIM*DATA_WIDTH-1:0] a_mem_wr_data;
 	wire                  b_mem_wr_en;
 	wire                  b_mem_wr_buf;
-	wire [B_LW-1:0]       b_mem_wr_lane;
+	wire [GEMM_Y_DIM-1:0] b_mem_wr_mask;
 	wire [B_AW-1:0]       b_mem_wr_addr;
-	wire [DATA_WIDTH-1:0] b_mem_wr_data;
+	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] b_mem_wr_data;
 
 	wire                  a_mem_rd_en;
 	wire                  exec_a_buf;
@@ -78,7 +88,7 @@ module PT #(
 	wire                  exec_b_buf;
 	wire [B_AW-1:0]       exec_b_addr;
 	wire                  exec_m_b_buf;
-	wire [B_AW-1:0]       exec_m_b_addr;
+	wire [M_AW-1:0]       exec_m_b_addr;
 	wire                  exec_m_b_rd_en;
 
 	wire                  md_cmd_valid;
@@ -153,12 +163,12 @@ module PT #(
 
 	wire                  m_mem_wr_en;
 	wire                  m_mem_wr_buf;
-	wire [B_LW-1:0]       m_mem_wr_lane;
-	wire [A_AW-1:0]       m_mem_wr_addr;
-	wire [DATA_WIDTH-1:0] m_mem_wr_data;
+	wire [GEMM_Y_DIM-1:0] m_mem_wr_mask;
+	wire [M_AW-1:0]       m_mem_wr_addr;
+	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] m_mem_wr_data;
 	wire                  exp_rd_en;
 	wire                  exp_rd_buf;
-	wire [A_AW-1:0]       exp_rd_addr;
+	wire [M_AW-1:0]       exp_rd_addr;
 
 	wire                  md_cmd_resp_valid;
 	wire [31:0]           md_cmd_resp;
@@ -182,12 +192,8 @@ module PT #(
 	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] b_mem_rd_data;
 	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] m_b_mem_rd_data;
 	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] m_exp_rd_data;
-	wire dummy_m_a_rd_en = 1'b0;
-	wire dummy_m_a_rd_buf = 1'b0;
-	wire [A_AW-1:0] dummy_m_a_rd_addr = {A_AW{1'b0}};
-	wire [GEMM_X_DIM*DATA_WIDTH-1:0] unused_m_a_mem_rd_data;
 
-	PT_DISPATCH_V2 #(
+	PT_DISPATCH #(
 		.GEMM_X_DIM(GEMM_X_DIM),
 		.GEMM_Y_DIM(GEMM_Y_DIM)
 	) u_dispatch (
@@ -250,13 +256,17 @@ module PT #(
 		.malloc_irq     (malloc_irq)
 	);
 
-	PT_MD_V2 #(
+	PT_MD #(
 		.DATA_WIDTH   (DATA_WIDTH),
 		.GEMM_X_DIM   (GEMM_X_DIM),
 		.GEMM_Y_DIM   (GEMM_Y_DIM),
 		.DMA_BEATS_W  (DMA_BEATS_W),
 		.A_BANK_DEPTH (A_BANK_DEPTH),
-		.B_BANK_DEPTH (B_BANK_DEPTH)
+		.B_BANK_DEPTH (B_BANK_DEPTH),
+		.M_BANK_DEPTH (M_BANK_DEPTH),
+		.A_LOAD_LANES (A_LOAD_LANES),
+		.B_LOAD_LANES (B_LOAD_LANES),
+		.M_EXPORT_LANES(M_EXPORT_LANES)
 	) u_md (
 		.clk            (clk),
 		.rstn           (rstn),
@@ -290,16 +300,15 @@ module PT #(
 		.dma_req_ready  (dma_req_ready),
 		.dma_req_kind   (dma_req_kind),
 		.dma_req_id     (dma_req_id),
-		.dma_done       (dma_done),
 		.dma_error      (dma_error),
 		.a_mem_wr_en    (a_mem_wr_en),
 		.a_mem_wr_buf   (a_mem_wr_buf),
-		.a_mem_wr_lane  (a_mem_wr_lane),
+		.a_mem_wr_mask  (a_mem_wr_mask),
 		.a_mem_wr_addr  (a_mem_wr_addr),
 		.a_mem_wr_data  (a_mem_wr_data),
 		.b_mem_wr_en    (b_mem_wr_en),
 		.b_mem_wr_buf   (b_mem_wr_buf),
-		.b_mem_wr_lane  (b_mem_wr_lane),
+		.b_mem_wr_mask  (b_mem_wr_mask),
 		.b_mem_wr_addr  (b_mem_wr_addr),
 		.b_mem_wr_data  (b_mem_wr_data),
 		.ce_resp_valid  (ce_resp_valid),
@@ -357,12 +366,14 @@ module PT #(
 		.quant_inv_scale     (quant_inv_scale)
 	);
 
-	PT_CE_V2 #(
+	PT_CE #(
 		.DATA_WIDTH   (DATA_WIDTH),
 		.GEMM_X_DIM   (GEMM_X_DIM),
 		.GEMM_Y_DIM   (GEMM_Y_DIM),
 		.A_BANK_DEPTH (A_BANK_DEPTH),
-		.B_BANK_DEPTH (B_BANK_DEPTH)
+		.B_BANK_DEPTH (B_BANK_DEPTH),
+		.M_BANK_DEPTH (M_BANK_DEPTH),
+		.M_WRITE_LANES(M_WRITE_LANES)
 	) u_ce (
 		.clk            (clk),
 		.rstn           (rstn),
@@ -408,7 +419,7 @@ module PT #(
 		.add_m_ready    (add_m_ready),
 		.m_mem_wr_en    (m_mem_wr_en),
 		.m_mem_wr_buf   (m_mem_wr_buf),
-		.m_mem_wr_lane  (m_mem_wr_lane),
+		.m_mem_wr_mask  (m_mem_wr_mask),
 		.m_mem_wr_addr  (m_mem_wr_addr),
 		.m_mem_wr_data  (m_mem_wr_data),
 		.ce_resp_valid  (ce_resp_valid),
@@ -419,14 +430,14 @@ module PT #(
 	PT_MEM_BANK #(
 		.DATA_WIDTH(DATA_WIDTH),
 		.LANES     (GEMM_X_DIM),
-		.DEPTH     (A_BANK_DEPTH)
+		.DEPTH     (A_DEPTH)
 	) u_a_bank (
 		.clk    (clk),
 		.rstn   (rstn),
 		.clear  (clear),
 		.wr_en  (a_mem_wr_en),
 		.wr_buf (a_mem_wr_buf),
-		.wr_lane(a_mem_wr_lane),
+		.wr_mask(a_mem_wr_mask),
 		.wr_addr(a_mem_wr_addr),
 		.wr_data(a_mem_wr_data),
 		.rd_en  (a_mem_rd_en),
@@ -438,14 +449,14 @@ module PT #(
 	PT_MEM_BANK #(
 		.DATA_WIDTH(DATA_WIDTH),
 		.LANES     (GEMM_Y_DIM),
-		.DEPTH     (B_BANK_DEPTH)
+		.DEPTH     (B_DEPTH)
 	) u_b_bank (
 		.clk    (clk),
 		.rstn   (rstn),
 		.clear  (clear),
 		.wr_en  (b_mem_wr_en),
 		.wr_buf (b_mem_wr_buf),
-		.wr_lane(b_mem_wr_lane),
+		.wr_mask(b_mem_wr_mask),
 		.wr_addr(b_mem_wr_addr),
 		.wr_data(b_mem_wr_data),
 		.rd_en  (b_mem_rd_en),
@@ -456,22 +467,18 @@ module PT #(
 
 	PT_M_MEM #(
 		.DATA_WIDTH(DATA_WIDTH),
-		.A_LANES   (GEMM_X_DIM),
 		.B_LANES   (GEMM_Y_DIM),
-		.DEPTH     (M_DEPTH)
+		.DEPTH     (M_DEPTH),
+		.M_PHYSICAL_COPIES(M_PHYSICAL_COPIES)
 	) u_m_mem (
 		.clk      (clk),
 		.rstn     (rstn),
 		.clear    (clear),
 		.wr_en    (m_mem_wr_en),
 		.wr_buf   (m_mem_wr_buf),
-		.wr_lane  (m_mem_wr_lane),
+		.wr_mask  (m_mem_wr_mask),
 		.wr_addr  (m_mem_wr_addr),
 		.wr_data  (m_mem_wr_data),
-		.rd_a_en  (dummy_m_a_rd_en),
-		.rd_a_buf (dummy_m_a_rd_buf),
-		.rd_a_addr(dummy_m_a_rd_addr),
-		.rd_a_data(unused_m_a_mem_rd_data),
 		.rd_b_en  (exec_m_b_rd_en),
 		.rd_b_buf (exec_m_b_buf),
 		.rd_b_addr(exec_m_b_addr),
@@ -576,6 +583,6 @@ module PT #(
 		end
 	end
 
-	wire _unused_ok = &{1'b0, pcsr_a_base[0], pcsr_b_base[0], s_axis_tstrb[0], s_axis_tlast, s_axis_tkeep, s_axis_tid, s_axis_tdest};
+	wire _unused_ok = &{1'b0, pcsr_a_base[0], pcsr_b_base[0], dma_done, s_axis_tstrb[0], s_axis_tlast, s_axis_tkeep, s_axis_tid, s_axis_tdest};
 
 endmodule

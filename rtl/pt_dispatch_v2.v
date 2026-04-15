@@ -29,6 +29,10 @@ module PT_DISPATCH_V2 #(
 	localparam integer QCFG_CNT_W = (MAX_DIM <= 1) ? 1 : $clog2(MAX_DIM + 1);
 	localparam integer CMD_KIND_W = 1 + `PT_MEM_KIND_W + `PT_MALLOC_KIND_W;
 	localparam integer CMDQ_W = CMD_KIND_W + `INST_WIDTH + 32;
+	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_CFG          = `PT_MEM_KIND_CFG;
+	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_QCFG_HDR     = `PT_MEM_KIND_QCFG_HDR;
+	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_QCFG_PAYLOAD = `PT_MEM_KIND_QCFG_PAYLOAD;
+	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_REJECT       = `PT_MEM_KIND_REJECT;
 	localparam [1:0] ACTIVE_NONE   = 2'd0;
 	localparam [1:0] ACTIVE_MD     = 2'd1;
 	localparam [1:0] ACTIVE_MALLOC = 2'd2;
@@ -123,21 +127,21 @@ module PT_DISPATCH_V2 #(
 
 	always @(*) begin
 		ingress_is_md       = 1'b1;
-		ingress_md_kind     = `PT_MEM_KIND_REJECT;
+		ingress_md_kind     = MEM_KIND_REJECT;
 		ingress_malloc_kind = `PT_MALLOC_KIND_LOAD;
 		if (qcfg_capture_active_r) begin
 			ingress_is_md   = 1'b1;
-			ingress_md_kind = `PT_MEM_KIND_QCFG_PAYLOAD;
+			ingress_md_kind = MEM_KIND_QCFG_PAYLOAD;
 		end else begin
 			case (ctrl_opcode)
 				`PT_OP_CFG: begin
 					ingress_is_md   = 1'b1;
-					ingress_md_kind = `PT_MEM_KIND_CFG;
+					ingress_md_kind = MEM_KIND_CFG;
 				end
 				`PT_OP_QCFG: begin
 					ingress_is_md   = 1'b1;
 					ingress_md_kind = (qcfg_hdr_ok && !qcfg_hdr_err && (qcfg_hdr_cnt != {QCFG_CNT_W{1'b0}})) ?
-					                  `PT_MEM_KIND_QCFG_HDR : `PT_MEM_KIND_REJECT;
+					                  MEM_KIND_QCFG_HDR : MEM_KIND_REJECT;
 				end
 				`PT_OP_LOAD: begin
 					if (ctrl_load_legal) begin
@@ -145,7 +149,7 @@ module PT_DISPATCH_V2 #(
 						ingress_malloc_kind = `PT_MALLOC_KIND_LOAD;
 					end else begin
 						ingress_is_md   = 1'b1;
-						ingress_md_kind = `PT_MEM_KIND_REJECT;
+						ingress_md_kind = MEM_KIND_REJECT;
 					end
 				end
 				`PT_OP_MATMUL: begin
@@ -154,7 +158,7 @@ module PT_DISPATCH_V2 #(
 						ingress_malloc_kind = `PT_MALLOC_KIND_MATMUL;
 					end else begin
 						ingress_is_md   = 1'b1;
-						ingress_md_kind = `PT_MEM_KIND_REJECT;
+						ingress_md_kind = MEM_KIND_REJECT;
 					end
 				end
 				`PT_OP_MATADD: begin
@@ -163,12 +167,12 @@ module PT_DISPATCH_V2 #(
 						ingress_malloc_kind = `PT_MALLOC_KIND_MATADD;
 					end else begin
 						ingress_is_md   = 1'b1;
-						ingress_md_kind = `PT_MEM_KIND_REJECT;
+						ingress_md_kind = MEM_KIND_REJECT;
 					end
 				end
 				default: begin
 					ingress_is_md   = 1'b1;
-					ingress_md_kind = `PT_MEM_KIND_REJECT;
+					ingress_md_kind = MEM_KIND_REJECT;
 				end
 			endcase
 		end

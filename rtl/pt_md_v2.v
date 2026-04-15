@@ -5,8 +5,12 @@ module PT_MD_V2 #(
 	parameter GEMM_X_DIM   = 4,
 	parameter GEMM_Y_DIM   = 4,
 	parameter DMA_BEATS_W  = 16,
-	parameter A_BANK_DEPTH = 16,
-	parameter B_BANK_DEPTH = 16
+	parameter A_BANK_DEPTH = 8,
+	parameter B_BANK_DEPTH = 16,
+	parameter M_BANK_DEPTH = 16,
+	parameter A_LOAD_LANES = GEMM_X_DIM,
+	parameter B_LOAD_LANES = GEMM_Y_DIM,
+	parameter M_EXPORT_LANES = GEMM_Y_DIM
 ) (
 	input  wire                       clk,
 	input  wire                       rstn,
@@ -33,25 +37,24 @@ module PT_MD_V2 #(
 	output reg  [31:0]                fill_done_id,
 	output reg                        fill_done_err,
 	input  wire                       s_axis_tvalid,
-	input  wire [DATA_WIDTH-1:0]      s_axis_tdata,
+	input  wire [(((A_LOAD_LANES >= B_LOAD_LANES) ? A_LOAD_LANES : B_LOAD_LANES)*DATA_WIDTH)-1:0]      s_axis_tdata,
 	input  wire [1:0]                 s_axis_tuser,
 	output wire                       s_axis_tready,
 	output wire                       dma_req_valid,
 	input  wire                       dma_req_ready,
 	output wire [`PT_DMA_KIND_W-1:0]  dma_req_kind,
 	output wire [31:0]                dma_req_id,
-	input  wire                       dma_done,
 	input  wire                       dma_error,
 	output reg                        a_mem_wr_en,
 	output reg                        a_mem_wr_buf,
-	output reg  [((GEMM_X_DIM <= 1) ? 1 : $clog2(GEMM_X_DIM))-1:0] a_mem_wr_lane,
-	output reg  [((A_BANK_DEPTH <= 1) ? 1 : $clog2(A_BANK_DEPTH))-1:0] a_mem_wr_addr,
-	output reg  [DATA_WIDTH-1:0]      a_mem_wr_data,
+	output reg  [GEMM_X_DIM-1:0]      a_mem_wr_mask,
+	output reg  [(((A_BANK_DEPTH * GEMM_X_DIM) <= 1) ? 1 : $clog2(A_BANK_DEPTH * GEMM_X_DIM))-1:0] a_mem_wr_addr,
+	output reg  [GEMM_X_DIM*DATA_WIDTH-1:0]      a_mem_wr_data,
 	output reg                        b_mem_wr_en,
 	output reg                        b_mem_wr_buf,
-	output reg  [((GEMM_Y_DIM <= 1) ? 1 : $clog2(GEMM_Y_DIM))-1:0] b_mem_wr_lane,
-	output reg  [((B_BANK_DEPTH <= 1) ? 1 : $clog2(B_BANK_DEPTH))-1:0] b_mem_wr_addr,
-	output reg  [DATA_WIDTH-1:0]      b_mem_wr_data,
+	output reg  [GEMM_Y_DIM-1:0]      b_mem_wr_mask,
+	output reg  [(((B_BANK_DEPTH * GEMM_Y_DIM) <= 1) ? 1 : $clog2(B_BANK_DEPTH * GEMM_Y_DIM))-1:0] b_mem_wr_addr,
+	output reg  [GEMM_Y_DIM*DATA_WIDTH-1:0]      b_mem_wr_data,
 	input  wire                       ce_resp_valid,
 	input  wire [31:0]                ce_resp,
 	output wire                       m_dma_req_valid,
@@ -63,8 +66,8 @@ module PT_MD_V2 #(
 	input  wire                       m_dma_error,
 	output wire                       m_axis_tvalid,
 	input  wire                       m_axis_tready,
-	output wire [DATA_WIDTH-1:0]      m_axis_tdata,
-	output wire [DATA_WIDTH/8-1:0]    m_axis_tstrb,
+	output wire [M_EXPORT_LANES*DATA_WIDTH-1:0]      m_axis_tdata,
+	output wire [M_EXPORT_LANES*DATA_WIDTH/8-1:0]    m_axis_tstrb,
 	output wire                       m_axis_tlast,
 	output wire                       m_axis_tkeep,
 	output wire                       m_axis_tid,
@@ -72,7 +75,7 @@ module PT_MD_V2 #(
 	output wire [1:0]                 m_axis_tuser,
 	output wire                       exp_rd_en,
 	output wire                       exp_rd_buf,
-	output wire [((A_BANK_DEPTH <= 1) ? 1 : $clog2(A_BANK_DEPTH))-1:0] exp_rd_addr,
+	output wire [(((M_BANK_DEPTH * GEMM_X_DIM) <= 1) ? 1 : $clog2(M_BANK_DEPTH * GEMM_X_DIM))-1:0] exp_rd_addr,
 	input  wire [GEMM_Y_DIM*DATA_WIDTH-1:0] exp_rd_data,
 	input  wire [((GEMM_X_DIM >= GEMM_Y_DIM) ? GEMM_X_DIM : GEMM_Y_DIM)*32-1:0] csr_quant_inv_scale,
 	output reg                        csr_a_base_lo_we,
@@ -87,13 +90,26 @@ module PT_MD_V2 #(
 
 	localparam integer A_LW = (GEMM_X_DIM <= 1) ? 1 : $clog2(GEMM_X_DIM);
 	localparam integer B_LW = (GEMM_Y_DIM <= 1) ? 1 : $clog2(GEMM_Y_DIM);
-	localparam integer A_AW = (A_BANK_DEPTH <= 1) ? 1 : $clog2(A_BANK_DEPTH);
-	localparam integer B_AW = (B_BANK_DEPTH <= 1) ? 1 : $clog2(B_BANK_DEPTH);
+	localparam integer A_DEPTH = A_BANK_DEPTH * GEMM_X_DIM;
+	localparam integer B_DEPTH = B_BANK_DEPTH * GEMM_Y_DIM;
+	localparam integer M_DEPTH = M_BANK_DEPTH * GEMM_X_DIM;
+	localparam integer A_AW = (A_DEPTH <= 1) ? 1 : $clog2(A_DEPTH);
+	localparam integer B_AW = (B_DEPTH <= 1) ? 1 : $clog2(B_DEPTH);
+	localparam integer M_AW = (M_DEPTH <= 1) ? 1 : $clog2(M_DEPTH);
+	localparam integer LOAD_STREAM_LANES = (A_LOAD_LANES >= B_LOAD_LANES) ? A_LOAD_LANES : B_LOAD_LANES;
 	localparam integer MAX_DIM = (GEMM_X_DIM >= GEMM_Y_DIM) ? GEMM_X_DIM : GEMM_Y_DIM;
 	localparam integer QCFG_CNT_W = (MAX_DIM <= 1) ? 1 : $clog2(MAX_DIM + 1);
 	localparam integer A_DIM_SHIFT = $clog2((GEMM_X_DIM <= 0) ? 1 : GEMM_X_DIM);
 	localparam integer B_DIM_SHIFT = $clog2((GEMM_Y_DIM <= 0) ? 1 : GEMM_Y_DIM);
-	localparam integer EXP_BEATS = GEMM_X_DIM * GEMM_Y_DIM;
+	localparam integer A_LOAD_CHUNKS_PER_COL = (GEMM_X_DIM + A_LOAD_LANES - 1) / A_LOAD_LANES;
+	localparam integer B_LOAD_CHUNKS_PER_ROW = (GEMM_Y_DIM + B_LOAD_LANES - 1) / B_LOAD_LANES;
+	localparam integer EXP_CHUNKS_PER_ROW = (GEMM_Y_DIM + M_EXPORT_LANES - 1) / M_EXPORT_LANES;
+	localparam integer EXP_CHUNK_W = (EXP_CHUNKS_PER_ROW <= 1) ? 1 : $clog2(EXP_CHUNKS_PER_ROW);
+	localparam integer EXP_BEATS = GEMM_X_DIM * EXP_CHUNKS_PER_ROW;
+	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_CFG          = `PT_MEM_KIND_CFG;
+	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_QCFG_HDR     = `PT_MEM_KIND_QCFG_HDR;
+	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_QCFG_PAYLOAD = `PT_MEM_KIND_QCFG_PAYLOAD;
+	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_REJECT       = `PT_MEM_KIND_REJECT;
 	localparam [1:0] FILL_IDLE = 2'd0;
 	localparam [1:0] FILL_REQ  = 2'd1;
 	localparam [1:0] FILL_RECV = 2'd2;
@@ -121,9 +137,26 @@ module PT_MD_V2 #(
 		end
 	endfunction
 
+	function integer min_int;
+		input integer lhs;
+		input integer rhs;
+		begin
+			min_int = (lhs < rhs) ? lhs : rhs;
+		end
+	endfunction
+
 	initial begin
 		if (!is_pow2(GEMM_X_DIM) || !is_pow2(GEMM_Y_DIM)) begin
 			$fatal(1, "PT_MD_V2 requires power-of-two GEMM_X_DIM/GEMM_Y_DIM, got %0d x %0d", GEMM_X_DIM, GEMM_Y_DIM);
+		end
+		if ((A_LOAD_LANES <= 0) || (A_LOAD_LANES > GEMM_X_DIM)) begin
+			$fatal(1, "PT_MD_V2 requires 0 < A_LOAD_LANES <= GEMM_X_DIM, got %0d for X=%0d", A_LOAD_LANES, GEMM_X_DIM);
+		end
+		if ((B_LOAD_LANES <= 0) || (B_LOAD_LANES > GEMM_Y_DIM)) begin
+			$fatal(1, "PT_MD_V2 requires 0 < B_LOAD_LANES <= GEMM_Y_DIM, got %0d for Y=%0d", B_LOAD_LANES, GEMM_Y_DIM);
+		end
+		if ((M_EXPORT_LANES <= 0) || (M_EXPORT_LANES > GEMM_Y_DIM)) begin
+			$fatal(1, "PT_MD_V2 requires 0 < M_EXPORT_LANES <= GEMM_Y_DIM, got %0d for Y=%0d", M_EXPORT_LANES, GEMM_Y_DIM);
 		end
 	end
 
@@ -191,7 +224,8 @@ module PT_MD_V2 #(
 	reg [`PT_LOCAL_ADDR_W-1:0] fill_local_base_r;
 	reg [`PT_SIZE_W-1:0] fill_len_r;
 	reg [`PT_SIZE_W-1:0] fill_recv_count_r;
-	reg [7:0] fill_row_base_r;
+	localparam integer FILL_ROW_W = (A_AW >= B_AW) ? A_AW : B_AW;
+	reg [FILL_ROW_W-1:0] fill_row_base_r;
 	reg fill_buf_sel_r;
 
 	wire fill_is_a = (fill_kind_r == `PT_DMA_KIND_A);
@@ -199,10 +233,19 @@ module PT_MD_V2 #(
 	wire [1:0] fill_expected_tuser = fill_is_a ? `PT_STREAM_KIND_A :
 	                                 ((fill_kind_r == `PT_DMA_KIND_B) ? `PT_STREAM_KIND_B : `PT_STREAM_KIND_C);
 	wire fill_tuser_mismatch = s_axis_tvalid && (s_axis_tuser != fill_expected_tuser);
-	wire [`PT_SIZE_W-1:0] fill_a_row = fill_recv_count_r >> A_DIM_SHIFT;
-	wire [`PT_SIZE_W-1:0] fill_a_col = fill_recv_count_r & (GEMM_X_DIM - 1);
-	wire [`PT_SIZE_W-1:0] fill_b_row = fill_recv_count_r >> B_DIM_SHIFT;
-	wire [`PT_SIZE_W-1:0] fill_b_col = fill_recv_count_r & (GEMM_Y_DIM - 1);
+	wire [`PT_SIZE_W-1:0] fill_remaining = (fill_len_r > fill_recv_count_r) ? (fill_len_r - fill_recv_count_r) : {`PT_SIZE_W{1'b0}};
+	wire [31:0] fill_recv_count_u32 = fill_recv_count_r;
+	wire [31:0] fill_a_chunk_idx = fill_recv_count_u32 / A_LOAD_LANES;
+	wire [31:0] fill_b_chunk_idx = fill_recv_count_u32 / B_LOAD_LANES;
+	wire [31:0] fill_a_col = fill_a_chunk_idx / A_LOAD_CHUNKS_PER_COL;
+	wire [31:0] fill_a_row_chunk = fill_a_chunk_idx % A_LOAD_CHUNKS_PER_COL;
+	wire [31:0] fill_b_row = fill_b_chunk_idx / B_LOAD_CHUNKS_PER_ROW;
+	wire [31:0] fill_b_col_chunk = fill_b_chunk_idx % B_LOAD_CHUNKS_PER_ROW;
+	wire [31:0] fill_a_row_base = fill_a_row_chunk * A_LOAD_LANES;
+	wire [31:0] fill_b_col_base = fill_b_col_chunk * B_LOAD_LANES;
+	wire [31:0] fill_a_valid_elems = min_int(fill_remaining, A_LOAD_LANES);
+	wire [31:0] fill_b_valid_elems = min_int(fill_remaining, B_LOAD_LANES);
+	wire [31:0] fill_beat_elems = fill_is_a ? fill_a_valid_elems : fill_b_valid_elems;
 
 	assign fill_req_ready = (fill_state_r == FILL_IDLE);
 	assign dma_req_valid  = (fill_state_r == FILL_REQ);
@@ -228,7 +271,7 @@ module PT_MD_V2 #(
 			FILL_RECV: begin
 				if (dma_error || fill_tuser_mismatch) begin
 					fill_state_n = FILL_IDLE;
-				end else if (s_axis_tvalid && ((fill_recv_count_r + 1'b1) >= fill_len_r)) begin
+				end else if (s_axis_tvalid && ((fill_recv_count_r + fill_beat_elems[`PT_SIZE_W-1:0]) >= fill_len_r)) begin
 					fill_state_n = FILL_IDLE;
 				end
 			end
@@ -243,8 +286,8 @@ module PT_MD_V2 #(
 	reg [1:0] exp_state_r, exp_state_n;
 	reg exp_req_buf_r, exp_active_buf_r;
 	reg [29:0] exp_req_id_r, exp_active_id_r;
-	reg [A_AW-1:0] exp_row_idx_r, exp_fetch_row_idx_r;
-	reg [B_LW-1:0] exp_col_idx_r;
+	reg [M_AW-1:0] exp_row_idx_r, exp_fetch_row_idx_r;
+	reg [EXP_CHUNK_W-1:0] exp_chunk_idx_r;
 	reg [GEMM_Y_DIM*DATA_WIDTH-1:0] exp_row_data_r;
 	reg exp_row_valid_r, exp_row_fetch_pending_r;
 
@@ -253,13 +296,15 @@ module PT_MD_V2 #(
 	wire exp_has_ready = m_buf0_ready || m_buf1_ready;
 	wire exp_pick_buf = (m_buf0_ready && m_buf1_ready) ? next_wr_buf_r : (m_buf1_ready ? 1'b1 : 1'b0);
 	wire [29:0] exp_pick_id = exp_pick_buf ? m_buf_id1_r : m_buf_id0_r;
-	wire exp_last_beat = exp_row_valid_r && (exp_row_idx_r == (GEMM_X_DIM - 1)) && (exp_col_idx_r == (GEMM_Y_DIM - 1));
+	wire [EXP_CHUNK_W:0] exp_chunk_limit = exp_chunk_idx_r + 1'b1;
+	wire exp_last_chunk = (exp_chunk_limit >= EXP_CHUNKS_PER_ROW);
+	wire exp_last_beat = exp_row_valid_r && (exp_row_idx_r == (GEMM_X_DIM - 1)) && exp_last_chunk;
 	wire exp_fire = (exp_state_r == EXP_STREAM) && exp_row_valid_r && m_axis_tready;
 	wire exp_prime_req = (exp_state_r == EXP_STREAM) && !exp_row_valid_r && !exp_row_fetch_pending_r;
 	wire exp_prefetch_req = (exp_state_r == EXP_STREAM) && exp_row_valid_r && exp_fire &&
-	                        (exp_col_idx_r == (GEMM_Y_DIM - 1)) && (exp_row_idx_r != (GEMM_X_DIM - 1));
+	                        exp_last_chunk && (exp_row_idx_r != (GEMM_X_DIM - 1));
 	wire exp_row_req = exp_prime_req || exp_prefetch_req;
-	wire [A_AW-1:0] exp_req_row_addr = exp_prime_req ? exp_row_idx_r : (exp_row_idx_r + 1'b1);
+	wire [M_AW-1:0] exp_req_row_addr = exp_prime_req ? exp_row_idx_r : (exp_row_idx_r + 1'b1);
 
 	assign m_dma_req_valid = (exp_state_r == EXP_REQ);
 	assign m_dma_req_id    = {2'b00, exp_req_id_r};
@@ -269,8 +314,20 @@ module PT_MD_V2 #(
 	assign exp_rd_buf  = exp_active_buf_r;
 	assign exp_rd_addr = exp_req_row_addr;
 	assign m_axis_tvalid = (exp_state_r == EXP_STREAM) && exp_row_valid_r;
-	assign m_axis_tdata  = exp_row_data_r[exp_col_idx_r*DATA_WIDTH +: DATA_WIDTH];
-	assign m_axis_tstrb  = {(DATA_WIDTH/8){1'b1}};
+	generate
+		genvar ei;
+		for (ei = 0; ei < M_EXPORT_LANES; ei = ei + 1) begin : gen_export_pack
+			wire lane_valid = ((exp_chunk_idx_r * M_EXPORT_LANES) + ei) < GEMM_Y_DIM;
+			assign m_axis_tdata[(ei+1)*DATA_WIDTH-1:ei*DATA_WIDTH] =
+				((exp_state_r == EXP_STREAM) && exp_row_valid_r && lane_valid) ?
+				exp_row_data_r[((exp_chunk_idx_r * M_EXPORT_LANES) + ei)*DATA_WIDTH +: DATA_WIDTH] :
+				{DATA_WIDTH{1'b0}};
+			assign m_axis_tstrb[(ei+1)*(DATA_WIDTH/8)-1:ei*(DATA_WIDTH/8)] =
+				((exp_state_r == EXP_STREAM) && exp_row_valid_r && lane_valid) ?
+				{(DATA_WIDTH/8){1'b1}} :
+				{(DATA_WIDTH/8){1'b0}};
+		end
+	endgenerate
 	assign m_axis_tlast  = exp_last_beat;
 	assign m_axis_tkeep  = 1'b1;
 	assign m_axis_tid    = 1'b0;
@@ -299,6 +356,7 @@ module PT_MD_V2 #(
 	end
 
 	integer ri;
+	integer fi;
 	always @(posedge clk or negedge rstn) begin
 		if (!rstn) begin
 			md_cmd_resp_valid         <= 1'b0;
@@ -313,14 +371,14 @@ module PT_MD_V2 #(
 			fill_done_err             <= 1'b0;
 			a_mem_wr_en               <= 1'b0;
 			a_mem_wr_buf              <= 1'b0;
-			a_mem_wr_lane             <= {A_LW{1'b0}};
+			a_mem_wr_mask             <= {GEMM_X_DIM{1'b0}};
 			a_mem_wr_addr             <= {A_AW{1'b0}};
-			a_mem_wr_data             <= {DATA_WIDTH{1'b0}};
+			a_mem_wr_data             <= {GEMM_X_DIM*DATA_WIDTH{1'b0}};
 			b_mem_wr_en               <= 1'b0;
 			b_mem_wr_buf              <= 1'b0;
-			b_mem_wr_lane             <= {B_LW{1'b0}};
+			b_mem_wr_mask             <= {GEMM_Y_DIM{1'b0}};
 			b_mem_wr_addr             <= {B_AW{1'b0}};
-			b_mem_wr_data             <= {DATA_WIDTH{1'b0}};
+			b_mem_wr_data             <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
 			csr_a_base_lo_we          <= 1'b0;
 			csr_a_base_hi_we          <= 1'b0;
 			csr_b_base_lo_we          <= 1'b0;
@@ -339,7 +397,7 @@ module PT_MD_V2 #(
 			fill_local_base_r         <= {`PT_LOCAL_ADDR_W{1'b0}};
 			fill_len_r                <= {`PT_SIZE_W{1'b0}};
 			fill_recv_count_r         <= {`PT_SIZE_W{1'b0}};
-			fill_row_base_r           <= 8'd0;
+			fill_row_base_r           <= {FILL_ROW_W{1'b0}};
 			fill_buf_sel_r            <= 1'b0;
 			m_buf_state0_r            <= MBUF_FREE;
 			m_buf_state1_r            <= MBUF_FREE;
@@ -350,12 +408,12 @@ module PT_MD_V2 #(
 			exp_req_id_r              <= 30'd0;
 			exp_active_buf_r          <= 1'b0;
 			exp_active_id_r           <= 30'd0;
-			exp_row_idx_r             <= {A_AW{1'b0}};
-			exp_col_idx_r             <= {B_LW{1'b0}};
+			exp_row_idx_r             <= {M_AW{1'b0}};
+			exp_fetch_row_idx_r       <= {M_AW{1'b0}};
+			exp_chunk_idx_r           <= {EXP_CHUNK_W{1'b0}};
 			exp_row_data_r            <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
 			exp_row_valid_r           <= 1'b0;
 			exp_row_fetch_pending_r   <= 1'b0;
-			exp_fetch_row_idx_r       <= {A_AW{1'b0}};
 		end else if (clear) begin
 			md_cmd_resp_valid         <= 1'b0;
 			md_cmd_resp               <= 32'd0;
@@ -368,7 +426,11 @@ module PT_MD_V2 #(
 			fill_done_id              <= 32'd0;
 			fill_done_err             <= 1'b0;
 			a_mem_wr_en               <= 1'b0;
+			a_mem_wr_mask             <= {GEMM_X_DIM{1'b0}};
+			a_mem_wr_data             <= {GEMM_X_DIM*DATA_WIDTH{1'b0}};
 			b_mem_wr_en               <= 1'b0;
+			b_mem_wr_mask             <= {GEMM_Y_DIM{1'b0}};
+			b_mem_wr_data             <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
 			csr_a_base_lo_we          <= 1'b0;
 			csr_a_base_hi_we          <= 1'b0;
 			csr_b_base_lo_we          <= 1'b0;
@@ -387,7 +449,7 @@ module PT_MD_V2 #(
 			fill_local_base_r         <= {`PT_LOCAL_ADDR_W{1'b0}};
 			fill_len_r                <= {`PT_SIZE_W{1'b0}};
 			fill_recv_count_r         <= {`PT_SIZE_W{1'b0}};
-			fill_row_base_r           <= 8'd0;
+			fill_row_base_r           <= {FILL_ROW_W{1'b0}};
 			fill_buf_sel_r            <= 1'b0;
 			m_buf_state0_r            <= MBUF_FREE;
 			m_buf_state1_r            <= MBUF_FREE;
@@ -398,12 +460,12 @@ module PT_MD_V2 #(
 			exp_req_id_r              <= 30'd0;
 			exp_active_buf_r          <= 1'b0;
 			exp_active_id_r           <= 30'd0;
-			exp_row_idx_r             <= {A_AW{1'b0}};
-			exp_col_idx_r             <= {B_LW{1'b0}};
+			exp_row_idx_r             <= {M_AW{1'b0}};
+			exp_fetch_row_idx_r       <= {M_AW{1'b0}};
+			exp_chunk_idx_r           <= {EXP_CHUNK_W{1'b0}};
 			exp_row_data_r            <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
 			exp_row_valid_r           <= 1'b0;
 			exp_row_fetch_pending_r   <= 1'b0;
-			exp_fetch_row_idx_r       <= {A_AW{1'b0}};
 		end else begin
 			md_cmd_resp_valid   <= 1'b0;
 			md_cmd_irq          <= 1'b0;
@@ -411,7 +473,9 @@ module PT_MD_V2 #(
 			md_async_irq        <= 1'b0;
 			fill_done_valid     <= 1'b0;
 			a_mem_wr_en         <= 1'b0;
+			a_mem_wr_mask       <= {GEMM_X_DIM{1'b0}};
 			b_mem_wr_en         <= 1'b0;
+			b_mem_wr_mask       <= {GEMM_Y_DIM{1'b0}};
 			csr_a_base_lo_we    <= 1'b0;
 			csr_a_base_hi_we    <= 1'b0;
 			csr_b_base_lo_we    <= 1'b0;
@@ -420,7 +484,7 @@ module PT_MD_V2 #(
 
 			if (md_cmd_valid && md_cmd_ready) begin
 				case (md_cmd_kind)
-					`PT_MEM_KIND_CFG: begin
+					MEM_KIND_CFG: begin
 						csr_cfg_wdata16 <= md_cmd_inst[15:0];
 						case (md_cmd_inst[27:24])
 							`PT_CFG_A_BASE_LO: csr_a_base_lo_we <= 1'b1;
@@ -432,12 +496,12 @@ module PT_MD_V2 #(
 						md_cmd_resp       <= pack_resp(1'b0, 1'b0, md_cmd_id);
 						md_cmd_resp_valid <= 1'b1;
 					end
-					`PT_MEM_KIND_REJECT: begin
+					MEM_KIND_REJECT: begin
 						md_cmd_resp       <= pack_resp(1'b1, 1'b0, md_cmd_id);
 						md_cmd_resp_valid <= 1'b1;
 						md_cmd_irq        <= 1'b1;
 					end
-					`PT_MEM_KIND_QCFG_HDR: begin
+					MEM_KIND_QCFG_HDR: begin
 						if (!qcfg_hdr_ok || qcfg_hdr_err || (qcfg_hdr_cnt == {QCFG_CNT_W{1'b0}})) begin
 							md_cmd_resp       <= pack_resp(1'b1, 1'b0, md_cmd_id);
 							md_cmd_resp_valid <= 1'b1;
@@ -450,7 +514,7 @@ module PT_MD_V2 #(
 							qcfg_shadow_inv_scale_r <= csr_quant_inv_scale;
 						end
 					end
-					`PT_MEM_KIND_QCFG_PAYLOAD: begin
+					MEM_KIND_QCFG_PAYLOAD: begin
 						if (qcfg_expect_cnt_r == {QCFG_CNT_W{1'b0}}) begin
 							md_cmd_resp       <= pack_resp(1'b1, 1'b0, md_cmd_id);
 							md_cmd_resp_valid <= 1'b1;
@@ -492,10 +556,10 @@ module PT_MD_V2 #(
 				fill_local_base_r <= fill_req_local_base;
 				fill_len_r        <= fill_req_len;
 				fill_recv_count_r <= {`PT_SIZE_W{1'b0}};
-				fill_buf_sel_r    <= fill_req_local_base[8];
+				fill_buf_sel_r    <= fill_req_local_base[`PT_LOCAL_BUF_BIT];
 				fill_row_base_r   <= (fill_req_kind == `PT_DMA_KIND_A) ?
-				                     (fill_req_local_base[7:0] >> A_DIM_SHIFT) :
-				                     (fill_req_local_base[7:0] >> B_DIM_SHIFT);
+				                     (fill_req_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] >> A_DIM_SHIFT) :
+				                     (fill_req_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] >> B_DIM_SHIFT);
 			end
 
 			if (fill_state_r == FILL_RECV) begin
@@ -508,18 +572,32 @@ module PT_MD_V2 #(
 					if (fill_is_a) begin
 						a_mem_wr_en   <= 1'b1;
 						a_mem_wr_buf  <= fill_buf_sel_r;
-						a_mem_wr_lane <= fill_a_row[A_LW-1:0];
 						a_mem_wr_addr <= fill_row_base_r[A_AW-1:0] + fill_a_col[A_AW-1:0];
-						a_mem_wr_data <= s_axis_tdata;
+						a_mem_wr_data <= {GEMM_X_DIM*DATA_WIDTH{1'b0}};
+						for (fi = 0; fi < GEMM_X_DIM; fi = fi + 1) begin
+							if ((fi >= fill_a_row_base) &&
+							    (fi < (fill_a_row_base + A_LOAD_LANES)) &&
+							    ((fi - fill_a_row_base) < fill_a_valid_elems)) begin
+								a_mem_wr_mask[fi] <= 1'b1;
+								a_mem_wr_data[fi*DATA_WIDTH +: DATA_WIDTH] <= s_axis_tdata[(fi - fill_a_row_base)*DATA_WIDTH +: DATA_WIDTH];
+							end
+						end
 					end else if (fill_is_bc) begin
 						b_mem_wr_en   <= 1'b1;
 						b_mem_wr_buf  <= fill_buf_sel_r;
-						b_mem_wr_lane <= fill_b_col[B_LW-1:0];
 						b_mem_wr_addr <= fill_row_base_r[B_AW-1:0] + fill_b_row[B_AW-1:0];
-						b_mem_wr_data <= s_axis_tdata;
+						b_mem_wr_data <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
+						for (fi = 0; fi < GEMM_Y_DIM; fi = fi + 1) begin
+							if ((fi >= fill_b_col_base) &&
+							    (fi < (fill_b_col_base + B_LOAD_LANES)) &&
+							    ((fi - fill_b_col_base) < fill_b_valid_elems)) begin
+								b_mem_wr_mask[fi] <= 1'b1;
+								b_mem_wr_data[fi*DATA_WIDTH +: DATA_WIDTH] <= s_axis_tdata[(fi - fill_b_col_base)*DATA_WIDTH +: DATA_WIDTH];
+							end
+						end
 					end
-					fill_recv_count_r <= fill_recv_count_r + 1'b1;
-					if ((fill_recv_count_r + 1'b1) >= fill_len_r) begin
+					fill_recv_count_r <= fill_recv_count_r + fill_beat_elems[`PT_SIZE_W-1:0];
+					if ((fill_recv_count_r + fill_beat_elems[`PT_SIZE_W-1:0]) >= fill_len_r) begin
 						fill_done_valid <= 1'b1;
 						fill_done_kind  <= fill_kind_r;
 						fill_done_id    <= fill_id_r;
@@ -544,7 +622,7 @@ module PT_MD_V2 #(
 				exp_row_valid_r         <= 1'b1;
 				exp_row_fetch_pending_r <= 1'b0;
 				exp_row_idx_r           <= exp_fetch_row_idx_r;
-				exp_col_idx_r           <= {B_LW{1'b0}};
+				exp_chunk_idx_r         <= {EXP_CHUNK_W{1'b0}};
 			end
 
 			case (exp_state_r)
@@ -558,12 +636,12 @@ module PT_MD_V2 #(
 					if (m_dma_req_ready) begin
 						exp_active_buf_r        <= exp_req_buf_r;
 						exp_active_id_r         <= exp_req_id_r;
-						exp_row_idx_r           <= {A_AW{1'b0}};
-						exp_col_idx_r           <= {B_LW{1'b0}};
+						exp_row_idx_r           <= {M_AW{1'b0}};
+						exp_chunk_idx_r         <= {EXP_CHUNK_W{1'b0}};
 						exp_row_data_r          <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
 						exp_row_valid_r         <= 1'b0;
 						exp_row_fetch_pending_r <= 1'b0;
-						exp_fetch_row_idx_r     <= {A_AW{1'b0}};
+						exp_fetch_row_idx_r     <= {M_AW{1'b0}};
 						if (exp_req_buf_r) begin
 							m_buf_state1_r <= MBUF_EXPORTING;
 						end else begin
@@ -572,18 +650,23 @@ module PT_MD_V2 #(
 					end
 				end
 				EXP_STREAM: begin
-					if (exp_row_req) begin
+					if (exp_prime_req) begin
 						exp_row_fetch_pending_r <= 1'b1;
 						exp_fetch_row_idx_r     <= exp_req_row_addr;
-					end
-					if (exp_fire) begin
+					end else if (exp_fire) begin
 						if (exp_last_beat) begin
 							exp_row_valid_r <= 1'b0;
-						end else if (exp_col_idx_r == (GEMM_Y_DIM - 1)) begin
-							exp_row_valid_r <= 1'b0;
-							exp_col_idx_r   <= {B_LW{1'b0}};
+						end else if (exp_last_chunk) begin
+							if (exp_prefetch_req) begin
+								exp_row_valid_r         <= 1'b0;
+								exp_row_fetch_pending_r <= 1'b1;
+								exp_fetch_row_idx_r     <= exp_req_row_addr;
+							end else begin
+								exp_row_valid_r <= 1'b0;
+								exp_chunk_idx_r <= {EXP_CHUNK_W{1'b0}};
+							end
 						end else begin
-							exp_col_idx_r <= exp_col_idx_r + 1'b1;
+							exp_chunk_idx_r <= exp_chunk_idx_r + 1'b1;
 						end
 					end
 				end
@@ -607,7 +690,5 @@ module PT_MD_V2 #(
 			endcase
 		end
 	end
-
-	wire _unused_ok = &{1'b0, dma_done};
 
 endmodule
