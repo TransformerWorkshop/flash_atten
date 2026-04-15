@@ -107,7 +107,7 @@ async def test_pt_randomized_profile(dut) -> None:
 				ctrl_id = env.rng.choice(mwindow_candidates)[0]
 
 			if choice == "invalid":
-				plan = env.plan_matmul(ctrl_id, m_scale=PT_SCALE_FULL, n_scale=PT_SCALE_FULL, k_scale=PT_SCALE_FULL, a_field=1)
+				plan = env.plan_matmul(ctrl_id, m_scale=PT_SCALE_FULL, n_scale=PT_SCALE_FULL, k_scale=PT_SCALE_FULL, reserved_a=1)
 				await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL, 0x001, 0x000), ctrl_id)
 				await env.wait_ctrl_resp(plan.response_word, 2000)
 				continue

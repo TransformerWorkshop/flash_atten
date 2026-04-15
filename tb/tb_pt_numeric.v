@@ -154,13 +154,13 @@ module tb_pt_numeric;
 
 	function [`INST_WIDTH-1:0] build_matmul_inst;
 		input [3:0] op;
-		input [1:0] m;
-		input [1:0] n;
-		input [1:0] k;
-		input [9:0] a_off;
-		input [9:0] b_off;
+		input [3:0] m_tiles;
+		input [3:0] n_tiles;
+		input [3:0] k_tiles;
+		input [7:0] reserved_a;
+		input [7:0] reserved_b;
 		begin
-			build_matmul_inst = {op, m, n, k, a_off, b_off, 2'b00};
+			build_matmul_inst = {op, m_tiles, n_tiles, k_tiles, reserved_a, reserved_b};
 		end
 	endfunction
 
