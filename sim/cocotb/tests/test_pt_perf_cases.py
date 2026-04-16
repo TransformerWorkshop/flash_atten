@@ -15,6 +15,13 @@ async def _prepare_env(dut):
 	return env
 
 
+def _expected_internal_ctrl_resp_cycles(env) -> int:
+	# GEMM now streams rows directly from PE FIFOs, so there is no extra
+	# collect bubble between feed completion and row capture.
+	writeback_cycles = 0 if env.m_write_lanes >= env.y_dim else (env.x_dim * math.ceil(env.y_dim / env.m_write_lanes))
+	return 1 + 1 + env.x_dim + env.x_dim + writeback_cycles + 1
+
+
 def _register_ab(env, ctrl_id: int, bias: int = 0) -> None:
 	env.register_external_matrix("A", ctrl_id, identity_matrix(env.x_dim, env.data_width))
 	env.register_external_matrix(
@@ -58,7 +65,9 @@ async def _measure_export_req_to_last(env, timeout_cycles: int = 4000) -> int:
 async def test_pt_perf_cache_hit_ctrl_resp_scales_with_m_write_lanes(dut) -> None:
 	env = await _prepare_env(dut)
 	try:
-		frontend_overhead_cycles = 9
+		# Exec responses now bypass PT_MALLOC and surface directly at PT top,
+		# trimming the previous front-end bookkeeping tail by 3 cycles.
+		frontend_overhead_cycles = 6
 		ctrl_id = 0x900
 		_register_ab(env, ctrl_id, bias=3)
 		matmul_inst = build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL)
@@ -75,7 +84,7 @@ async def test_pt_perf_cache_hit_ctrl_resp_scales_with_m_write_lanes(dut) -> Non
 		ctrl_resp_cycles = await _measure_ctrl_resp_after_accept(env, hit_plan.response_word, 12000)
 		await env.wait_export_done(2, 20000)
 
-		expected_cycles = frontend_overhead_cycles + 1 + 1 + env.x_dim + 2 + env.x_dim + (env.x_dim * math.ceil(env.y_dim / env.m_write_lanes)) + 1
+		expected_cycles = frontend_overhead_cycles + _expected_internal_ctrl_resp_cycles(env)
 		assert ctrl_resp_cycles == expected_cycles, (
 			f"cache-hit ctrl_resp cycles mismatch x={env.x_dim} y={env.y_dim} "
 			f"m_write_lanes={env.m_write_lanes}: exp={expected_cycles} got={ctrl_resp_cycles}"
@@ -88,7 +97,7 @@ async def test_pt_perf_cache_hit_ctrl_resp_scales_with_m_write_lanes(dut) -> Non
 async def test_pt_perf_cold_miss_ctrl_resp_scales_with_ab_load_lanes(dut) -> None:
 	env = await _prepare_env(dut)
 	try:
-		frontend_overhead_cycles = 9
+		frontend_overhead_cycles = 6
 		load_req_done_overhead = 4
 		ctrl_id = 0x940
 		_register_ab(env, ctrl_id, bias=7)
@@ -104,7 +113,7 @@ async def test_pt_perf_cold_miss_ctrl_resp_scales_with_ab_load_lanes(dut) -> Non
 			math.ceil((env.x_dim * env.x_dim) / env.a_load_lanes) + load_req_done_overhead
 			+ math.ceil((env.y_dim * env.y_dim) / env.b_load_lanes) + load_req_done_overhead
 		)
-		internal_cycles = 1 + 1 + env.x_dim + 2 + env.x_dim + (env.x_dim * math.ceil(env.y_dim / env.m_write_lanes)) + 1
+		internal_cycles = _expected_internal_ctrl_resp_cycles(env)
 		expected_cycles = frontend_overhead_cycles + input_cycles + internal_cycles
 		assert ctrl_resp_cycles == expected_cycles, (
 			f"cold-miss ctrl_resp cycles mismatch x={env.x_dim} y={env.y_dim} "

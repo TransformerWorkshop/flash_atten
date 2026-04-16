@@ -137,7 +137,14 @@ def constant_matrix(rows: int, cols: int, value: int, bits: int) -> List[int]:
 	return [word] * (rows * cols)
 
 
-def matmul_row_major(a_matrix: Sequence[int], b_matrix: Sequence[int], x_dim: int, y_dim: int, k_dim: Optional[int] = None) -> List[int]:
+def matmul_row_major(
+	a_matrix: Sequence[int],
+	b_matrix: Sequence[int],
+	x_dim: int,
+	y_dim: int,
+	k_dim: Optional[int] = None,
+	bits: int = 32,
+) -> List[int]:
 	if k_dim is None:
 		k_dim = x_dim
 	result: List[int] = []
@@ -145,7 +152,9 @@ def matmul_row_major(a_matrix: Sequence[int], b_matrix: Sequence[int], x_dim: in
 		for col in range(y_dim):
 			acc = 0
 			for acc_idx in range(k_dim):
-				acc += int(a_matrix[row * k_dim + acc_idx]) * int(b_matrix[acc_idx * y_dim + col])
+				a_word = to_signed(int(a_matrix[row * k_dim + acc_idx]), bits)
+				b_word = to_signed(int(b_matrix[acc_idx * y_dim + col]), bits)
+				acc += a_word * b_word
 			result.append(acc)
 	return result
 
@@ -339,6 +348,15 @@ class PTBlackBoxModel:
 			full_scale[idx] = to_unsigned(int(word), 32)
 		self.quant_cfg = QuantConfig(granularity, full_scale)
 
+	def _reserve_m_buffer(self) -> Optional[int]:
+		if self.m_buffer_state[0] == "free":
+			self.m_buffer_state[0] = "reserved"
+			return 0
+		if self.m_buffer_state[1] == "free":
+			self.m_buffer_state[1] = "reserved"
+			return 1
+		return None
+
 	def _alloc_base(self, current: int, capacity: int, align: int, length: int) -> Tuple[Optional[int], int]:
 		if length <= 0:
 			return None, current
@@ -489,8 +507,12 @@ class PTBlackBoxModel:
 
 		assert a_matrix is not None
 		assert b_matrix is not None
-		result_matrix = self._quantize_matrix(matmul_row_major(a_matrix, b_matrix, self.x_dim, self.y_dim, k_dim))
-		success_buffer = self.next_write_buf
+		result_matrix = self._quantize_matrix(
+			matmul_row_major(a_matrix, b_matrix, self.x_dim, self.y_dim, k_dim, bits=self.data_width)
+		)
+		success_buffer = self._reserve_m_buffer()
+		if success_buffer is None:
+			return self._make_exec_error(ctrl_id, coverage_tags, "reject:m_buffer_busy")
 		return ExecPlan(
 			ctrl_id=ctrl_id,
 			response_word=pack_resp(False, success_buffer, ctrl_id),
@@ -554,7 +576,9 @@ class PTBlackBoxModel:
 
 		assert c_matrix is not None
 		result_matrix = saturating_add_matrix(m_matrix, c_matrix, self.data_width)
-		success_buffer = self.next_write_buf
+		success_buffer = self._reserve_m_buffer()
+		if success_buffer is None:
+			return self._make_exec_error(ctrl_id, coverage_tags, "reject:m_buffer_busy", b_is_c=True)
 		return ExecPlan(
 			ctrl_id=ctrl_id,
 			response_word=pack_resp(False, success_buffer, ctrl_id),

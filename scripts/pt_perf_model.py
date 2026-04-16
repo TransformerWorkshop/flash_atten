@@ -64,6 +64,7 @@ class PTPerfResult:
 	m_write_lanes: int
 	m_export_lanes: int
 	m_physical_copies: int
+	matmul_overlap_depth: int
 	peak_macs_per_cycle: float
 	peak_ops_per_cycle: float
 	macs_per_tile: int
@@ -96,10 +97,12 @@ class PTPerfResult:
 	internal_start_cycles: int
 	internal_feed_cycles: int
 	internal_collect_cycles: int
+	internal_drain_cycles: int
 	internal_row_capture_cycles: int
 	internal_m_writeback_cycles: int
 	internal_resp_merge_cycles: int
 	internal_total_cycles: int
+	internal_overlap_steady_cycles: float
 	export_phase_cycles: float
 	ctrl_resp_visible_cycles: float
 	single_tile_latency_cycles: float
@@ -164,6 +167,8 @@ def build_result(args: argparse.Namespace) -> PTPerfResult:
 	require_positive("b_load_lanes", args.b_load_lanes, y_dim)
 	if args.m_physical_copies not in (1, 2, 3):
 		raise ValueError("m_physical_copies must be one of 1, 2, 3")
+	if args.matmul_overlap_depth not in (1, 2):
+		raise ValueError("matmul_overlap_depth must be 1 or 2")
 
 	ext_in_beats_per_cycle, ext_out_beats_per_cycle, target_freq_mhz = derive_rates(args, word_bytes)
 	ext_in_bytes_per_cycle = ext_in_beats_per_cycle * word_bytes
@@ -194,9 +199,19 @@ def build_result(args: argparse.Namespace) -> PTPerfResult:
 	internal_issue_cycles = 1
 	internal_start_cycles = 1
 	internal_feed_cycles = x_dim
-	internal_collect_cycles = 2
-	internal_row_capture_cycles = x_dim
-	internal_m_writeback_cycles = x_dim * math.ceil(y_dim / args.m_write_lanes)
+	# GEMM streams rows directly from PE FIFOs, so the old collect bubble is gone.
+	internal_collect_cycles = 0
+	chunks_per_row = math.ceil(y_dim / args.m_write_lanes)
+	if args.m_write_lanes >= y_dim:
+		# Full-width MATMUL drain writes each row directly in ST_MATMUL_DRAIN,
+		# so the visible tail is just one streamed row per X.
+		internal_drain_cycles = x_dim
+		internal_row_capture_cycles = 0
+		internal_m_writeback_cycles = 0
+	else:
+		internal_drain_cycles = 0
+		internal_row_capture_cycles = x_dim
+		internal_m_writeback_cycles = x_dim * chunks_per_row
 	internal_resp_merge_cycles = 1
 	internal_total_cycles = (
 		internal_issue_cycles
@@ -205,8 +220,17 @@ def build_result(args: argparse.Namespace) -> PTPerfResult:
 		+ internal_collect_cycles
 		+ internal_row_capture_cycles
 		+ internal_m_writeback_cycles
+		+ internal_drain_cycles
 		+ internal_resp_merge_cycles
 	)
+	internal_overlap_steady_cycles = float(internal_total_cycles)
+	if args.matmul_overlap_depth >= 2:
+		internal_overlap_steady_cycles = float(
+			max(
+				internal_feed_cycles,
+				internal_drain_cycles + internal_row_capture_cycles + internal_m_writeback_cycles,
+			)
+		)
 
 	export_phase_cycles = ceil_div_rate(export_beats_per_tile, ext_out_beats_per_cycle) + args.dma_req_overhead_cycles + args.m_dma_done_latency_cycles
 
@@ -238,21 +262,25 @@ def build_result(args: argparse.Namespace) -> PTPerfResult:
 		external_output_beats = export_beats_per_tile
 		ctrl_resp_visible_cycles = internal_total_cycles
 		single_tile_latency_cycles = internal_total_cycles + export_phase_cycles
-		sustained_cycles_per_tile = single_tile_latency_cycles
+		sustained_cycles_per_tile = (
+			max(internal_overlap_steady_cycles, export_phase_cycles)
+			if args.matmul_overlap_depth >= 2
+			else single_tile_latency_cycles
+		)
 	elif args.scenario == "steady_stream_cold":
 		input_phase_cycles = cold_input_phase_cycles
 		external_input_beats = cold_input_beats
 		external_output_beats = export_beats_per_tile
 		ctrl_resp_visible_cycles = input_phase_cycles + internal_total_cycles
 		single_tile_latency_cycles = cold_input_phase_cycles + internal_total_cycles + export_phase_cycles
-		sustained_cycles_per_tile = max(cold_input_phase_cycles, internal_total_cycles, export_phase_cycles)
+		sustained_cycles_per_tile = max(cold_input_phase_cycles, internal_overlap_steady_cycles, export_phase_cycles)
 	elif args.scenario == "steady_stream_mixed":
 		input_phase_cycles = cold_input_phase_cycles * cold_ratio
 		external_input_beats = cold_input_beats * cold_ratio
 		external_output_beats = export_beats_per_tile
 		ctrl_resp_visible_cycles = input_phase_cycles + internal_total_cycles
 		single_tile_latency_cycles = input_phase_cycles + internal_total_cycles + export_phase_cycles
-		sustained_cycles_per_tile = max(input_phase_cycles, internal_total_cycles, export_phase_cycles)
+		sustained_cycles_per_tile = max(input_phase_cycles, internal_overlap_steady_cycles, export_phase_cycles)
 	else:
 		raise ValueError(f"unsupported scenario {args.scenario!r}")
 
@@ -291,6 +319,7 @@ def build_result(args: argparse.Namespace) -> PTPerfResult:
 		"gemm_collect": internal_collect_cycles,
 		"quant_row_capture": internal_row_capture_cycles,
 		"m_writeback": internal_m_writeback_cycles,
+		"matmul_drain": internal_drain_cycles,
 		"resp_merge": internal_resp_merge_cycles,
 	}
 	internal_bottleneck_stage = max(internal_stage_candidates, key=internal_stage_candidates.get)
@@ -337,6 +366,7 @@ def build_result(args: argparse.Namespace) -> PTPerfResult:
 		m_write_lanes=args.m_write_lanes,
 		m_export_lanes=args.m_export_lanes,
 		m_physical_copies=args.m_physical_copies,
+		matmul_overlap_depth=args.matmul_overlap_depth,
 		peak_macs_per_cycle=peak_macs_per_cycle,
 		peak_ops_per_cycle=peak_ops_per_cycle,
 		macs_per_tile=macs_per_tile,
@@ -369,10 +399,12 @@ def build_result(args: argparse.Namespace) -> PTPerfResult:
 		internal_start_cycles=internal_start_cycles,
 		internal_feed_cycles=internal_feed_cycles,
 		internal_collect_cycles=internal_collect_cycles,
+		internal_drain_cycles=internal_drain_cycles,
 		internal_row_capture_cycles=internal_row_capture_cycles,
 		internal_m_writeback_cycles=internal_m_writeback_cycles,
 		internal_resp_merge_cycles=internal_resp_merge_cycles,
 		internal_total_cycles=internal_total_cycles,
+		internal_overlap_steady_cycles=internal_overlap_steady_cycles,
 		export_phase_cycles=export_phase_cycles,
 		ctrl_resp_visible_cycles=ctrl_resp_visible_cycles,
 		single_tile_latency_cycles=single_tile_latency_cycles,
@@ -401,7 +433,8 @@ def print_text(result: PTPerfResult) -> None:
 	print(
 		f"Structure: a_load_lanes={result.a_load_lanes}, b_load_lanes={result.b_load_lanes}, "
 		f"m_write_lanes={result.m_write_lanes}, "
-		f"m_export_lanes={result.m_export_lanes}, m_physical_copies={result.m_physical_copies}"
+		f"m_export_lanes={result.m_export_lanes}, m_physical_copies={result.m_physical_copies}, "
+		f"matmul_overlap_depth={result.matmul_overlap_depth}"
 	)
 	if result.scenario == "steady_stream_mixed":
 		print(f"Mixed cold ratio: {result.cold_ratio:.3f}")
@@ -462,10 +495,12 @@ def print_text(result: PTPerfResult) -> None:
 	print(f"  exec_start          : {result.internal_start_cycles}")
 	print(f"  gemm_feed           : {result.internal_feed_cycles}")
 	print(f"  gemm_collect        : {result.internal_collect_cycles}")
+	print(f"  matmul_drain        : {result.internal_drain_cycles}")
 	print(f"  quant_row_capture   : {result.internal_row_capture_cycles}")
 	print(f"  m_writeback         : {result.internal_m_writeback_cycles}")
 	print(f"  resp_merge          : {result.internal_resp_merge_cycles}")
 	print(f"  internal_total      : {result.internal_total_cycles}")
+	print(f"  overlap_steady_ii   : {result.internal_overlap_steady_cycles:.3f}")
 	print(f"  Internal bottleneck : {result.internal_bottleneck_stage}")
 	print("")
 	print("Latency Stage Shares (%)")
@@ -495,6 +530,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--m-write-lanes", type=int, default=1)
 	parser.add_argument("--m-export-lanes", type=int, default=1)
 	parser.add_argument("--m-physical-copies", type=int, default=3)
+	parser.add_argument("--matmul-overlap-depth", type=int, default=1)
 	parser.add_argument("--scenario", choices=SCENARIOS, required=True)
 	parser.add_argument("--format", choices=("text", "json"), default="text")
 	args = parser.parse_args()

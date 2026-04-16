@@ -71,6 +71,7 @@ FULL_8X8_MODULES = [
 ]
 DIRECTED_STRESS_MODULES = [
 	"tests.test_pt_stress_cases",
+	"tests.test_pt_overlap_cases",
 	"tests.test_pt_csr_cases",
 ]
 COVERAGE_EXTRA_MODULES = [

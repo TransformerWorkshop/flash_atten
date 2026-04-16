@@ -169,21 +169,21 @@ module tb_gemm_base #(
 		input exp_last;
 		input [GROUP_WIDTH-1:0] exp_data;
 		begin
-			if (m_group_idx !== exp_idx) begin
-				$display("[FAIL] idx mismatch exp=%0d got=%0d state=%0d stream_idx=%0d t=%0t",
-					exp_idx, m_group_idx, dut.state, dut.stream_idx, $time);
-				errors = errors + 1;
-			end
-			if (m_last !== exp_last) begin
-				$display("[FAIL] last mismatch exp=%0d got=%0d idx=%0d state=%0d stream_idx=%0d t=%0t",
-					exp_last, m_last, m_group_idx, dut.state, dut.stream_idx, $time);
-				errors = errors + 1;
-			end
-			if (m_group_data !== exp_data) begin
-				$display("[FAIL] data mismatch idx=%0d exp=%0h got=%0h state=%0d stream_idx=%0d t=%0t",
-					exp_idx, exp_data, m_group_data, dut.state, dut.stream_idx, $time);
-				errors = errors + 1;
-			end
+				if (m_group_idx !== exp_idx) begin
+					$display("[FAIL] idx mismatch exp=%0d got=%0d ready_tiles=%0d stream_idx=%0d t=%0t",
+						exp_idx, m_group_idx, dut.ready_tile_count_r, dut.stream_idx, $time);
+					errors = errors + 1;
+				end
+				if (m_last !== exp_last) begin
+					$display("[FAIL] last mismatch exp=%0d got=%0d idx=%0d ready_tiles=%0d stream_idx=%0d t=%0t",
+						exp_last, m_last, m_group_idx, dut.ready_tile_count_r, dut.stream_idx, $time);
+					errors = errors + 1;
+				end
+				if (m_group_data !== exp_data) begin
+					$display("[FAIL] data mismatch idx=%0d exp=%0h got=%0h ready_tiles=%0d stream_idx=%0d t=%0t",
+						exp_idx, exp_data, m_group_data, dut.ready_tile_count_r, dut.stream_idx, $time);
+					errors = errors + 1;
+				end
 		end
 	endtask
 
@@ -220,12 +220,12 @@ module tb_gemm_base #(
 			@(posedge clk);
 			wait_cycles = wait_cycles + 1;
 		end
-		if (m_group_valid !== 1'b1) begin
-			$display("[FAIL] timeout waiting first m_group_valid, state=%0d t=%0t",
-				dut.state, $time);
-			errors = errors + 1;
-			$finish;
-		end
+			if (m_group_valid !== 1'b1) begin
+				$display("[FAIL] timeout waiting first m_group_valid, ready_tiles=%0d stream_idx=%0d t=%0t",
+					dut.ready_tile_count_r, dut.stream_idx, $time);
+				errors = errors + 1;
+				$finish;
+			end
 
 		hold_idx = m_group_idx;
 		hold_data = m_group_data;
@@ -254,12 +254,12 @@ module tb_gemm_base #(
 					handshake_seen = 1;
 				end
 			end
-			if (handshake_seen == 0) begin
-				$display("[FAIL] timeout waiting handshake for group %0d, state=%0d idx=%0d t=%0t",
-					g, dut.state, dut.stream_idx, $time);
-				errors = errors + 1;
-				$finish;
-			end
+				if (handshake_seen == 0) begin
+					$display("[FAIL] timeout waiting handshake for group %0d, ready_tiles=%0d idx=%0d t=%0t",
+						g, dut.ready_tile_count_r, dut.stream_idx, $time);
+					errors = errors + 1;
+					$finish;
+				end
 		end
 
 		if (errors == 0) begin
@@ -292,4 +292,434 @@ module tb_gemm_col;
 	tb_gemm_base #(
 		.OUTPUT_BY_ROW(0)
 	) u_tb_gemm_base ();
+endmodule
+
+// ---------- tb_gemm_small: 2x2 tile ----------
+module tb_gemm_small;
+	tb_gemm_base #(
+		.WIDTH(16),
+		.X_DIM(2),
+		.Y_DIM(2),
+		.OUTPUT_BY_ROW(1)
+	) u_tb_gemm_base ();
+endmodule
+
+// ---------- tb_gemm_backpressure: intermittent m_group_ready ----------
+module tb_gemm_backpressure #(
+	parameter WIDTH = 16,
+	parameter X_DIM = 4,
+	parameter Y_DIM = 4
+);
+	localparam integer NUM_ACC = 4;
+	localparam integer GROUP_SIZE = Y_DIM;
+	localparam integer GROUP_COUNT = X_DIM;
+	localparam integer GROUP_WIDTH = GROUP_SIZE * 4 * WIDTH;
+
+	reg clk, rstn, clear, start;
+	reg [WIDTH-1:0] num_acc;
+	reg a_valid, b_valid;
+	reg [X_DIM*WIDTH-1:0] a;
+	reg [Y_DIM*WIDTH-1:0] b;
+	wire [GROUP_WIDTH-1:0] m_group_data;
+	wire m_group_valid;
+	reg m_group_ready;
+	wire [31:0] m_group_idx;
+	wire m_last;
+
+	reg [WIDTH-1:0] a_matrix [0:X_DIM*NUM_ACC-1];
+	reg [WIDTH-1:0] b_matrix [0:NUM_ACC*Y_DIM-1];
+	reg [4*WIDTH-1:0] expected_matrix [0:X_DIM*Y_DIM-1];
+
+	integer errors, g, k, wait_cycles, handshake_seen, bp_cnt;
+	wire a_ready, b_ready;
+
+	GEMM #(.WIDTH(WIDTH), .X_DIM(X_DIM), .Y_DIM(Y_DIM), .OUTPUT_BY_ROW(1)) dut (
+		.clk(clk), .rstn(rstn), .clear(clear), .start(start), .num_acc(num_acc),
+		.a_valid(a_valid), .a_ready(a_ready), .a(a),
+		.b_valid(b_valid), .b_ready(b_ready), .b(b),
+		.m_group_data(m_group_data), .m_group_valid(m_group_valid),
+		.m_group_ready(m_group_ready), .m_group_idx(m_group_idx), .m_last(m_last)
+	);
+
+	always #5 clk = ~clk;
+
+	function [X_DIM*WIDTH-1:0] pack_a_col;
+		input integer col_idx;
+		integer ri;
+		begin
+			pack_a_col = {X_DIM*WIDTH{1'b0}};
+			for (ri = 0; ri < X_DIM; ri = ri + 1)
+				pack_a_col[ri*WIDTH +: WIDTH] = a_matrix[ri*NUM_ACC + col_idx];
+		end
+	endfunction
+
+	function [Y_DIM*WIDTH-1:0] pack_b_row;
+		input integer row_idx;
+		integer ci;
+		begin
+			pack_b_row = {Y_DIM*WIDTH{1'b0}};
+			for (ci = 0; ci < Y_DIM; ci = ci + 1)
+				pack_b_row[ci*WIDTH +: WIDTH] = b_matrix[row_idx*Y_DIM + ci];
+		end
+	endfunction
+
+	function [GROUP_WIDTH-1:0] expected_group;
+		input [31:0] idx;
+		integer li;
+		begin
+			expected_group = {GROUP_WIDTH{1'b0}};
+			for (li = 0; li < Y_DIM; li = li + 1)
+				expected_group[li*4*WIDTH +: 4*WIDTH] = expected_matrix[idx*Y_DIM + li];
+		end
+	endfunction
+
+	task automatic init_matrices;
+		integer ri, ci, ai, s;
+		begin
+			for (ri = 0; ri < X_DIM; ri = ri + 1)
+				for (ci = 0; ci < NUM_ACC; ci = ci + 1)
+					a_matrix[ri*NUM_ACC + ci] = ((ri + 1) * 3 + ci + 1);
+			for (ri = 0; ri < NUM_ACC; ri = ri + 1)
+				for (ci = 0; ci < Y_DIM; ci = ci + 1)
+					b_matrix[ri*Y_DIM + ci] = (((ri * 2) + ci) % 5) + 1;
+			for (ri = 0; ri < X_DIM; ri = ri + 1)
+				for (ci = 0; ci < Y_DIM; ci = ci + 1) begin
+					s = 0;
+					for (ai = 0; ai < NUM_ACC; ai = ai + 1)
+						s = s + (a_matrix[ri*NUM_ACC + ai] * b_matrix[ai*Y_DIM + ci]);
+					expected_matrix[ri*Y_DIM + ci] = {{(4*WIDTH-32){1'b0}}, s[31:0]};
+				end
+		end
+	endtask
+
+	initial begin
+		clk = 0; rstn = 0; clear = 0; start = 0;
+		num_acc = 0; a_valid = 0; b_valid = 0;
+		a = 0; b = 0; m_group_ready = 0;
+		errors = 0; bp_cnt = 0;
+		init_matrices();
+		repeat (4) @(posedge clk);
+		rstn = 1; @(posedge clk);
+		num_acc = NUM_ACC[WIDTH-1:0];
+		start = 1; @(posedge clk); start = 0;
+		for (k = 0; k < NUM_ACC; k = k + 1) begin
+			a = pack_a_col(k); b = pack_b_row(k);
+			a_valid = 1; b_valid = 1;
+			while (!(a_ready && b_ready)) @(posedge clk);
+			@(posedge clk);
+			a_valid = 0; b_valid = 0; a = 0; b = 0;
+		end
+
+		// Intermittent backpressure: 1 cycle ready, 2 cycles not ready
+		for (g = 0; g < GROUP_COUNT; g = g + 1) begin
+			wait_cycles = 0; handshake_seen = 0;
+			while (wait_cycles < 2000 && handshake_seen == 0) begin
+				m_group_ready = (bp_cnt == 0) ? 1'b1 : 1'b0;
+				@(posedge clk);
+				wait_cycles = wait_cycles + 1;
+				if (m_group_valid && m_group_ready) begin
+					if (m_group_idx !== g[31:0] || m_group_data !== expected_group(g[31:0])) begin
+						$display("[FAIL] backpressure: data/idx mismatch at group %0d t=%0t", g, $time);
+						errors = errors + 1;
+					end
+					if (m_last !== ((g == GROUP_COUNT - 1) ? 1'b1 : 1'b0)) begin
+						$display("[FAIL] backpressure: last mismatch at group %0d t=%0t", g, $time);
+						errors = errors + 1;
+					end
+					handshake_seen = 1;
+				end
+				bp_cnt = (bp_cnt == 2) ? 0 : bp_cnt + 1;
+			end
+			if (handshake_seen == 0) begin
+				$display("[FAIL] backpressure: timeout at group %0d t=%0t", g, $time);
+				errors = errors + 1; $finish;
+			end
+		end
+		m_group_ready = 0;
+		if (errors == 0) $display("TB RESULT (BACKPRESSURE): PASS");
+		else $display("TB RESULT (BACKPRESSURE): FAIL (errors=%0d)", errors);
+		#20; $finish;
+	end
+endmodule
+
+// ---------- tb_gemm_back2back: two consecutive GEMMs without reset ----------
+module tb_gemm_back2back #(
+	parameter WIDTH = 16,
+	parameter X_DIM = 4,
+	parameter Y_DIM = 4
+);
+	localparam integer NUM_ACC = 4;
+	localparam integer GROUP_SIZE = Y_DIM;
+	localparam integer GROUP_COUNT = X_DIM;
+	localparam integer GROUP_WIDTH = GROUP_SIZE * 4 * WIDTH;
+
+	reg clk, rstn, clear, start;
+	reg [WIDTH-1:0] num_acc;
+	reg a_valid, b_valid;
+	reg [X_DIM*WIDTH-1:0] a;
+	reg [Y_DIM*WIDTH-1:0] b;
+	wire [GROUP_WIDTH-1:0] m_group_data;
+	wire m_group_valid;
+	reg m_group_ready;
+	wire [31:0] m_group_idx;
+	wire m_last;
+
+	reg [WIDTH-1:0] a_matrix [0:X_DIM*NUM_ACC-1];
+	reg [WIDTH-1:0] b_matrix [0:NUM_ACC*Y_DIM-1];
+	reg [4*WIDTH-1:0] expected_matrix [0:X_DIM*Y_DIM-1];
+
+	integer errors, g, k, wait_cycles, handshake_seen, run_idx;
+	wire a_ready, b_ready;
+
+	GEMM #(.WIDTH(WIDTH), .X_DIM(X_DIM), .Y_DIM(Y_DIM), .OUTPUT_BY_ROW(1)) dut (
+		.clk(clk), .rstn(rstn), .clear(clear), .start(start), .num_acc(num_acc),
+		.a_valid(a_valid), .a_ready(a_ready), .a(a),
+		.b_valid(b_valid), .b_ready(b_ready), .b(b),
+		.m_group_data(m_group_data), .m_group_valid(m_group_valid),
+		.m_group_ready(m_group_ready), .m_group_idx(m_group_idx), .m_last(m_last)
+	);
+
+	always #5 clk = ~clk;
+
+	function [X_DIM*WIDTH-1:0] pack_a_col;
+		input integer col_idx;
+		integer ri;
+		begin
+			pack_a_col = {X_DIM*WIDTH{1'b0}};
+			for (ri = 0; ri < X_DIM; ri = ri + 1)
+				pack_a_col[ri*WIDTH +: WIDTH] = a_matrix[ri*NUM_ACC + col_idx];
+		end
+	endfunction
+
+	function [Y_DIM*WIDTH-1:0] pack_b_row;
+		input integer row_idx;
+		integer ci;
+		begin
+			pack_b_row = {Y_DIM*WIDTH{1'b0}};
+			for (ci = 0; ci < Y_DIM; ci = ci + 1)
+				pack_b_row[ci*WIDTH +: WIDTH] = b_matrix[row_idx*Y_DIM + ci];
+		end
+	endfunction
+
+	function [GROUP_WIDTH-1:0] expected_group;
+		input [31:0] idx;
+		integer li;
+		begin
+			expected_group = {GROUP_WIDTH{1'b0}};
+			for (li = 0; li < Y_DIM; li = li + 1)
+				expected_group[li*4*WIDTH +: 4*WIDTH] = expected_matrix[idx*Y_DIM + li];
+		end
+	endfunction
+
+	task automatic init_matrices;
+		input integer offset;
+		integer ri, ci, ai, s;
+		begin
+			for (ri = 0; ri < X_DIM; ri = ri + 1)
+				for (ci = 0; ci < NUM_ACC; ci = ci + 1)
+					a_matrix[ri*NUM_ACC + ci] = ((ri + 1) * 3 + ci + 1 + offset);
+			for (ri = 0; ri < NUM_ACC; ri = ri + 1)
+				for (ci = 0; ci < Y_DIM; ci = ci + 1)
+					b_matrix[ri*Y_DIM + ci] = (((ri * 2) + ci + offset) % 5) + 1;
+			for (ri = 0; ri < X_DIM; ri = ri + 1)
+				for (ci = 0; ci < Y_DIM; ci = ci + 1) begin
+					s = 0;
+					for (ai = 0; ai < NUM_ACC; ai = ai + 1)
+						s = s + (a_matrix[ri*NUM_ACC + ai] * b_matrix[ai*Y_DIM + ci]);
+					expected_matrix[ri*Y_DIM + ci] = {{(4*WIDTH-32){1'b0}}, s[31:0]};
+				end
+		end
+	endtask
+
+	initial begin
+		clk = 0; rstn = 0; clear = 0; start = 0;
+		num_acc = 0; a_valid = 0; b_valid = 0;
+		a = 0; b = 0; m_group_ready = 0;
+		errors = 0;
+		repeat (4) @(posedge clk);
+		rstn = 1; @(posedge clk);
+
+		for (run_idx = 0; run_idx < 2; run_idx = run_idx + 1) begin
+			init_matrices(run_idx * 7);
+			num_acc = NUM_ACC[WIDTH-1:0];
+			start = 1; @(posedge clk); start = 0;
+			for (k = 0; k < NUM_ACC; k = k + 1) begin
+				a = pack_a_col(k); b = pack_b_row(k);
+				a_valid = 1; b_valid = 1;
+				while (!(a_ready && b_ready)) @(posedge clk);
+				@(posedge clk);
+				a_valid = 0; b_valid = 0; a = 0; b = 0;
+			end
+			m_group_ready = 1;
+			for (g = 0; g < GROUP_COUNT; g = g + 1) begin
+				wait_cycles = 0; handshake_seen = 0;
+				while (wait_cycles < 2000 && handshake_seen == 0) begin
+					@(posedge clk); wait_cycles = wait_cycles + 1;
+					if (m_group_valid && m_group_ready) begin
+						if (m_group_data !== expected_group(g[31:0])) begin
+							$display("[FAIL] back2back run %0d group %0d data mismatch t=%0t",
+								run_idx, g, $time);
+							errors = errors + 1;
+						end
+						handshake_seen = 1;
+					end
+				end
+				if (!handshake_seen) begin
+					$display("[FAIL] back2back run %0d timeout at group %0d t=%0t", run_idx, g, $time);
+					errors = errors + 1; $finish;
+				end
+			end
+			m_group_ready = 0;
+			@(posedge clk);
+		end
+
+		if (errors == 0) $display("TB RESULT (BACK2BACK): PASS");
+		else $display("TB RESULT (BACK2BACK): FAIL (errors=%0d)", errors);
+		#20; $finish;
+	end
+endmodule
+
+// ---------- tb_gemm_clear: clear mid-computation, then restart ----------
+module tb_gemm_clear #(
+	parameter WIDTH = 16,
+	parameter X_DIM = 4,
+	parameter Y_DIM = 4
+);
+	localparam integer NUM_ACC = 4;
+	localparam integer GROUP_SIZE = Y_DIM;
+	localparam integer GROUP_COUNT = X_DIM;
+	localparam integer GROUP_WIDTH = GROUP_SIZE * 4 * WIDTH;
+
+	reg clk, rstn, clear, start;
+	reg [WIDTH-1:0] num_acc;
+	reg a_valid, b_valid;
+	reg [X_DIM*WIDTH-1:0] a;
+	reg [Y_DIM*WIDTH-1:0] b;
+	wire [GROUP_WIDTH-1:0] m_group_data;
+	wire m_group_valid;
+	reg m_group_ready;
+	wire [31:0] m_group_idx;
+	wire m_last;
+
+	reg [WIDTH-1:0] a_matrix [0:X_DIM*NUM_ACC-1];
+	reg [WIDTH-1:0] b_matrix [0:NUM_ACC*Y_DIM-1];
+	reg [4*WIDTH-1:0] expected_matrix [0:X_DIM*Y_DIM-1];
+
+	integer errors, g, k, wait_cycles, handshake_seen;
+	wire a_ready, b_ready;
+
+	GEMM #(.WIDTH(WIDTH), .X_DIM(X_DIM), .Y_DIM(Y_DIM), .OUTPUT_BY_ROW(1)) dut (
+		.clk(clk), .rstn(rstn), .clear(clear), .start(start), .num_acc(num_acc),
+		.a_valid(a_valid), .a_ready(a_ready), .a(a),
+		.b_valid(b_valid), .b_ready(b_ready), .b(b),
+		.m_group_data(m_group_data), .m_group_valid(m_group_valid),
+		.m_group_ready(m_group_ready), .m_group_idx(m_group_idx), .m_last(m_last)
+	);
+
+	always #5 clk = ~clk;
+
+	function [X_DIM*WIDTH-1:0] pack_a_col;
+		input integer col_idx;
+		integer ri;
+		begin
+			pack_a_col = {X_DIM*WIDTH{1'b0}};
+			for (ri = 0; ri < X_DIM; ri = ri + 1)
+				pack_a_col[ri*WIDTH +: WIDTH] = a_matrix[ri*NUM_ACC + col_idx];
+		end
+	endfunction
+
+	function [Y_DIM*WIDTH-1:0] pack_b_row;
+		input integer row_idx;
+		integer ci;
+		begin
+			pack_b_row = {Y_DIM*WIDTH{1'b0}};
+			for (ci = 0; ci < Y_DIM; ci = ci + 1)
+				pack_b_row[ci*WIDTH +: WIDTH] = b_matrix[row_idx*Y_DIM + ci];
+		end
+	endfunction
+
+	function [GROUP_WIDTH-1:0] expected_group;
+		input [31:0] idx;
+		integer li;
+		begin
+			expected_group = {GROUP_WIDTH{1'b0}};
+			for (li = 0; li < Y_DIM; li = li + 1)
+				expected_group[li*4*WIDTH +: 4*WIDTH] = expected_matrix[idx*Y_DIM + li];
+		end
+	endfunction
+
+	task automatic init_matrices;
+		integer ri, ci, ai, s;
+		begin
+			for (ri = 0; ri < X_DIM; ri = ri + 1)
+				for (ci = 0; ci < NUM_ACC; ci = ci + 1)
+					a_matrix[ri*NUM_ACC + ci] = ((ri + 1) * 3 + ci + 1);
+			for (ri = 0; ri < NUM_ACC; ri = ri + 1)
+				for (ci = 0; ci < Y_DIM; ci = ci + 1)
+					b_matrix[ri*Y_DIM + ci] = (((ri * 2) + ci) % 5) + 1;
+			for (ri = 0; ri < X_DIM; ri = ri + 1)
+				for (ci = 0; ci < Y_DIM; ci = ci + 1) begin
+					s = 0;
+					for (ai = 0; ai < NUM_ACC; ai = ai + 1)
+						s = s + (a_matrix[ri*NUM_ACC + ai] * b_matrix[ai*Y_DIM + ci]);
+					expected_matrix[ri*Y_DIM + ci] = {{(4*WIDTH-32){1'b0}}, s[31:0]};
+				end
+		end
+	endtask
+
+	initial begin
+		clk = 0; rstn = 0; clear = 0; start = 0;
+		num_acc = 0; a_valid = 0; b_valid = 0;
+		a = 0; b = 0; m_group_ready = 0;
+		errors = 0;
+		init_matrices();
+		repeat (4) @(posedge clk);
+		rstn = 1; @(posedge clk);
+
+		// Start first GEMM, feed half data, then clear
+		num_acc = NUM_ACC[WIDTH-1:0];
+		start = 1; @(posedge clk); start = 0;
+		for (k = 0; k < NUM_ACC / 2; k = k + 1) begin
+			a = pack_a_col(k); b = pack_b_row(k);
+			a_valid = 1; b_valid = 1;
+			while (!(a_ready && b_ready)) @(posedge clk);
+			@(posedge clk);
+			a_valid = 0; b_valid = 0; a = 0; b = 0;
+		end
+		clear = 1; @(posedge clk); clear = 0;
+		repeat (2) @(posedge clk);
+
+		// Restart fresh GEMM — should produce correct results
+		start = 1; @(posedge clk); start = 0;
+		for (k = 0; k < NUM_ACC; k = k + 1) begin
+			a = pack_a_col(k); b = pack_b_row(k);
+			a_valid = 1; b_valid = 1;
+			while (!(a_ready && b_ready)) @(posedge clk);
+			@(posedge clk);
+			a_valid = 0; b_valid = 0; a = 0; b = 0;
+		end
+		m_group_ready = 1;
+		for (g = 0; g < GROUP_COUNT; g = g + 1) begin
+			wait_cycles = 0; handshake_seen = 0;
+			while (wait_cycles < 2000 && handshake_seen == 0) begin
+				@(posedge clk); wait_cycles = wait_cycles + 1;
+				if (m_group_valid && m_group_ready) begin
+					if (m_group_data !== expected_group(g[31:0])) begin
+						$display("[FAIL] clear: group %0d data mismatch t=%0t", g, $time);
+						errors = errors + 1;
+					end
+					handshake_seen = 1;
+				end
+			end
+			if (!handshake_seen) begin
+				$display("[FAIL] clear: timeout at group %0d t=%0t", g, $time);
+				errors = errors + 1; $finish;
+			end
+		end
+		m_group_ready = 0;
+
+		if (errors == 0) $display("TB RESULT (CLEAR): PASS");
+		else $display("TB RESULT (CLEAR): FAIL (errors=%0d)", errors);
+		#20; $finish;
+	end
 endmodule

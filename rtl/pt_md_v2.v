@@ -55,6 +55,9 @@ module PT_MD_V2 #(
 	output reg  [GEMM_Y_DIM-1:0]      b_mem_wr_mask,
 	output reg  [(((B_BANK_DEPTH * GEMM_Y_DIM) <= 1) ? 1 : $clog2(B_BANK_DEPTH * GEMM_Y_DIM))-1:0] b_mem_wr_addr,
 	output reg  [GEMM_Y_DIM*DATA_WIDTH-1:0]      b_mem_wr_data,
+	input  wire                       m_alloc_take,
+	output wire                       m_alloc_ready,
+	output wire                       m_alloc_buf,
 	input  wire                       ce_resp_valid,
 	input  wire [31:0]                ce_resp,
 	output wire                       m_dma_req_valid,
@@ -114,8 +117,9 @@ module PT_MD_V2 #(
 	localparam [1:0] FILL_REQ  = 2'd1;
 	localparam [1:0] FILL_RECV = 2'd2;
 	localparam [1:0] MBUF_FREE      = 2'd0;
-	localparam [1:0] MBUF_READY     = 2'd1;
-	localparam [1:0] MBUF_EXPORTING = 2'd2;
+	localparam [1:0] MBUF_EXEC      = 2'd1;
+	localparam [1:0] MBUF_READY     = 2'd2;
+	localparam [1:0] MBUF_EXPORTING = 2'd3;
 	localparam [1:0] EXP_IDLE      = 2'd0;
 	localparam [1:0] EXP_REQ       = 2'd1;
 	localparam [1:0] EXP_STREAM    = 2'd2;
@@ -291,6 +295,8 @@ module PT_MD_V2 #(
 	reg [GEMM_Y_DIM*DATA_WIDTH-1:0] exp_row_data_r;
 	reg exp_row_valid_r, exp_row_fetch_pending_r;
 
+	wire m_buf0_free = (m_buf_state0_r == MBUF_FREE);
+	wire m_buf1_free = (m_buf_state1_r == MBUF_FREE);
 	wire m_buf0_ready = (m_buf_state0_r == MBUF_READY);
 	wire m_buf1_ready = (m_buf_state1_r == MBUF_READY);
 	wire exp_has_ready = m_buf0_ready || m_buf1_ready;
@@ -305,6 +311,8 @@ module PT_MD_V2 #(
 	                        exp_last_chunk && (exp_row_idx_r != (GEMM_X_DIM - 1));
 	wire exp_row_req = exp_prime_req || exp_prefetch_req;
 	wire [M_AW-1:0] exp_req_row_addr = exp_prime_req ? exp_row_idx_r : (exp_row_idx_r + 1'b1);
+	assign m_alloc_ready = m_buf0_free || m_buf1_free;
+	assign m_alloc_buf = m_buf0_free ? 1'b0 : 1'b1;
 
 	assign m_dma_req_valid = (exp_state_r == EXP_REQ);
 	assign m_dma_req_id    = {2'b00, exp_req_id_r};
@@ -550,6 +558,14 @@ module PT_MD_V2 #(
 				endcase
 			end
 
+			if (m_alloc_take && m_alloc_ready) begin
+				if (m_alloc_buf) begin
+					m_buf_state1_r <= MBUF_EXEC;
+				end else begin
+					m_buf_state0_r <= MBUF_EXEC;
+				end
+			end
+
 			if ((fill_state_r == FILL_IDLE) && fill_req_valid && fill_req_ready) begin
 				fill_kind_r       <= fill_req_kind;
 				fill_id_r         <= fill_req_id;
@@ -606,14 +622,20 @@ module PT_MD_V2 #(
 				end
 			end
 
-			if (ce_resp_valid && !ce_resp[31]) begin
-				next_wr_buf_r <= ~ce_resp[30];
-				if (ce_resp[30]) begin
-					m_buf_state1_r <= MBUF_READY;
-					m_buf_id1_r    <= ce_resp[29:0];
+			if (ce_resp_valid) begin
+				if (!ce_resp[31]) begin
+					next_wr_buf_r <= ~ce_resp[30];
+					if (ce_resp[30]) begin
+						m_buf_state1_r <= MBUF_READY;
+						m_buf_id1_r    <= ce_resp[29:0];
+					end else begin
+						m_buf_state0_r <= MBUF_READY;
+						m_buf_id0_r    <= ce_resp[29:0];
+					end
+				end else if (ce_resp[30]) begin
+					m_buf_state1_r <= MBUF_FREE;
 				end else begin
-					m_buf_state0_r <= MBUF_READY;
-					m_buf_id0_r    <= ce_resp[29:0];
+					m_buf_state0_r <= MBUF_FREE;
 				end
 			end
 

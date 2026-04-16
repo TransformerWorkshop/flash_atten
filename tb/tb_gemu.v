@@ -106,7 +106,7 @@ module tb_gemu;
 
         wait_result(128'd70, "small_dot");
 
-        // Test 2: force wide accumulation to catch truncation bugs.
+        // Test 2: signed wide accumulation, also catches truncation bugs.
         num_acc = 32'd2;
         start   = 1'b1;
         @(posedge clk);
@@ -115,9 +115,20 @@ module tb_gemu;
         drive_pair(32'hFFFF0000, 32'hFFFF0000);
         drive_pair(32'hFFFF0000, 32'hFFFF0000);
 
-        wait_result(128'h0000000000000001FFFC000200000000, "wide_accum");
+        wait_result(128'h00000000000000000000000200000000, "signed_wide_accum");
 
-        // Test 3: delay a – b arrives first, a comes a few cycles later.
+        // Test 3: mixed signed inputs should support negative accumulation.
+        num_acc = 32'd2;
+        start   = 1'b1;
+        @(posedge clk);
+        start   = 1'b0;
+
+        drive_pair(32'hFFFFFFFE, 32'd3);   // -2 * 3
+        drive_pair(32'd1,        32'd4);   //  1 * 4
+
+        wait_result(128'hFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFE, "negative_result");
+
+        // Test 4: delay a – b arrives first, a comes a few cycles later.
         num_acc = 32'd2;
         start   = 1'b1;
         @(posedge clk);
@@ -146,7 +157,7 @@ module tb_gemu;
         // expected: 2*3 + 5*4 = 26
         wait_result(128'd26, "delay_a");
 
-        // Test 4: delay b – a arrives first, b comes a few cycles later.
+        // Test 5: delay b – a arrives first, b comes a few cycles later.
         num_acc = 32'd2;
         start   = 1'b1;
         @(posedge clk);
@@ -175,7 +186,7 @@ module tb_gemu;
         // expected: 7*3 + 4*6 = 45
         wait_result(128'd45, "delay_b");
 
-        // Test 5: delay both – both a and b arrive with staggered delays.
+        // Test 6: delay both – both a and b arrive with staggered delays.
         num_acc = 32'd2;
         start   = 1'b1;
         @(posedge clk);

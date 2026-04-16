@@ -18,6 +18,7 @@ module PT_CE_V2 #(
 	input  wire [31:0]                ce_cmd_id,
 	input  wire [`PT_LOCAL_ADDR_W-1:0] ce_a_local_base,
 	input  wire [`PT_LOCAL_ADDR_W-1:0] ce_b_local_base,
+	input  wire                       ce_m_wr_buf,
 	output wire                       a_mem_rd_en,
 	output reg                        exec_a_buf,
 	output reg  [(((A_BANK_DEPTH * GEMM_X_DIM) <= 1) ? 1 : $clog2(A_BANK_DEPTH * GEMM_X_DIM))-1:0] exec_a_addr,
@@ -33,6 +34,7 @@ module PT_CE_V2 #(
 	output wire [DATA_WIDTH-1:0]      gemm_num_acc,
 	input  wire                       gemm_a_ready,
 	input  wire                       gemm_b_ready,
+	input  wire                       gemm_start_ready,
 	input  wire [GEMM_Y_DIM*DATA_WIDTH-1:0] quant_m_data,
 	input  wire [31:0]                quant_m_idx,
 	input  wire                       quant_m_valid,
@@ -70,58 +72,119 @@ module PT_CE_V2 #(
 	localparam integer A_DIM_SHIFT = $clog2((GEMM_X_DIM <= 0) ? 1 : GEMM_X_DIM);
 	localparam integer B_DIM_SHIFT = $clog2((GEMM_Y_DIM <= 0) ? 1 : GEMM_Y_DIM);
 	localparam integer STORE_BASE_W = (GEMM_Y_DIM <= 1) ? 1 : $clog2(GEMM_Y_DIM + 1);
+	localparam integer DRAIN_FULL_WIDTH = (M_WRITE_LANES >= GEMM_Y_DIM) ? 1 : 0;
+	localparam integer MATMUL_ACC_W = 16;
 
-	localparam [2:0] ST_IDLE        = 3'd0;
-	localparam [2:0] ST_EXEC_START  = 3'd1;
-	localparam [2:0] ST_EXEC_FEED   = 3'd2;
-	localparam [2:0] ST_WAIT_RESULT = 3'd3;
-	localparam [2:0] ST_M_STORE     = 3'd4;
-	localparam [2:0] ST_ADD_REQ     = 3'd5;
-	localparam [2:0] ST_ADD_CAPTURE = 3'd6;
-	localparam [2:0] ST_ADD_SEND    = 3'd7;
+	localparam [2:0] ADD_IDLE        = 3'd0;
+	localparam [2:0] ADD_REQ         = 3'd1;
+	localparam [2:0] ADD_CAPTURE     = 3'd2;
+	localparam [2:0] ADD_SEND        = 3'd3;
+	localparam [2:0] ADD_WAIT_RESULT = 3'd4;
+	localparam [2:0] ADD_STORE       = 3'd5;
 
-	reg [2:0] state_r, state_n;
-	reg [3:0] cur_opcode_r;
-	reg [31:0] cur_ctrl_r;
-	reg [31:0] cur_id_r;
+	reg        shadow_valid_r;
+	reg        shadow_done_exec_r;
+	reg [31:0] shadow_ctrl_r;
+	reg [31:0] shadow_id_r;
+	reg        shadow_a_buf_r;
+	reg        shadow_b_buf_r;
+	reg [A_AW-1:0] shadow_a_row_base_r;
+	reg [B_AW-1:0] shadow_b_row_base_r;
+	reg        shadow_m_wr_buf_r;
+
+	reg        exec_valid_r;
+	reg [31:0] exec_ctrl_r;
+	reg [31:0] exec_id_r;
+	reg        exec_a_buf_r;
+	reg        exec_b_buf_r;
+	reg [A_AW-1:0] exec_a_row_base_r;
+	reg [B_AW-1:0] exec_b_row_base_r;
+	reg        exec_m_wr_buf_r;
+	reg [MATMUL_ACC_W-1:0] exec_total_accs_r;
 	reg [15:0] exec_issue_cnt_r, exec_rsp_cnt_r;
-	reg cur_a_buf_r, cur_b_buf_r, cur_m_src_buf_r;
-	reg [A_AW-1:0] cur_a_row_base_r;
-	reg [B_AW-1:0] cur_b_row_base_r;
-	reg m_wr_buf_ptr_r, cur_m_wr_buf_r;
+
+	reg        drain_valid_r;
+	reg [31:0] drain_id_r;
+	reg        drain_m_wr_buf_r;
+	reg        drain_chunking_r;
+
+	reg [2:0] add_state_r;
+	reg [31:0] add_id_r;
+	reg        add_b_buf_r;
+	reg [B_AW-1:0] add_b_row_base_r;
+	reg        add_m_src_buf_r;
+	reg        add_m_wr_buf_r;
 	reg [M_AW-1:0] add_row_idx_r;
 	reg [GEMM_Y_DIM*DATA_WIDTH-1:0] add_lhs_row_r, add_rhs_row_r;
+
 	reg [GEMM_Y_DIM*DATA_WIDTH-1:0] store_result_row_r;
 	reg [M_AW-1:0] store_row_addr_r;
 	reg store_row_last_r;
 	reg [STORE_BASE_W-1:0] store_chunk_base_r;
-	localparam integer MATMUL_ACC_W = 16;
-	wire [3:0] cur_matmul_k_tiles = cur_ctrl_r[`PT_MATMUL_K_TILES_H:`PT_MATMUL_K_TILES_L];
-	wire [MATMUL_ACC_W-1:0] cur_matmul_total_accs = cur_matmul_k_tiles * GEMM_X_DIM;
-	wire [DATA_WIDTH-1:0] cur_matmul_total_accs_w = {{(DATA_WIDTH-MATMUL_ACC_W){1'b0}}, cur_matmul_total_accs};
 
-	wire cur_is_matmul = (cur_opcode_r == `PT_OP_MATMUL);
-	wire cur_is_matadd = (cur_opcode_r == `PT_OP_MATADD);
-	wire mm_exec_rsp_valid = cur_is_matmul && (state_r == ST_EXEC_FEED) && (exec_rsp_cnt_r < exec_issue_cnt_r);
+	wire incoming_is_matmul = (ce_cmd_ctrl[`PT_INST_OPCODE_H:`PT_INST_OPCODE_L] == `PT_OP_MATMUL);
+	wire incoming_is_matadd = (ce_cmd_ctrl[`PT_INST_OPCODE_H:`PT_INST_OPCODE_L] == `PT_OP_MATADD);
+	wire [3:0] cmd_matmul_k_tiles = ce_cmd_ctrl[`PT_MATMUL_K_TILES_H:`PT_MATMUL_K_TILES_L];
+	wire cmd_matadd_m_src_buf = ce_cmd_ctrl[`PT_MATADD_M_OFF_L+8];
+	wire [A_AW-1:0] cmd_a_row_base = ce_a_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] >> A_DIM_SHIFT;
+	wire [B_AW-1:0] cmd_b_row_base = ce_b_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] >> B_DIM_SHIFT;
+	wire [1:0] matmul_outstanding_count = drain_valid_r + exec_valid_r + shadow_valid_r;
+	wire matmul_busy = (matmul_outstanding_count != 0);
+	wire matadd_busy = (add_state_r != ADD_IDLE);
+	wire shadow_launch_fire = !exec_valid_r && shadow_valid_r && !shadow_done_exec_r && gemm_start_ready;
+	wire matmul_ready_for_cmd = !matadd_busy &&
+	                            (matmul_outstanding_count < 2) &&
+	                            (!shadow_valid_r || shadow_launch_fire);
+	wire matadd_ready_for_cmd = !matmul_busy && (add_state_r == ADD_IDLE);
+	wire ce_cmd_fire_matmul = ce_cmd_valid && incoming_is_matmul && ce_cmd_ready;
+	wire ce_cmd_fire_matadd = ce_cmd_valid && incoming_is_matadd && ce_cmd_ready;
+	wire launch_cmd_direct_fire = ce_cmd_fire_matmul && !shadow_launch_fire && !exec_valid_r && gemm_start_ready && !shadow_valid_r;
+	wire shadow_store_cmd_fire = ce_cmd_fire_matmul && !launch_cmd_direct_fire;
+	wire [3:0] launch_k_tiles = shadow_launch_fire ? shadow_ctrl_r[`PT_MATMUL_K_TILES_H:`PT_MATMUL_K_TILES_L] : cmd_matmul_k_tiles;
+	wire [MATMUL_ACC_W-1:0] launch_total_accs = launch_k_tiles * GEMM_X_DIM;
+	wire [DATA_WIDTH-1:0] launch_total_accs_w = {{(DATA_WIDTH-MATMUL_ACC_W){1'b0}}, launch_total_accs};
+	wire [DATA_WIDTH-1:0] exec_total_accs_w = {{(DATA_WIDTH-MATMUL_ACC_W){1'b0}}, exec_total_accs_r};
+
+	wire mm_exec_rsp_valid = exec_valid_r && (exec_rsp_cnt_r < exec_issue_cnt_r);
 	wire mm_exec_rsp_fire  = mm_exec_rsp_valid && gemm_a_ready && gemm_b_ready;
-	wire mm_exec_req_fire  = cur_is_matmul &&
-	                         (state_r == ST_EXEC_FEED) &&
-	                         (exec_issue_cnt_r < cur_matmul_total_accs) &&
+	wire mm_exec_req_fire  = exec_valid_r &&
+	                         (exec_issue_cnt_r < exec_total_accs_r) &&
 	                         ((exec_issue_cnt_r == 0) || mm_exec_rsp_fire);
-	wire add_send_fire = (state_r == ST_ADD_SEND) && gema_in_ready;
-	wire res_valid = cur_is_matadd ? add_m_valid : quant_m_valid;
-	wire res_ready = (state_r == ST_WAIT_RESULT);
-	wire res_fire = res_valid && res_ready;
-	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] res_data = cur_is_matadd ? add_m_data : quant_m_data;
-	wire [31:0] res_idx = cur_is_matadd ? add_m_idx : quant_m_idx;
-	wire res_last = cur_is_matadd ? add_m_last : quant_m_last;
+	wire exec_complete_fire = exec_valid_r &&
+	                          mm_exec_rsp_fire &&
+	                          ((exec_rsp_cnt_r + 1'b1) >= exec_total_accs_r);
+
+	wire drain_accept_ready = drain_valid_r && (DRAIN_FULL_WIDTH ? 1'b1 : !drain_chunking_r);
+	wire drain_accept_fire  = drain_accept_ready && quant_m_valid;
 	wire [STORE_BASE_W:0] store_chunk_limit = store_chunk_base_r + M_WRITE_LANES;
 	wire store_chunk_last = (store_chunk_limit >= GEMM_Y_DIM);
+	wire drain_write_chunk_fire = drain_valid_r && !DRAIN_FULL_WIDTH && drain_chunking_r;
+	wire drain_complete_fire = DRAIN_FULL_WIDTH ?
+	                           (drain_accept_fire && quant_m_last) :
+	                           (drain_write_chunk_fire && store_chunk_last && store_row_last_r);
+	wire drain_slot_will_free = drain_valid_r && drain_complete_fire;
+	wire promote_exec_to_drain_fire = exec_complete_fire && (!drain_valid_r || drain_slot_will_free);
+	wire promote_shadow_done_to_drain_fire = !promote_exec_to_drain_fire &&
+	                                         shadow_valid_r &&
+	                                         shadow_done_exec_r &&
+	                                         (!drain_valid_r || drain_slot_will_free);
+
+	wire add_send_fire = (add_state_r == ADD_SEND) && gema_in_ready;
+	wire add_res_fire = (add_state_r == ADD_WAIT_RESULT) && add_m_valid;
 
 	function is_pow2;
 		input integer value;
 		begin
 			is_pow2 = (value > 0) ? (((value & (value - 1)) == 0) ? 1'b1 : 1'b0) : 1'b0;
+		end
+	endfunction
+
+	function [31:0] pack_resp;
+		input err;
+		input m_buf;
+		input [31:0] id;
+		begin
+			pack_resp = {err, m_buf, id[29:0]};
 		end
 	endfunction
 
@@ -134,195 +197,248 @@ module PT_CE_V2 #(
 		end
 	end
 
-	function [31:0] pack_resp;
-		input err;
-		input m_buf;
-		input [31:0] id;
-		begin
-			pack_resp = {err, m_buf, id[29:0]};
-		end
-	endfunction
-
 	integer wi;
 
-	assign ce_cmd_ready = (state_r == ST_IDLE);
-	assign gemm_start   = (state_r == ST_EXEC_START) && cur_is_matmul;
-	assign gemm_num_acc = cur_is_matmul ? cur_matmul_total_accs_w : {DATA_WIDTH{1'b0}};
+	assign ce_cmd_ready = incoming_is_matmul ? matmul_ready_for_cmd :
+	                      (incoming_is_matadd ? matadd_ready_for_cmd : 1'b0);
+	assign gemm_start   = shadow_launch_fire || launch_cmd_direct_fire;
+	assign gemm_num_acc = gemm_start ? launch_total_accs_w : exec_total_accs_w;
 	assign gemm_a_valid = mm_exec_rsp_valid;
 	assign gemm_b_valid = mm_exec_rsp_valid;
 	assign a_mem_rd_en  = mm_exec_req_fire;
-	assign b_mem_rd_en  = (mm_exec_req_fire && cur_is_matmul) || (state_r == ST_ADD_REQ);
-	assign exec_m_b_rd_en = (state_r == ST_ADD_REQ);
-	assign quant_m_ready = (state_r == ST_WAIT_RESULT) && cur_is_matmul;
-	assign add_m_ready   = (state_r == ST_WAIT_RESULT) && cur_is_matadd;
+	assign b_mem_rd_en  = mm_exec_req_fire || (add_state_r == ADD_REQ);
+	assign exec_m_b_rd_en = (add_state_r == ADD_REQ);
+	assign quant_m_ready = drain_accept_ready;
+	assign add_m_ready   = (add_state_r == ADD_WAIT_RESULT);
 	assign gema_lhs_data = add_lhs_row_r;
 	assign gema_rhs_data = add_rhs_row_r;
 	assign gema_in_idx   = {{(32-M_AW){1'b0}}, add_row_idx_r};
 	assign gema_in_last  = (add_row_idx_r == (GEMM_X_DIM - 1));
-	assign gema_in_valid = (state_r == ST_ADD_SEND);
+	assign gema_in_valid = (add_state_r == ADD_SEND);
 
 	always @(posedge clk or negedge rstn) begin
 		if (!rstn) begin
-			state_r <= ST_IDLE;
+			shadow_valid_r      <= 1'b0;
+			shadow_done_exec_r  <= 1'b0;
+			shadow_ctrl_r       <= 32'd0;
+			shadow_id_r         <= 32'd0;
+			shadow_a_buf_r      <= 1'b0;
+			shadow_b_buf_r      <= 1'b0;
+			shadow_a_row_base_r <= {A_AW{1'b0}};
+			shadow_b_row_base_r <= {B_AW{1'b0}};
+			shadow_m_wr_buf_r   <= 1'b0;
+			exec_valid_r        <= 1'b0;
+			exec_ctrl_r         <= 32'd0;
+			exec_id_r           <= 32'd0;
+			exec_a_buf_r        <= 1'b0;
+			exec_b_buf_r        <= 1'b0;
+			exec_a_row_base_r   <= {A_AW{1'b0}};
+			exec_b_row_base_r   <= {B_AW{1'b0}};
+			exec_m_wr_buf_r     <= 1'b0;
+			exec_total_accs_r   <= {MATMUL_ACC_W{1'b0}};
+			exec_issue_cnt_r    <= 16'd0;
+			exec_rsp_cnt_r      <= 16'd0;
+			drain_valid_r       <= 1'b0;
+			drain_id_r          <= 32'd0;
+			drain_m_wr_buf_r    <= 1'b0;
+			drain_chunking_r    <= 1'b0;
+			add_state_r         <= ADD_IDLE;
+			add_id_r            <= 32'd0;
+			add_b_buf_r         <= 1'b0;
+			add_b_row_base_r    <= {B_AW{1'b0}};
+			add_m_src_buf_r     <= 1'b0;
+			add_m_wr_buf_r      <= 1'b0;
+			add_row_idx_r       <= {M_AW{1'b0}};
+			add_lhs_row_r       <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
+			add_rhs_row_r       <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
+			store_result_row_r  <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
+			store_row_addr_r    <= {M_AW{1'b0}};
+			store_row_last_r    <= 1'b0;
+			store_chunk_base_r  <= {STORE_BASE_W{1'b0}};
+			exec_a_buf          <= 1'b0;
+			exec_a_addr         <= {A_AW{1'b0}};
+			exec_b_buf          <= 1'b0;
+			exec_b_addr         <= {B_AW{1'b0}};
+			exec_m_b_buf        <= 1'b0;
+			exec_m_b_addr       <= {M_AW{1'b0}};
+			m_mem_wr_en         <= 1'b0;
+			m_mem_wr_buf        <= 1'b0;
+			m_mem_wr_mask       <= {GEMM_Y_DIM{1'b0}};
+			m_mem_wr_addr       <= {M_AW{1'b0}};
+			m_mem_wr_data       <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
+			ce_resp_valid       <= 1'b0;
+			ce_resp             <= 32'd0;
+			ce_irq              <= 1'b0;
 		end else if (clear) begin
-			state_r <= ST_IDLE;
-		end else begin
-			state_r <= state_n;
-		end
-	end
-
-	always @(*) begin
-		state_n = state_r;
-		case (state_r)
-			ST_IDLE: if (ce_cmd_valid) state_n = ST_EXEC_START;
-			ST_EXEC_START: state_n = cur_is_matadd ? ST_ADD_REQ : ST_EXEC_FEED;
-			ST_EXEC_FEED: if (mm_exec_rsp_fire && ((exec_rsp_cnt_r + 1'b1) >= cur_matmul_total_accs)) state_n = ST_WAIT_RESULT;
-			ST_WAIT_RESULT: if (res_fire) state_n = ST_M_STORE;
-			ST_M_STORE: begin
-				if (store_chunk_last) begin
-					if (store_row_last_r) begin
-						state_n = ST_IDLE;
-					end else if (cur_is_matadd) begin
-						state_n = ST_ADD_REQ;
-					end else begin
-						state_n = ST_WAIT_RESULT;
-					end
-				end
-			end
-			ST_ADD_REQ: state_n = ST_ADD_CAPTURE;
-			ST_ADD_CAPTURE: state_n = ST_ADD_SEND;
-			ST_ADD_SEND: if (add_send_fire) state_n = ST_WAIT_RESULT;
-			default: state_n = ST_IDLE;
-		endcase
-	end
-
-	always @(posedge clk or negedge rstn) begin
-		if (!rstn) begin
-			cur_opcode_r      <= 4'd0;
-			cur_ctrl_r        <= 32'd0;
-			cur_id_r          <= 32'd0;
-			exec_issue_cnt_r  <= 16'd0;
-			exec_rsp_cnt_r    <= 16'd0;
-			exec_a_buf        <= 1'b0;
-			exec_b_buf        <= 1'b0;
-			exec_a_addr       <= {A_AW{1'b0}};
-			exec_b_addr       <= {B_AW{1'b0}};
-			exec_m_b_buf      <= 1'b0;
-			exec_m_b_addr     <= {M_AW{1'b0}};
-			cur_a_buf_r       <= 1'b0;
-			cur_b_buf_r       <= 1'b0;
-			cur_m_src_buf_r   <= 1'b0;
-			cur_a_row_base_r  <= {A_AW{1'b0}};
-			cur_b_row_base_r  <= {B_AW{1'b0}};
-			m_wr_buf_ptr_r    <= 1'b0;
-			cur_m_wr_buf_r    <= 1'b0;
-			add_row_idx_r     <= {M_AW{1'b0}};
-			add_lhs_row_r     <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
-			add_rhs_row_r     <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
-			store_result_row_r <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
-			store_row_addr_r  <= {M_AW{1'b0}};
-			store_row_last_r  <= 1'b0;
-			store_chunk_base_r <= {STORE_BASE_W{1'b0}};
-			m_mem_wr_en       <= 1'b0;
-			m_mem_wr_buf      <= 1'b0;
-			m_mem_wr_mask     <= {GEMM_Y_DIM{1'b0}};
-			m_mem_wr_addr     <= {M_AW{1'b0}};
-			m_mem_wr_data     <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
-			ce_resp_valid     <= 1'b0;
-			ce_resp           <= 32'd0;
-			ce_irq            <= 1'b0;
-		end else if (clear) begin
-			cur_opcode_r      <= 4'd0;
-			cur_ctrl_r        <= 32'd0;
-			cur_id_r          <= 32'd0;
-			exec_issue_cnt_r  <= 16'd0;
-			exec_rsp_cnt_r    <= 16'd0;
-			exec_a_buf        <= 1'b0;
-			exec_b_buf        <= 1'b0;
-			exec_a_addr       <= {A_AW{1'b0}};
-			exec_b_addr       <= {B_AW{1'b0}};
-			exec_m_b_buf      <= 1'b0;
-			exec_m_b_addr     <= {M_AW{1'b0}};
-			cur_a_buf_r       <= 1'b0;
-			cur_b_buf_r       <= 1'b0;
-			cur_m_src_buf_r   <= 1'b0;
-			cur_a_row_base_r  <= {A_AW{1'b0}};
-			cur_b_row_base_r  <= {B_AW{1'b0}};
-			m_wr_buf_ptr_r    <= 1'b0;
-			cur_m_wr_buf_r    <= 1'b0;
-			add_row_idx_r     <= {M_AW{1'b0}};
-			add_lhs_row_r     <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
-			add_rhs_row_r     <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
-			store_result_row_r <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
-			store_row_addr_r  <= {M_AW{1'b0}};
-			store_row_last_r  <= 1'b0;
-			store_chunk_base_r <= {STORE_BASE_W{1'b0}};
-			m_mem_wr_en       <= 1'b0;
-			m_mem_wr_buf      <= 1'b0;
-			m_mem_wr_mask     <= {GEMM_Y_DIM{1'b0}};
-			m_mem_wr_addr     <= {M_AW{1'b0}};
-			m_mem_wr_data     <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
-			ce_resp_valid     <= 1'b0;
-			ce_resp           <= 32'd0;
-			ce_irq            <= 1'b0;
+			shadow_valid_r      <= 1'b0;
+			shadow_done_exec_r  <= 1'b0;
+			shadow_ctrl_r       <= 32'd0;
+			shadow_id_r         <= 32'd0;
+			shadow_a_buf_r      <= 1'b0;
+			shadow_b_buf_r      <= 1'b0;
+			shadow_a_row_base_r <= {A_AW{1'b0}};
+			shadow_b_row_base_r <= {B_AW{1'b0}};
+			shadow_m_wr_buf_r   <= 1'b0;
+			exec_valid_r        <= 1'b0;
+			exec_ctrl_r         <= 32'd0;
+			exec_id_r           <= 32'd0;
+			exec_a_buf_r        <= 1'b0;
+			exec_b_buf_r        <= 1'b0;
+			exec_a_row_base_r   <= {A_AW{1'b0}};
+			exec_b_row_base_r   <= {B_AW{1'b0}};
+			exec_m_wr_buf_r     <= 1'b0;
+			exec_total_accs_r   <= {MATMUL_ACC_W{1'b0}};
+			exec_issue_cnt_r    <= 16'd0;
+			exec_rsp_cnt_r      <= 16'd0;
+			drain_valid_r       <= 1'b0;
+			drain_id_r          <= 32'd0;
+			drain_m_wr_buf_r    <= 1'b0;
+			drain_chunking_r    <= 1'b0;
+			add_state_r         <= ADD_IDLE;
+			add_id_r            <= 32'd0;
+			add_b_buf_r         <= 1'b0;
+			add_b_row_base_r    <= {B_AW{1'b0}};
+			add_m_src_buf_r     <= 1'b0;
+			add_m_wr_buf_r      <= 1'b0;
+			add_row_idx_r       <= {M_AW{1'b0}};
+			add_lhs_row_r       <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
+			add_rhs_row_r       <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
+			store_result_row_r  <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
+			store_row_addr_r    <= {M_AW{1'b0}};
+			store_row_last_r    <= 1'b0;
+			store_chunk_base_r  <= {STORE_BASE_W{1'b0}};
+			exec_a_buf          <= 1'b0;
+			exec_a_addr         <= {A_AW{1'b0}};
+			exec_b_buf          <= 1'b0;
+			exec_b_addr         <= {B_AW{1'b0}};
+			exec_m_b_buf        <= 1'b0;
+			exec_m_b_addr       <= {M_AW{1'b0}};
+			m_mem_wr_en         <= 1'b0;
+			m_mem_wr_buf        <= 1'b0;
+			m_mem_wr_mask       <= {GEMM_Y_DIM{1'b0}};
+			m_mem_wr_addr       <= {M_AW{1'b0}};
+			m_mem_wr_data       <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
+			ce_resp_valid       <= 1'b0;
+			ce_resp             <= 32'd0;
+			ce_irq              <= 1'b0;
 		end else begin
 			ce_resp_valid <= 1'b0;
 			ce_irq        <= 1'b0;
 			m_mem_wr_en   <= 1'b0;
 			m_mem_wr_mask <= {GEMM_Y_DIM{1'b0}};
 
-			case (state_r)
-				ST_IDLE: begin
-					if (ce_cmd_valid) begin
-						cur_opcode_r     <= ce_cmd_ctrl[`PT_INST_OPCODE_H:`PT_INST_OPCODE_L];
-						cur_ctrl_r       <= ce_cmd_ctrl;
-						cur_id_r         <= ce_cmd_id;
-						cur_a_buf_r      <= ce_a_local_base[`PT_LOCAL_BUF_BIT];
-						cur_b_buf_r      <= ce_b_local_base[`PT_LOCAL_BUF_BIT];
-						cur_m_src_buf_r  <= ce_cmd_ctrl[`PT_MATADD_M_OFF_L+8];
-						cur_a_row_base_r <= ce_a_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] >> A_DIM_SHIFT;
-						cur_b_row_base_r <= ce_b_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] >> B_DIM_SHIFT;
-						cur_m_wr_buf_r   <= m_wr_buf_ptr_r;
+			if (shadow_launch_fire) begin
+				if (shadow_store_cmd_fire) begin
+					shadow_valid_r      <= 1'b1;
+					shadow_done_exec_r  <= 1'b0;
+					shadow_ctrl_r       <= ce_cmd_ctrl;
+					shadow_id_r         <= ce_cmd_id;
+					shadow_a_buf_r      <= ce_a_local_base[`PT_LOCAL_BUF_BIT];
+					shadow_b_buf_r      <= ce_b_local_base[`PT_LOCAL_BUF_BIT];
+					shadow_a_row_base_r <= cmd_a_row_base;
+					shadow_b_row_base_r <= cmd_b_row_base;
+					shadow_m_wr_buf_r   <= ce_m_wr_buf;
+				end else begin
+					shadow_valid_r <= 1'b0;
+				end
+			end else if (exec_complete_fire && !promote_exec_to_drain_fire) begin
+				shadow_valid_r      <= 1'b1;
+				shadow_done_exec_r  <= 1'b1;
+				shadow_ctrl_r       <= exec_ctrl_r;
+				shadow_id_r         <= exec_id_r;
+				shadow_a_buf_r      <= exec_a_buf_r;
+				shadow_b_buf_r      <= exec_b_buf_r;
+				shadow_a_row_base_r <= exec_a_row_base_r;
+				shadow_b_row_base_r <= exec_b_row_base_r;
+				shadow_m_wr_buf_r   <= exec_m_wr_buf_r;
+			end else if (promote_shadow_done_to_drain_fire) begin
+				shadow_valid_r <= 1'b0;
+			end else if (shadow_store_cmd_fire) begin
+				shadow_valid_r      <= 1'b1;
+				shadow_done_exec_r  <= 1'b0;
+				shadow_ctrl_r       <= ce_cmd_ctrl;
+				shadow_id_r         <= ce_cmd_id;
+				shadow_a_buf_r      <= ce_a_local_base[`PT_LOCAL_BUF_BIT];
+				shadow_b_buf_r      <= ce_b_local_base[`PT_LOCAL_BUF_BIT];
+				shadow_a_row_base_r <= cmd_a_row_base;
+				shadow_b_row_base_r <= cmd_b_row_base;
+				shadow_m_wr_buf_r   <= ce_m_wr_buf;
+			end
+
+			if (launch_cmd_direct_fire || shadow_launch_fire) begin
+				exec_valid_r      <= 1'b1;
+				exec_ctrl_r       <= shadow_launch_fire ? shadow_ctrl_r : ce_cmd_ctrl;
+				exec_id_r         <= shadow_launch_fire ? shadow_id_r : ce_cmd_id;
+				exec_a_buf_r      <= shadow_launch_fire ? shadow_a_buf_r : ce_a_local_base[`PT_LOCAL_BUF_BIT];
+				exec_b_buf_r      <= shadow_launch_fire ? shadow_b_buf_r : ce_b_local_base[`PT_LOCAL_BUF_BIT];
+				exec_a_row_base_r <= shadow_launch_fire ? shadow_a_row_base_r : cmd_a_row_base;
+				exec_b_row_base_r <= shadow_launch_fire ? shadow_b_row_base_r : cmd_b_row_base;
+				exec_m_wr_buf_r   <= shadow_launch_fire ? shadow_m_wr_buf_r : ce_m_wr_buf;
+				exec_total_accs_r <= launch_total_accs;
+				exec_issue_cnt_r  <= 16'd0;
+				exec_rsp_cnt_r    <= 16'd0;
+				exec_a_buf        <= shadow_launch_fire ? shadow_a_buf_r : ce_a_local_base[`PT_LOCAL_BUF_BIT];
+				exec_b_buf        <= shadow_launch_fire ? shadow_b_buf_r : ce_b_local_base[`PT_LOCAL_BUF_BIT];
+				exec_a_addr       <= shadow_launch_fire ? shadow_a_row_base_r : cmd_a_row_base;
+				exec_b_addr       <= shadow_launch_fire ? shadow_b_row_base_r : cmd_b_row_base;
+			end else if (exec_valid_r) begin
+				if (mm_exec_req_fire) begin
+					exec_issue_cnt_r <= exec_issue_cnt_r + 1'b1;
+					if ((exec_issue_cnt_r + 1'b1) < exec_total_accs_r) begin
+						exec_a_addr <= exec_a_row_base_r + exec_issue_cnt_r[A_AW-1:0] + 1'b1;
+						exec_b_addr <= exec_b_row_base_r + exec_issue_cnt_r[B_AW-1:0] + 1'b1;
 					end
 				end
-
-				ST_EXEC_START: begin
-					exec_issue_cnt_r <= 16'd0;
-					exec_rsp_cnt_r   <= 16'd0;
-					add_row_idx_r    <= {M_AW{1'b0}};
-					exec_a_buf       <= cur_a_buf_r;
-					exec_b_buf       <= cur_b_buf_r;
-					exec_a_addr      <= cur_a_row_base_r[A_AW-1:0];
-					exec_b_addr      <= cur_b_row_base_r[B_AW-1:0];
-					exec_m_b_buf     <= cur_m_src_buf_r;
-					exec_m_b_addr    <= {M_AW{1'b0}};
+				if (mm_exec_rsp_fire) begin
+					exec_rsp_cnt_r <= exec_rsp_cnt_r + 1'b1;
 				end
+				if (exec_complete_fire) begin
+					exec_valid_r <= 1'b0;
+				end
+			end
 
-				ST_EXEC_FEED: begin
-					if (mm_exec_req_fire) begin
-						exec_issue_cnt_r <= exec_issue_cnt_r + 1'b1;
-						if ((exec_issue_cnt_r + 1'b1) < cur_matmul_total_accs) begin
-							exec_a_addr <= cur_a_row_base_r[A_AW-1:0] + exec_issue_cnt_r[A_AW-1:0] + 1'b1;
-							exec_b_addr <= cur_b_row_base_r[B_AW-1:0] + exec_issue_cnt_r[B_AW-1:0] + 1'b1;
+			if (promote_exec_to_drain_fire) begin
+				drain_valid_r     <= 1'b1;
+				drain_id_r        <= exec_id_r;
+				drain_m_wr_buf_r  <= exec_m_wr_buf_r;
+				drain_chunking_r  <= 1'b0;
+				store_chunk_base_r <= {STORE_BASE_W{1'b0}};
+			end else if (promote_shadow_done_to_drain_fire) begin
+				drain_valid_r     <= 1'b1;
+				drain_id_r        <= shadow_id_r;
+				drain_m_wr_buf_r  <= shadow_m_wr_buf_r;
+				drain_chunking_r  <= 1'b0;
+				store_chunk_base_r <= {STORE_BASE_W{1'b0}};
+			end else if (drain_complete_fire) begin
+				drain_valid_r    <= 1'b0;
+				drain_chunking_r <= 1'b0;
+			end
+
+			if (drain_valid_r) begin
+				if (DRAIN_FULL_WIDTH) begin
+					if (drain_accept_fire) begin
+						m_mem_wr_en   <= 1'b1;
+						m_mem_wr_buf  <= drain_m_wr_buf_r;
+						m_mem_wr_mask <= {GEMM_Y_DIM{1'b1}};
+						m_mem_wr_addr <= quant_m_idx[M_AW-1:0];
+						m_mem_wr_data <= quant_m_data;
+						if (quant_m_last) begin
+							ce_resp       <= pack_resp(1'b0, drain_m_wr_buf_r, drain_id_r);
+							ce_resp_valid <= 1'b1;
+							ce_irq        <= 1'b1;
 						end
 					end
-					if (mm_exec_rsp_fire) begin
-						exec_rsp_cnt_r <= exec_rsp_cnt_r + 1'b1;
-					end
-				end
-
-				ST_WAIT_RESULT: begin
-					if (res_fire) begin
-						store_result_row_r <= res_data;
-						store_row_addr_r   <= res_idx[M_AW-1:0];
-						store_row_last_r   <= res_last;
+				end else if (!drain_chunking_r) begin
+					if (drain_accept_fire) begin
+						store_result_row_r <= quant_m_data;
+						store_row_addr_r   <= quant_m_idx[M_AW-1:0];
+						store_row_last_r   <= quant_m_last;
 						store_chunk_base_r <= {STORE_BASE_W{1'b0}};
+						drain_chunking_r   <= 1'b1;
 					end
-				end
-
-				ST_M_STORE: begin
+				end else begin
 					m_mem_wr_en   <= 1'b1;
-					m_mem_wr_buf  <= cur_m_wr_buf_r;
+					m_mem_wr_buf  <= drain_m_wr_buf_r;
 					m_mem_wr_mask <= {GEMM_Y_DIM{1'b0}};
 					m_mem_wr_addr <= store_row_addr_r;
 					m_mem_wr_data <= store_result_row_r;
@@ -332,33 +448,98 @@ module PT_CE_V2 #(
 						end
 					end
 					if (store_chunk_last) begin
+						drain_chunking_r <= 1'b0;
 						if (store_row_last_r) begin
-							ce_resp       <= pack_resp(1'b0, cur_m_wr_buf_r, cur_id_r);
+							ce_resp       <= pack_resp(1'b0, drain_m_wr_buf_r, drain_id_r);
 							ce_resp_valid <= 1'b1;
 							ce_irq        <= 1'b1;
-							m_wr_buf_ptr_r <= ~m_wr_buf_ptr_r;
-						end else if (cur_is_matadd) begin
-							exec_b_addr   <= cur_b_row_base_r[B_AW-1:0] + add_row_idx_r[B_AW-1:0];
-							exec_m_b_addr <= add_row_idx_r;
 						end
 					end else begin
 						store_chunk_base_r <= store_chunk_base_r + M_WRITE_LANES;
 					end
 				end
+			end
 
-				ST_ADD_CAPTURE: begin
-					add_lhs_row_r <= m_mem_row_data;
-					add_rhs_row_r <= b_mem_row_data;
-				end
-
-				ST_ADD_SEND: begin
-					if (add_send_fire && (add_row_idx_r != (GEMM_X_DIM - 1))) begin
-						add_row_idx_r <= add_row_idx_r + 1'b1;
+			if (ce_cmd_fire_matadd) begin
+				add_state_r      <= ADD_REQ;
+				add_id_r         <= ce_cmd_id;
+				add_b_buf_r      <= ce_b_local_base[`PT_LOCAL_BUF_BIT];
+				add_b_row_base_r <= cmd_b_row_base;
+				add_m_src_buf_r  <= cmd_matadd_m_src_buf;
+				add_m_wr_buf_r   <= ce_m_wr_buf;
+				add_row_idx_r    <= {M_AW{1'b0}};
+				exec_b_buf       <= ce_b_local_base[`PT_LOCAL_BUF_BIT];
+				exec_b_addr      <= cmd_b_row_base;
+				exec_m_b_buf     <= cmd_matadd_m_src_buf;
+				exec_m_b_addr    <= {M_AW{1'b0}};
+			end else begin
+				case (add_state_r)
+					ADD_IDLE: begin
 					end
-				end
-				default: begin
-				end
-			endcase
+
+					ADD_REQ: begin
+						add_state_r <= ADD_CAPTURE;
+					end
+
+					ADD_CAPTURE: begin
+						add_lhs_row_r <= m_mem_row_data;
+						add_rhs_row_r <= b_mem_row_data;
+						add_state_r   <= ADD_SEND;
+					end
+
+					ADD_SEND: begin
+						if (add_send_fire) begin
+							if (add_row_idx_r != (GEMM_X_DIM - 1)) begin
+								add_row_idx_r <= add_row_idx_r + 1'b1;
+							end
+							add_state_r <= ADD_WAIT_RESULT;
+						end
+					end
+
+					ADD_WAIT_RESULT: begin
+						if (add_res_fire) begin
+							store_result_row_r <= add_m_data;
+							store_row_addr_r   <= add_m_idx[M_AW-1:0];
+							store_row_last_r   <= add_m_last;
+							store_chunk_base_r <= {STORE_BASE_W{1'b0}};
+							add_state_r        <= ADD_STORE;
+						end
+					end
+
+					ADD_STORE: begin
+						m_mem_wr_en   <= 1'b1;
+						m_mem_wr_buf  <= add_m_wr_buf_r;
+						m_mem_wr_mask <= {GEMM_Y_DIM{1'b0}};
+						m_mem_wr_addr <= store_row_addr_r;
+						m_mem_wr_data <= store_result_row_r;
+						for (wi = 0; wi < GEMM_Y_DIM; wi = wi + 1) begin
+							if ((wi >= store_chunk_base_r) && (wi < (store_chunk_base_r + M_WRITE_LANES))) begin
+								m_mem_wr_mask[wi] <= 1'b1;
+							end
+						end
+						if (store_chunk_last) begin
+							if (store_row_last_r) begin
+								ce_resp       <= pack_resp(1'b0, add_m_wr_buf_r, add_id_r);
+								ce_resp_valid <= 1'b1;
+								ce_irq        <= 1'b1;
+								add_state_r   <= ADD_IDLE;
+							end else begin
+								exec_b_buf   <= add_b_buf_r;
+								exec_b_addr  <= add_b_row_base_r + add_row_idx_r[B_AW-1:0];
+								exec_m_b_buf <= add_m_src_buf_r;
+								exec_m_b_addr <= add_row_idx_r;
+								add_state_r  <= ADD_REQ;
+							end
+						end else begin
+							store_chunk_base_r <= store_chunk_base_r + M_WRITE_LANES;
+						end
+					end
+
+					default: begin
+						add_state_r <= ADD_IDLE;
+					end
+				endcase
+			end
 		end
 	end
 

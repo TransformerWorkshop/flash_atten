@@ -22,7 +22,9 @@ module PT_DISPATCH_V2 #(
 	output wire [`PT_MALLOC_KIND_W-1:0] malloc_cmd_kind,
 	output wire [`INST_WIDTH-1:0]     malloc_cmd_inst,
 	output wire [31:0]                malloc_cmd_id,
-	input  wire                       malloc_resp_valid
+	input  wire                       malloc_resp_valid,
+	input  wire                       malloc_exec_busy,
+	input  wire                       malloc_serial_busy
 );
 
 	localparam integer MAX_DIM = (GEMM_X_DIM >= GEMM_Y_DIM) ? GEMM_X_DIM : GEMM_Y_DIM;
@@ -33,9 +35,8 @@ module PT_DISPATCH_V2 #(
 	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_QCFG_HDR     = `PT_MEM_KIND_QCFG_HDR;
 	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_QCFG_PAYLOAD = `PT_MEM_KIND_QCFG_PAYLOAD;
 	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_REJECT       = `PT_MEM_KIND_REJECT;
-	localparam [1:0] ACTIVE_NONE   = 2'd0;
-	localparam [1:0] ACTIVE_MD     = 2'd1;
-	localparam [1:0] ACTIVE_MALLOC = 2'd2;
+	localparam [1:0] ACTIVE_NONE = 2'd0;
+	localparam [1:0] ACTIVE_MD   = 2'd1;
 
 	wire [3:0] ctrl_opcode = ctrl_inst[`PT_INST_OPCODE_H:`PT_INST_OPCODE_L];
 	wire [3:0] ctrl_matmul_m_tiles = ctrl_inst[`PT_MATMUL_M_TILES_H:`PT_MATMUL_M_TILES_L];
@@ -211,8 +212,10 @@ module PT_DISPATCH_V2 #(
 	wire [31:0] q_out_id = cmd_q_out_data[31:0];
 
 	reg [1:0] active_dst_r;
-	wire allow_md_issue = (active_dst_r != ACTIVE_MALLOC);
-	wire allow_malloc_issue = (active_dst_r == ACTIVE_NONE);
+	wire allow_md_issue = malloc_cmd_ready && !malloc_exec_busy;
+	wire allow_malloc_issue = (active_dst_r == ACTIVE_NONE) &&
+	                         malloc_cmd_ready &&
+	                         ((q_out_malloc_kind == `PT_MALLOC_KIND_MATMUL) ? !malloc_serial_busy : !malloc_exec_busy);
 	wire issue_md = cmd_q_out_valid && q_out_is_md && allow_md_issue && md_cmd_ready;
 	wire issue_malloc = cmd_q_out_valid && !q_out_is_md && allow_malloc_issue && malloc_cmd_ready;
 
@@ -255,13 +258,9 @@ module PT_DISPATCH_V2 #(
 				end
 			end
 
-			if (issue_malloc) begin
-				active_dst_r <= ACTIVE_MALLOC;
-			end else if (issue_md && (active_dst_r == ACTIVE_NONE)) begin
+			if (issue_md && (active_dst_r == ACTIVE_NONE)) begin
 				active_dst_r <= ACTIVE_MD;
 			end else if ((active_dst_r == ACTIVE_MD) && md_cmd_resp_valid) begin
-				active_dst_r <= ACTIVE_NONE;
-			end else if ((active_dst_r == ACTIVE_MALLOC) && malloc_resp_valid) begin
 				active_dst_r <= ACTIVE_NONE;
 			end
 		end

@@ -35,13 +35,19 @@ module PT_MALLOC #(
 	output wire [31:0]                ce_cmd_id,
 	output wire [`PT_LOCAL_ADDR_W-1:0] ce_a_local_base,
 	output wire [`PT_LOCAL_ADDR_W-1:0] ce_b_local_base,
+	output wire                       ce_m_wr_buf,
+	input  wire                       m_alloc_ready,
+	input  wire                       m_alloc_buf,
+	output wire                       m_alloc_take,
 
 	input  wire                       ce_resp_valid,
 	input  wire [31:0]                ce_resp,
 
 	output reg                        malloc_resp_valid,
 	output reg  [31:0]                malloc_resp,
-	output reg                        malloc_irq
+	output reg                        malloc_irq,
+	output wire                       exec_busy,
+	output wire                       serial_exec_busy
 );
 
 	localparam integer LUT_AW = (LUT_DEPTH <= 1) ? 1 : $clog2(LUT_DEPTH);
@@ -92,6 +98,8 @@ module PT_MALLOC #(
 	reg [B_PTR_W-1:0]           active_b_alloc_next_r;
 	reg [31:0]                  resp_word_r;
 	reg                         resp_irq_r;
+	reg [1:0]                   matmul_inflight_count_r;
+	reg                         serial_exec_busy_r;
 
 	reg                         slot_found;
 	reg [LUT_AW-1:0]            slot_idx;
@@ -122,6 +130,11 @@ module PT_MALLOC #(
 	reg                         b_alloc_ok;
 	reg [`PT_LOCAL_ADDR_W-1:0]  b_alloc_base;
 	reg [B_PTR_W-1:0]           b_alloc_next_after;
+	wire                        active_is_exec = (active_kind_r == `PT_MALLOC_KIND_MATMUL) || (active_kind_r == `PT_MALLOC_KIND_MATADD);
+	wire                        ce_issue_fire;
+	wire                        matmul_enqueue_fire;
+	wire                        matadd_enqueue_fire;
+	wire                        matmul_resp_fire;
 
 	wire [3:0] cmd_opcode = malloc_cmd_inst[`PT_INST_OPCODE_H:`PT_INST_OPCODE_L];
 	wire [3:0] cmd_matmul_m_tiles = malloc_cmd_inst[`PT_MATMUL_M_TILES_H:`PT_MATMUL_M_TILES_L];
@@ -408,11 +421,19 @@ module PT_MALLOC #(
 	assign fill_req_local_base = (state_r == ST_FILL_REQ_A) ? active_a_base_r : active_b_base_r;
 	assign fill_req_len        = (state_r == ST_FILL_REQ_A) ? active_a_len_r : active_b_len_r;
 
-	assign ce_cmd_valid        = (state_r == ST_CE_REQ);
+	assign ce_cmd_valid        = (state_r == ST_CE_REQ) && (!active_is_exec || m_alloc_ready);
 	assign ce_cmd_ctrl         = active_inst_r;
 	assign ce_cmd_id           = active_id_r;
 	assign ce_a_local_base     = active_a_base_r;
 	assign ce_b_local_base     = active_b_base_r;
+	assign ce_m_wr_buf         = m_alloc_buf;
+	assign m_alloc_take        = ce_cmd_valid && ce_cmd_ready && active_is_exec;
+	assign ce_issue_fire       = ce_cmd_valid && ce_cmd_ready;
+	assign matmul_enqueue_fire = ce_issue_fire && (active_kind_r == `PT_MALLOC_KIND_MATMUL);
+	assign matadd_enqueue_fire = ce_issue_fire && (active_kind_r == `PT_MALLOC_KIND_MATADD);
+	assign matmul_resp_fire    = ce_resp_valid && !serial_exec_busy_r && (matmul_inflight_count_r != 0);
+	assign exec_busy           = serial_exec_busy_r || (matmul_inflight_count_r != 0);
+	assign serial_exec_busy    = serial_exec_busy_r;
 
 	always @(posedge clk or negedge rstn) begin
 		if (!rstn) begin
@@ -479,8 +500,8 @@ module PT_MALLOC #(
 			end
 
 			ST_CE_REQ: begin
-				if (ce_cmd_ready) begin
-					state_n = ST_CE_WAIT;
+				if (ce_issue_fire) begin
+					state_n = ST_IDLE;
 				end
 			end
 
@@ -523,6 +544,8 @@ module PT_MALLOC #(
 			active_b_alloc_next_r <= {B_PTR_W{1'b0}};
 			resp_word_r          <= 32'd0;
 			resp_irq_r           <= 1'b0;
+			matmul_inflight_count_r <= 2'd0;
+			serial_exec_busy_r      <= 1'b0;
 			for (li = 0; li < LUT_DEPTH; li = li + 1) begin
 				lut_valid[li]   <= 1'b0;
 				lut_id[li]      <= 32'd0;
@@ -555,6 +578,8 @@ module PT_MALLOC #(
 			active_b_alloc_next_r <= {B_PTR_W{1'b0}};
 			resp_word_r          <= 32'd0;
 			resp_irq_r           <= 1'b0;
+			matmul_inflight_count_r <= 2'd0;
+			serial_exec_busy_r      <= 1'b0;
 			for (li = 0; li < LUT_DEPTH; li = li + 1) begin
 				lut_valid[li]   <= 1'b0;
 				lut_id[li]      <= 32'd0;
@@ -569,6 +594,15 @@ module PT_MALLOC #(
 		end else begin
 			malloc_resp_valid <= 1'b0;
 			malloc_irq        <= 1'b0;
+			matmul_inflight_count_r <= matmul_inflight_count_r
+				+ (matmul_enqueue_fire ? 1'b1 : 1'b0)
+				- (matmul_resp_fire ? 1'b1 : 1'b0);
+			if (matadd_enqueue_fire) begin
+				serial_exec_busy_r <= 1'b1;
+			end
+			if (ce_resp_valid && serial_exec_busy_r) begin
+				serial_exec_busy_r <= 1'b0;
+			end
 
 			case (state_r)
 				ST_IDLE: begin
@@ -638,13 +672,6 @@ module PT_MALLOC #(
 								resp_irq_r  <= 1'b0;
 							end
 						end
-					end
-				end
-
-				ST_CE_WAIT: begin
-					if (ce_resp_valid) begin
-						resp_word_r <= ce_resp;
-						resp_irq_r  <= 1'b0;
 					end
 				end
 

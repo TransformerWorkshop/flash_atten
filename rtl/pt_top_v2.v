@@ -120,6 +120,7 @@ module PT_V2 #(
 	wire [31:0]           ce_cmd_id;
 	wire [`PT_LOCAL_ADDR_W-1:0] ce_a_local_base;
 	wire [`PT_LOCAL_ADDR_W-1:0] ce_b_local_base;
+	wire                  ce_m_wr_buf;
 
 	wire                  gemm_start;
 	wire [DATA_WIDTH-1:0] gemm_num_acc;
@@ -127,6 +128,7 @@ module PT_V2 #(
 	wire                  gemm_b_valid;
 	wire                  gemm_a_ready;
 	wire                  gemm_b_ready;
+	wire                  gemm_start_ready;
 	wire [GEMM_Y_DIM*4*DATA_WIDTH-1:0] gemm_m_data;
 	wire [31:0]           gemm_m_idx;
 	wire                  gemm_m_valid;
@@ -179,6 +181,8 @@ module PT_V2 #(
 	wire                  malloc_resp_valid;
 	wire [31:0]           malloc_resp;
 	wire                  malloc_irq;
+	wire                  malloc_exec_busy;
+	wire                  malloc_serial_busy;
 	wire                  ce_resp_valid;
 	wire [31:0]           ce_resp;
 	wire                  ce_irq;
@@ -192,6 +196,9 @@ module PT_V2 #(
 	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] b_mem_rd_data;
 	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] m_b_mem_rd_data;
 	wire [GEMM_Y_DIM*DATA_WIDTH-1:0] m_exp_rd_data;
+	wire                  m_alloc_ready;
+	wire                  m_alloc_buf;
+	wire                  m_alloc_take;
 
 	PT_DISPATCH #(
 		.GEMM_X_DIM(GEMM_X_DIM),
@@ -215,7 +222,9 @@ module PT_V2 #(
 		.malloc_cmd_kind(malloc_cmd_kind),
 		.malloc_cmd_inst(malloc_cmd_inst),
 		.malloc_cmd_id  (malloc_cmd_id),
-		.malloc_resp_valid(malloc_resp_valid)
+		.malloc_resp_valid(malloc_resp_valid),
+		.malloc_exec_busy(malloc_exec_busy),
+		.malloc_serial_busy(malloc_serial_busy)
 	);
 
 	PT_MALLOC #(
@@ -249,11 +258,17 @@ module PT_V2 #(
 		.ce_cmd_id      (ce_cmd_id),
 		.ce_a_local_base(ce_a_local_base),
 		.ce_b_local_base(ce_b_local_base),
+		.ce_m_wr_buf    (ce_m_wr_buf),
+		.m_alloc_ready  (m_alloc_ready),
+		.m_alloc_buf    (m_alloc_buf),
+		.m_alloc_take   (m_alloc_take),
 		.ce_resp_valid  (ce_resp_valid),
 		.ce_resp        (ce_resp),
 		.malloc_resp_valid(malloc_resp_valid),
 		.malloc_resp    (malloc_resp),
-		.malloc_irq     (malloc_irq)
+		.malloc_irq     (malloc_irq),
+		.exec_busy      (malloc_exec_busy),
+		.serial_exec_busy(malloc_serial_busy)
 	);
 
 	PT_MD #(
@@ -311,6 +326,9 @@ module PT_V2 #(
 		.b_mem_wr_mask  (b_mem_wr_mask),
 		.b_mem_wr_addr  (b_mem_wr_addr),
 		.b_mem_wr_data  (b_mem_wr_data),
+		.m_alloc_take   (m_alloc_take),
+		.m_alloc_ready  (m_alloc_ready),
+		.m_alloc_buf    (m_alloc_buf),
 		.ce_resp_valid  (ce_resp_valid),
 		.ce_resp        (ce_resp),
 		.m_dma_req_valid(m_dma_req_valid),
@@ -384,6 +402,7 @@ module PT_V2 #(
 		.ce_cmd_id      (ce_cmd_id),
 		.ce_a_local_base(ce_a_local_base),
 		.ce_b_local_base(ce_b_local_base),
+		.ce_m_wr_buf    (ce_m_wr_buf),
 		.a_mem_rd_en    (a_mem_rd_en),
 		.exec_a_buf     (exec_a_buf),
 		.exec_a_addr    (exec_a_addr),
@@ -399,6 +418,7 @@ module PT_V2 #(
 		.gemm_num_acc   (gemm_num_acc),
 		.gemm_a_ready   (gemm_a_ready),
 		.gemm_b_ready   (gemm_b_ready),
+		.gemm_start_ready(gemm_start_ready),
 		.quant_m_data   (quant_m_data),
 		.quant_m_idx    (quant_m_idx),
 		.quant_m_valid  (quant_m_valid),
@@ -506,6 +526,7 @@ module PT_V2 #(
 		.b_valid      (gemm_b_valid),
 		.b_ready      (gemm_b_ready),
 		.b            (b_mem_rd_data),
+		.start_ready  (gemm_start_ready),
 		.m_group_data (gemm_m_data),
 		.m_group_valid(gemm_m_valid),
 		.m_group_ready(gemm_m_ready),
@@ -572,6 +593,12 @@ module PT_V2 #(
 				ctrl_resp_valid_r <= 1'b1;
 			end else if (md_cmd_resp_valid && md_cmd_resp[31]) begin
 				ctrl_resp_r       <= md_cmd_resp;
+				ctrl_resp_valid_r <= 1'b1;
+			end else if (ce_resp_valid && ce_resp[31]) begin
+				ctrl_resp_r       <= ce_resp;
+				ctrl_resp_valid_r <= 1'b1;
+			end else if (ce_resp_valid) begin
+				ctrl_resp_r       <= ce_resp;
 				ctrl_resp_valid_r <= 1'b1;
 			end else if (malloc_resp_valid) begin
 				ctrl_resp_r       <= malloc_resp;
