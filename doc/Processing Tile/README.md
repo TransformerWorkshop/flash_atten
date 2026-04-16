@@ -100,6 +100,10 @@ Important distinctions:
   - `M_WRITE_LANES = 1`
   - `M_EXPORT_LANES = 1`
   - `M_PHYSICAL_COPIES = 3`
+- In practical tiled-GEMM software flows, `LUT_DEPTH` is also a real scaling limit:
+  - if software allocates a fresh `ctrl_id` for every partial tile, the default
+    `LUT_DEPTH = 8` can be exhausted before the compute datapath itself becomes
+    the bottleneck
 
 Depth semantics remain intentionally different across A/B and M:
 
@@ -139,6 +143,10 @@ There is no separate export command. Export is a post-compute side effect once a
 - For the same `ctrl_id`, B and C share the B-side residency slot. A later `MATADD` may therefore overwrite B metadata with C metadata, which can force a later B reload.
 - M retention is not cache-by-`ctrl_id`. It is a dual-buffer lifetime model owned by `PT_MD`.
 - `PT_MD` tracks `m_buf_state{0,1}` as `FREE`, `READY`, or `EXPORTING`.
+- Practical implication:
+  - software that keeps assigning new `ctrl_id`s instead of reusing old ones may
+    hit the default `LUT_DEPTH = 8` residency limit on larger tiled problems,
+    even when the underlying `MATMUL` datapath is otherwise functioning normally
 
 ## 7. Storage Organization
 

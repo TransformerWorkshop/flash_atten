@@ -1,38 +1,38 @@
 {
   "algorithms": {
     "host_reduce_direct_pipelined": {
-      "dma_req_count": 4,
-      "export_beats": 32,
-      "export_req_count": 2,
+      "dma_req_count": 2,
+      "export_beats": 16,
+      "export_req_count": 1,
       "matadd_count": 0,
-      "total_cycles": 159
+      "total_cycles": 117
     },
     "host_reduce_direct_tiled_matmul": {
-      "dma_req_count": 4,
-      "export_beats": 32,
-      "export_req_count": 2,
+      "dma_req_count": 2,
+      "export_beats": 16,
+      "export_req_count": 1,
       "matadd_count": 0,
-      "total_cycles": 235
+      "total_cycles": 117
     },
     "host_reduce_load_then_matmul": {
-      "dma_req_count": 4,
-      "export_beats": 32,
-      "export_req_count": 2,
+      "dma_req_count": 2,
+      "export_beats": 16,
+      "export_req_count": 1,
       "matadd_count": 0,
-      "total_cycles": 245
+      "total_cycles": 122
     },
     "pt_matadd_reduce": {
-      "dma_req_count": 5,
-      "export_beats": 48,
-      "export_req_count": 3,
-      "matadd_count": 1,
-      "total_cycles": 376
+      "dma_req_count": 2,
+      "export_beats": 16,
+      "export_req_count": 1,
+      "matadd_count": 0,
+      "total_cycles": 117
     }
   },
   "metadata": {
     "problem": {
-      "k_dim": 32,
-      "k_tiles": 2,
+      "k_dim": 16,
+      "k_tiles": 1,
       "m_dim": 16,
       "m_tiles": 1,
       "n_dim": 16,
@@ -42,27 +42,25 @@
   "tests": {
     "algorithm_compare_reduction_strategies": {
       "status": "passed",
-      "winner": "host_reduce_direct_pipelined"
+      "winner": "host_reduce_direct_tiled_matmul"
     },
     "numeric_host_reduce_per_tensor": {
       "status": "passed",
-      "total_cycles": 235
+      "total_cycles": 117
     },
     "numeric_host_reduce_pipelined": {
       "status": "passed",
-      "total_cycles": 159
+      "total_cycles": 117
     },
     "numeric_pt_matadd_reduce_per_tensor": {
       "status": "passed",
-      "total_cycles": 376
+      "total_cycles": 117
     }
   },
   "unsupported_paths": {
     "same_id_k_slice_swap": {
-      "observed_dma_increment": 0,
-      "observed_result_changed": false,
-      "observed_same_result": true,
-      "status": "unsupported"
+      "reason": "K has only one tile",
+      "status": "not_applicable"
     }
   }
 }

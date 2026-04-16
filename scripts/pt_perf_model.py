@@ -530,10 +530,13 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--m-write-lanes", type=int, default=1)
 	parser.add_argument("--m-export-lanes", type=int, default=1)
 	parser.add_argument("--m-physical-copies", type=int, default=3)
-	parser.add_argument("--matmul-overlap-depth", type=int, default=1)
+	parser.add_argument("--matmul-overlap-depth", type=int, default=None,
+		help="Pipeline overlap depth. Default: 2 when m_write_lanes >= y_dim (full-width drain), else 1.")
 	parser.add_argument("--scenario", choices=SCENARIOS, required=True)
 	parser.add_argument("--format", choices=("text", "json"), default="text")
 	args = parser.parse_args()
+	if args.matmul_overlap_depth is None:
+		args.matmul_overlap_depth = 2 if args.m_write_lanes >= args.y_dim else 1
 	if args.data_width % 8 != 0:
 		raise ValueError("data_width must be byte-aligned")
 	if not (0.0 <= args.cold_ratio <= 1.0):

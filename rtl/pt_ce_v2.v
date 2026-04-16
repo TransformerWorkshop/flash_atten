@@ -128,17 +128,26 @@ module PT_CE_V2 #(
 	wire cmd_matadd_m_src_buf = ce_cmd_ctrl[`PT_MATADD_M_OFF_L+8];
 	wire [A_AW-1:0] cmd_a_row_base = ce_a_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] >> A_DIM_SHIFT;
 	wire [B_AW-1:0] cmd_b_row_base = ce_b_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] >> B_DIM_SHIFT;
-	wire [1:0] matmul_outstanding_count = drain_valid_r + exec_valid_r + shadow_valid_r;
+	// In DRAIN_FULL_WIDTH mode, drain activates at exec launch and runs
+	// concurrently with exec.  Count exec+drain as a single pipeline slot
+	// so that the outstanding limit still works correctly.
+	wire [1:0] matmul_outstanding_count = (DRAIN_FULL_WIDTH ?
+	                                       (exec_valid_r | drain_valid_r) :
+	                                       (drain_valid_r + exec_valid_r)) + shadow_valid_r;
 	wire matmul_busy = (matmul_outstanding_count != 0);
 	wire matadd_busy = (add_state_r != ADD_IDLE);
-	wire shadow_launch_fire = !exec_valid_r && shadow_valid_r && !shadow_done_exec_r && gemm_start_ready;
+	wire shadow_launch_fire = !exec_valid_r &&
+	                         !(DRAIN_FULL_WIDTH && drain_valid_r) &&
+	                         shadow_valid_r && !shadow_done_exec_r && gemm_start_ready;
 	wire matmul_ready_for_cmd = !matadd_busy &&
 	                            (matmul_outstanding_count < 2) &&
 	                            (!shadow_valid_r || shadow_launch_fire);
 	wire matadd_ready_for_cmd = !matmul_busy && (add_state_r == ADD_IDLE);
 	wire ce_cmd_fire_matmul = ce_cmd_valid && incoming_is_matmul && ce_cmd_ready;
 	wire ce_cmd_fire_matadd = ce_cmd_valid && incoming_is_matadd && ce_cmd_ready;
-	wire launch_cmd_direct_fire = ce_cmd_fire_matmul && !shadow_launch_fire && !exec_valid_r && gemm_start_ready && !shadow_valid_r;
+	wire launch_cmd_direct_fire = ce_cmd_fire_matmul && !shadow_launch_fire && !exec_valid_r &&
+	                              !(DRAIN_FULL_WIDTH && drain_valid_r) &&
+	                              gemm_start_ready && !shadow_valid_r;
 	wire shadow_store_cmd_fire = ce_cmd_fire_matmul && !launch_cmd_direct_fire;
 	wire [3:0] launch_k_tiles = shadow_launch_fire ? shadow_ctrl_r[`PT_MATMUL_K_TILES_H:`PT_MATMUL_K_TILES_L] : cmd_matmul_k_tiles;
 	wire [MATMUL_ACC_W-1:0] launch_total_accs = launch_k_tiles * GEMM_X_DIM;
@@ -163,8 +172,14 @@ module PT_CE_V2 #(
 	                           (drain_accept_fire && quant_m_last) :
 	                           (drain_write_chunk_fire && store_chunk_last && store_row_last_r);
 	wire drain_slot_will_free = drain_valid_r && drain_complete_fire;
-	wire promote_exec_to_drain_fire = exec_complete_fire && (!drain_valid_r || drain_slot_will_free);
+	// In DRAIN_FULL_WIDTH mode, drain is co-launched with exec, so there is
+	// no separate promotion from exec to drain.  The legacy (chunked) path
+	// still uses the sequential promotion.
+	wire promote_exec_to_drain_fire = !DRAIN_FULL_WIDTH &&
+	                                  exec_complete_fire &&
+	                                  (!drain_valid_r || drain_slot_will_free);
 	wire promote_shadow_done_to_drain_fire = !promote_exec_to_drain_fire &&
+	                                         !DRAIN_FULL_WIDTH &&
 	                                         shadow_valid_r &&
 	                                         shadow_done_exec_r &&
 	                                         (!drain_valid_r || drain_slot_will_free);
@@ -341,7 +356,7 @@ module PT_CE_V2 #(
 				end else begin
 					shadow_valid_r <= 1'b0;
 				end
-			end else if (exec_complete_fire && !promote_exec_to_drain_fire) begin
+			end else if (!DRAIN_FULL_WIDTH && exec_complete_fire && !promote_exec_to_drain_fire) begin
 				shadow_valid_r      <= 1'b1;
 				shadow_done_exec_r  <= 1'b1;
 				shadow_ctrl_r       <= exec_ctrl_r;
@@ -381,6 +396,15 @@ module PT_CE_V2 #(
 				exec_b_buf        <= shadow_launch_fire ? shadow_b_buf_r : ce_b_local_base[`PT_LOCAL_BUF_BIT];
 				exec_a_addr       <= shadow_launch_fire ? shadow_a_row_base_r : cmd_a_row_base;
 				exec_b_addr       <= shadow_launch_fire ? shadow_b_row_base_r : cmd_b_row_base;
+				// In DRAIN_FULL_WIDTH mode, co-launch drain so it can accept
+				// quant results while exec is still feeding A/B rows.
+				if (DRAIN_FULL_WIDTH) begin
+					drain_valid_r     <= 1'b1;
+					drain_id_r        <= shadow_launch_fire ? shadow_id_r : ce_cmd_id;
+					drain_m_wr_buf_r  <= shadow_launch_fire ? shadow_m_wr_buf_r : ce_m_wr_buf;
+					drain_chunking_r  <= 1'b0;
+					store_chunk_base_r <= {STORE_BASE_W{1'b0}};
+				end
 			end else if (exec_valid_r) begin
 				if (mm_exec_req_fire) begin
 					exec_issue_cnt_r <= exec_issue_cnt_r + 1'b1;
