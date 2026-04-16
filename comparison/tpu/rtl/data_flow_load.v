@@ -64,6 +64,12 @@ module data_flow_load #(
     localparam DATA_WIDTH_ONE_BYTE  = 2'd1;
     localparam DATA_WIDTH_TWO_BYTE  = 2'd2;
     localparam DATA_WIDTH_FOUR_BYTE = 2'd3;
+    localparam RAM_ONE_BYTE_ELEMS   = RAM_DATA_WIDTH / 8;
+    localparam RAM_TWO_BYTE_ELEMS   = RAM_DATA_WIDTH / 16;
+    localparam RAM_FOUR_BYTE_ELEMS  = RAM_DATA_WIDTH / 32;
+    localparam LOG2_RAM_ONE_BYTE_ELEMS  = $clog2(RAM_ONE_BYTE_ELEMS);
+    localparam LOG2_RAM_TWO_BYTE_ELEMS  = $clog2(RAM_TWO_BYTE_ELEMS);
+    localparam LOG2_RAM_FOUR_BYTE_ELEMS = $clog2(RAM_FOUR_BYTE_ELEMS);
 
     // 计算PE_SIZE的对数
     localparam LOG2_PE_SIZE = $clog2(PE_SIZE);
@@ -120,6 +126,7 @@ module data_flow_load #(
     reg [1:0] buffer_status;  // [0]=buffer0状态, [1]=buffer1状态
 
     integer i;
+    integer meta_idx;
 
     always @(posedge clk) begin
         a_index_wr_en_r <= a_index_wr_en;
@@ -161,15 +168,15 @@ module data_flow_load #(
 
     always @(posedge clk) begin
         if (a_index_wr_en && buffer_sel_reg) begin
-            a_meta_data_indices_0[(a_index_wr_addr << 2)    ] <= a_index_wr_data[15:0];
-            a_meta_data_indices_0[(a_index_wr_addr << 2) + 1] <= a_index_wr_data[31:16];
-            a_meta_data_indices_0[(a_index_wr_addr << 2) + 2] <= a_index_wr_data[47:32];
-            a_meta_data_indices_0[(a_index_wr_addr << 2) + 3] <= a_index_wr_data[63:48];
+            for (meta_idx = 0; meta_idx < (RAM_DATA_WIDTH / 16); meta_idx = meta_idx + 1) begin
+                a_meta_data_indices_0[(a_index_wr_addr << LOG2_RAM_TWO_BYTE_ELEMS) + meta_idx] <=
+                    a_index_wr_data[(meta_idx * 16) +: 16];
+            end
         end else if (a_index_wr_en && !buffer_sel_reg) begin
-            a_meta_data_indices_1[(a_index_wr_addr << 2)    ] <= a_index_wr_data[15:0];
-            a_meta_data_indices_1[(a_index_wr_addr << 2) + 1] <= a_index_wr_data[31:16];
-            a_meta_data_indices_1[(a_index_wr_addr << 2) + 2] <= a_index_wr_data[47:32];
-            a_meta_data_indices_1[(a_index_wr_addr << 2) + 3] <= a_index_wr_data[63:48];
+            for (meta_idx = 0; meta_idx < (RAM_DATA_WIDTH / 16); meta_idx = meta_idx + 1) begin
+                a_meta_data_indices_1[(a_index_wr_addr << LOG2_RAM_TWO_BYTE_ELEMS) + meta_idx] <=
+                    a_index_wr_data[(meta_idx * 16) +: 16];
+            end
         end
     end
 
@@ -235,27 +242,51 @@ module data_flow_load #(
             end
             
             DATA_WIDTH_ONE_BYTE: begin
-                max_sub_elem   = 5'd7;  // 4个元素每个RAM字，索引0-3
-                max_elem_k     = (matrix_k >> 3) - 8'd1;  // k/4-1
-                log2_k_div_epw = get_log2(matrix_k) > 3 ? get_log2(matrix_k) - 3 : 0;
+                if (matrix_k <= RAM_ONE_BYTE_ELEMS) begin
+                    max_sub_elem = matrix_k - 8'd1;
+                    max_elem_k   = 6'd0;
+                end else begin
+                    max_sub_elem = RAM_ONE_BYTE_ELEMS - 1;
+                    max_elem_k   = ((matrix_k + RAM_ONE_BYTE_ELEMS - 1) >> LOG2_RAM_ONE_BYTE_ELEMS) - 8'd1;
+                end
+                log2_k_div_epw = get_log2(matrix_k) > LOG2_RAM_ONE_BYTE_ELEMS ?
+                    (get_log2(matrix_k) - LOG2_RAM_ONE_BYTE_ELEMS) : 0;
             end
             
             DATA_WIDTH_TWO_BYTE: begin
-                max_sub_elem   = 5'd3;  // 2个元素每个RAM字，索引0-1
-                max_elem_k     = (matrix_k >> 2) - 8'd1;  // k/2-1
-                log2_k_div_epw = get_log2(matrix_k) > 2 ? get_log2(matrix_k) - 2 : 0;
+                if (matrix_k <= RAM_TWO_BYTE_ELEMS) begin
+                    max_sub_elem = matrix_k - 8'd1;
+                    max_elem_k   = 6'd0;
+                end else begin
+                    max_sub_elem = RAM_TWO_BYTE_ELEMS - 1;
+                    max_elem_k   = ((matrix_k + RAM_TWO_BYTE_ELEMS - 1) >> LOG2_RAM_TWO_BYTE_ELEMS) - 8'd1;
+                end
+                log2_k_div_epw = get_log2(matrix_k) > LOG2_RAM_TWO_BYTE_ELEMS ?
+                    (get_log2(matrix_k) - LOG2_RAM_TWO_BYTE_ELEMS) : 0;
             end
             
             DATA_WIDTH_FOUR_BYTE: begin
-                max_sub_elem   = 5'd7;  // 1个元素每个RAM字，索引0
-                max_elem_k     = (matrix_k >> 1) - 8'd1;  // k/2-1
-                log2_k_div_epw = get_log2(matrix_k) > 1 ? get_log2(matrix_k) - 1 : 0;
+                if (matrix_k <= RAM_FOUR_BYTE_ELEMS) begin
+                    max_sub_elem = matrix_k - 8'd1;
+                    max_elem_k   = 6'd0;
+                end else begin
+                    max_sub_elem = RAM_FOUR_BYTE_ELEMS - 1;
+                    max_elem_k   = ((matrix_k + RAM_FOUR_BYTE_ELEMS - 1) >> LOG2_RAM_FOUR_BYTE_ELEMS) - 8'd1;
+                end
+                log2_k_div_epw = get_log2(matrix_k) > LOG2_RAM_FOUR_BYTE_ELEMS ?
+                    (get_log2(matrix_k) - LOG2_RAM_FOUR_BYTE_ELEMS) : 0;
             end
 
             default: begin
-                max_sub_elem   = 5'd7;  // 4个元素每个RAM字，索引0-3
-                max_elem_k     = (matrix_k >> 3) - 8'd1;  // k/4-1
-                log2_k_div_epw = get_log2(matrix_k) > 3 ? get_log2(matrix_k) - 3 : 0;
+                if (matrix_k <= RAM_ONE_BYTE_ELEMS) begin
+                    max_sub_elem = matrix_k - 8'd1;
+                    max_elem_k   = 6'd0;
+                end else begin
+                    max_sub_elem = RAM_ONE_BYTE_ELEMS - 1;
+                    max_elem_k   = ((matrix_k + RAM_ONE_BYTE_ELEMS - 1) >> LOG2_RAM_ONE_BYTE_ELEMS) - 8'd1;
+                end
+                log2_k_div_epw = get_log2(matrix_k) > LOG2_RAM_ONE_BYTE_ELEMS ?
+                    (get_log2(matrix_k) - LOG2_RAM_ONE_BYTE_ELEMS) : 0;
             end
         endcase
 
@@ -876,12 +907,12 @@ module data_flow_load #(
                             // A矩阵FIFO写入数据
                             for (i = 0; i < PE_SIZE; i = i + 1) begin
                                 systolic_a_wr_data[(i*SYS_DATA_WIDTH) +: SYS_DATA_WIDTH] = 
-                                    {{(SYS_DATA_WIDTH-32){1'b0}}, ram_a_rd_data[(i*RAM_DATA_WIDTH + sub_elem_cnt[2]*32) +: 32]};
+                                    {{(SYS_DATA_WIDTH-32){1'b0}}, ram_a_rd_data[(i*RAM_DATA_WIDTH + sub_elem_cnt*32) +: 32]};
                             end
                             // B矩阵FIFO写入数据
                             for (i = 0; i < PE_SIZE; i = i + 1) begin
                                 systolic_b_wr_data[(i*SYS_DATA_WIDTH) +: SYS_DATA_WIDTH] = 
-                                    {{(SYS_DATA_WIDTH-32){1'b0}}, ram_b_rd_data[(i*RAM_DATA_WIDTH + sub_elem_cnt[2]*32) +: 32]};
+                                    {{(SYS_DATA_WIDTH-32){1'b0}}, ram_b_rd_data[(i*RAM_DATA_WIDTH + sub_elem_cnt*32) +: 32]};
                             end
                         end else begin
                             systolic_a_wr_data = {(SYS_DATA_WIDTH*PE_SIZE){1'b0}};

@@ -44,6 +44,12 @@ module data_flow_load_c #(
     localparam DATA_WIDTH_ONE_BYTE  = 2'd1;
     localparam DATA_WIDTH_TWO_BYTE  = 2'd2;
     localparam DATA_WIDTH_FOUR_BYTE = 2'd3;
+    localparam RAM_ONE_BYTE_ELEMS   = RAM_DATA_WIDTH / 8;
+    localparam RAM_TWO_BYTE_ELEMS   = RAM_DATA_WIDTH / 16;
+    localparam RAM_FOUR_BYTE_ELEMS  = RAM_DATA_WIDTH / 32;
+    localparam LOG2_RAM_ONE_BYTE_ELEMS  = $clog2(RAM_ONE_BYTE_ELEMS);
+    localparam LOG2_RAM_TWO_BYTE_ELEMS  = $clog2(RAM_TWO_BYTE_ELEMS);
+    localparam LOG2_RAM_FOUR_BYTE_ELEMS = $clog2(RAM_FOUR_BYTE_ELEMS);
     
     // 计算PE_SIZE的对数
     localparam LOG2_PE_SIZE = $clog2(PE_SIZE);
@@ -142,21 +148,39 @@ module data_flow_load_c #(
             end
             
             DATA_WIDTH_ONE_BYTE: begin
-                max_sub_elem   = 5'd7;  // 4个元素每个RAM字，索引0-3
-                max_elem_n     = (matrix_n >> 3) - 8'd1;  // k/8-1
-                log2_n_div_epw = get_log2(matrix_n) > 3 ? get_log2(matrix_n) - 3 : 0;
+                if (matrix_n <= RAM_ONE_BYTE_ELEMS) begin
+                    max_sub_elem = matrix_n - 8'd1;
+                    max_elem_n   = 6'd0;
+                end else begin
+                    max_sub_elem = RAM_ONE_BYTE_ELEMS - 1;
+                    max_elem_n   = ((matrix_n + RAM_ONE_BYTE_ELEMS - 1) >> LOG2_RAM_ONE_BYTE_ELEMS) - 8'd1;
+                end
+                log2_n_div_epw = get_log2(matrix_n) > LOG2_RAM_ONE_BYTE_ELEMS ?
+                    (get_log2(matrix_n) - LOG2_RAM_ONE_BYTE_ELEMS) : 0;
             end
             
             DATA_WIDTH_TWO_BYTE: begin
-                max_sub_elem   = 5'd3;  // 2个元素每个RAM字，索引0-1
-                max_elem_n     = (matrix_n >> 2) - 8'd1;  // k/8-1
-                log2_n_div_epw = get_log2(matrix_n) > 2 ? get_log2(matrix_n) - 2 : 0;
+                if (matrix_n <= RAM_TWO_BYTE_ELEMS) begin
+                    max_sub_elem = matrix_n - 8'd1;
+                    max_elem_n   = 6'd0;
+                end else begin
+                    max_sub_elem = RAM_TWO_BYTE_ELEMS - 1;
+                    max_elem_n   = ((matrix_n + RAM_TWO_BYTE_ELEMS - 1) >> LOG2_RAM_TWO_BYTE_ELEMS) - 8'd1;
+                end
+                log2_n_div_epw = get_log2(matrix_n) > LOG2_RAM_TWO_BYTE_ELEMS ?
+                    (get_log2(matrix_n) - LOG2_RAM_TWO_BYTE_ELEMS) : 0;
             end
             
             DATA_WIDTH_FOUR_BYTE: begin
-                max_sub_elem   = 5'd1;  // 1个元素每个RAM字，索引0
-                max_elem_n     = (matrix_n >> 1) - 8'd1;  // k/8-1
-                log2_n_div_epw = get_log2(matrix_n) > 1 ? get_log2(matrix_n) - 1 : 0;
+                if (matrix_n <= RAM_FOUR_BYTE_ELEMS) begin
+                    max_sub_elem = matrix_n - 8'd1;
+                    max_elem_n   = 6'd0;
+                end else begin
+                    max_sub_elem = RAM_FOUR_BYTE_ELEMS - 1;
+                    max_elem_n   = ((matrix_n + RAM_FOUR_BYTE_ELEMS - 1) >> LOG2_RAM_FOUR_BYTE_ELEMS) - 8'd1;
+                end
+                log2_n_div_epw = get_log2(matrix_n) > LOG2_RAM_FOUR_BYTE_ELEMS ?
+                    (get_log2(matrix_n) - LOG2_RAM_FOUR_BYTE_ELEMS) : 0;
             end
         endcase
     end

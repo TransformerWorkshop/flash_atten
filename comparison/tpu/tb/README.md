@@ -21,6 +21,7 @@ From `comparison/tpu/tb`:
 ```bash
 make build
 make smoke
+make smoke-both
 make coverage
 make numeric
 make numeric-both
@@ -32,9 +33,11 @@ Or run directly:
 ```bash
 python run.py build --sim verilator
 python run.py smoke --sim verilator
+python run.py smoke --sim verilator --axi-data-width 128 --ram-data-width 128
 python run.py coverage --sim verilator
 python run.py numeric --sim verilator
-python run.py numeric --sim verilator --variant vanilla_v2 --rtl-root ../../../../tpu_vanilla/third_party/tpu_vanilla-v2-local/rtl
+python run.py numeric --sim verilator --axi-data-width 128 --ram-data-width 128
+python run.py numeric --sim verilator --variant vanilla_v2 --rtl-root ../../../../tpu_vanilla/third_party/tpu_vanilla-v2-local/rtl --axi-data-width 64 --ram-data-width 64
 ```
 
 ## Current smoke coverage

@@ -235,11 +235,89 @@ def _random_cases() -> list[NumericCase]:
     return cases
 
 
+def _shape_cases() -> list[NumericCase]:
+    return [
+        build_case(
+            "test_numeric_41_shape_m32n8k16_int8",
+            "shape",
+            PM_INT8_ALL,
+            random_int8_matrix(32, 16, 301, low=-10, high=10),
+            random_int8_matrix(16, 8, 1301, low=-10, high=10),
+            random_int8_matrix(32, 8, 2301, low=-12, high=12),
+            tags=("pm_int8", "shape_m32n8k16", "signed_inputs_case"),
+        ),
+        build_case(
+            "test_numeric_42_shape_m8n32k16_int8",
+            "shape",
+            PM_INT8_ALL,
+            random_int8_matrix(8, 16, 302, low=-10, high=10),
+            random_int8_matrix(16, 32, 1302, low=-10, high=10),
+            random_int8_matrix(8, 32, 2302, low=-12, high=12),
+            tags=("pm_int8", "shape_m8n32k16", "signed_inputs_case"),
+        ),
+        build_case(
+            "test_numeric_43_shape_m32n8k16_int8_int32",
+            "shape",
+            PM_INT8_INT32,
+            random_int8_matrix(32, 16, 303, low=-10, high=10),
+            random_int8_matrix(16, 8, 1303, low=-10, high=10),
+            random_int32_matrix(32, 8, 3303, low=-20000, high=20000),
+            tags=("pm_int8_int32", "shape_m32n8k16", "random_case", "signed_inputs_case"),
+        ),
+        build_case(
+            "test_numeric_44_shape_m8n32k16_int8_int32",
+            "shape",
+            PM_INT8_INT32,
+            random_int8_matrix(8, 16, 304, low=-10, high=10),
+            random_int8_matrix(16, 32, 1304, low=-10, high=10),
+            random_int32_matrix(8, 32, 3304, low=-20000, high=20000),
+            tags=("pm_int8_int32", "shape_m8n32k16", "random_case", "signed_inputs_case"),
+        ),
+    ]
+
+
+def _gt32_cases() -> list[NumericCase]:
+    cases: list[NumericCase] = []
+    case_id = 45
+    for m in (1, 16, 32):
+        for nk in (32, 64, 128):
+            int8_name = f"test_numeric_{case_id:02d}_compat_m{m}n{nk}k{nk}_int8"
+            cases.append(
+                build_case(
+                    int8_name,
+                    "compat",
+                    PM_INT8_ALL,
+                    sequential_positive_matrix(m, nk, start=1, stride=1),
+                    identity_matrix(nk),
+                    checker_matrix(m, nk, 1, -1),
+                    tags=(f"shape_m{m}n{nk}k{nk}", "pm_int8", "signed_inputs_case"),
+                )
+            )
+            case_id += 1
+
+            int8_int32_name = f"test_numeric_{case_id:02d}_compat_m{m}n{nk}k{nk}_int8_int32"
+            cases.append(
+                build_case(
+                    int8_int32_name,
+                    "compat",
+                    PM_INT8_INT32,
+                    signed_ramp_matrix(m, nk, start=-11, step=3, low=-64, high=63),
+                    identity_matrix(nk),
+                    signed_ramp_matrix(m, nk, start=-257, step=17, low=-4000, high=4000),
+                    tags=(f"shape_m{m}n{nk}k{nk}", "pm_int8_int32", "signed_inputs_case"),
+                )
+            )
+            case_id += 1
+    return cases
+
+
 NUMERIC_CASES = [
     *_edge_cases(),
     *_boundary_cases(),
     *_typical_cases(),
     *_random_cases(),
+    *_shape_cases(),
+    *_gt32_cases(),
 ]
 
-assert len(NUMERIC_CASES) == 40, f"expected 40 numeric cases, got {len(NUMERIC_CASES)}"
+assert len(NUMERIC_CASES) == 62, f"expected 62 numeric cases, got {len(NUMERIC_CASES)}"

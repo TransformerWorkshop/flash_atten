@@ -19,7 +19,7 @@ module c_matrix_adder #(
     output reg                          rd_en,
     output reg                          wr_en,
     output reg [ADDR_WIDTH-1:0]         wr_addr,
-    output reg [7:0]                    wr_strb, 
+    output reg [(RAM_DATA_WIDTH/8)-1:0] wr_strb,
     output reg                          done,//计算结束信号，用于通知AXI_MASTER模块
     output wire [1:0]                   dbg_state,
     output wire [15:0]                  dbg_cnt,
@@ -36,6 +36,9 @@ module c_matrix_adder #(
     localparam DELAY_INT = 2;//寄存器级数
     localparam DELAY_FP  = 5;
     localparam LOG2_PE_SIZE = $clog2(PE_SIZE);
+    localparam RAM_STRB_WIDTH = RAM_DATA_WIDTH / 8;
+    localparam HALFWORDS_PER_RAM_WORD = RAM_DATA_WIDTH / 16;
+    localparam INT32S_PER_RAM_WORD = RAM_DATA_WIDTH / 32;
 
     localparam INT4     = 4'd0;
     localparam INT8     = 4'd1;
@@ -57,7 +60,7 @@ module c_matrix_adder #(
     wire                            int_wire;
 
     reg [PREC_WIDTH-1:0]            precision_mode_reg;
-    reg [1:0]                       byte_select_cnt;
+    reg [$clog2(HALFWORDS_PER_RAM_WORD)-1:0] byte_select_cnt;
     reg [7:0]                       matrix_row_groups;
     reg [7:0]                       active_rows;
     reg [7:0]                       active_cols;
@@ -191,12 +194,12 @@ module c_matrix_adder #(
                         // 精度模式判断
                         case(precision_mode_reg)
                             INT4: begin  // 16位模式
-                                // 每4个周期增加一次地址
+                                // 每写满一个RAM字后增加地址
                                 if (first_to_CAL)begin
                                     byte_select_cnt <= 0;
                                     first_to_CAL <= 0;
                                 end
-                                else if (byte_select_cnt == 2'b11) begin
+                                else if (byte_select_cnt == HALFWORDS_PER_RAM_WORD - 1'b1) begin
                                     wr_addr <= wr_addr + 1;
                                     byte_select_cnt <= 0;
                                 end else begin
@@ -204,23 +207,17 @@ module c_matrix_adder #(
                                 end
                             end
                             default: begin  // 32位及其他模式
-                                // 每2个周期增加一次地址
+                                // 每写满一个RAM字后增加地址
                                 if (first_to_CAL)begin
                                     byte_select_cnt <= 0;
                                     first_to_CAL <= 0;
                                 end
-                                else if (byte_select_cnt[0]) begin
+                                else if (byte_select_cnt == INT32S_PER_RAM_WORD - 1'b1) begin
                                     wr_addr <= wr_addr + 1;
                                     byte_select_cnt <= 0;
                                 end else begin
                                     byte_select_cnt <= byte_select_cnt + 1;
                                 end
-                                
-                                // // 设置32位模式的字节使能
-                                // if (byte_select_cnt[0] == 0)
-                                //     wr_strb <= 8'h0F;  // 使能[31:0]
-                                // else
-                                //     wr_strb <= 8'hF0;  // 使能[63:32]
                             end
                         endcase
                         
@@ -252,46 +249,30 @@ module c_matrix_adder #(
     end
 
     always @(*) begin
+        wr_strb = {RAM_STRB_WIDTH{1'b0}};
         case (precision_mode_reg)
             INT4: begin
-                // 设置16位模式的字节使能
-                case(byte_select_cnt)
-                    2'b00: wr_strb = 8'h03;  // 使能[15:0]
-                    2'b01: wr_strb = 8'h0C;  // 使能[31:16]
-                    2'b10: wr_strb = 8'h30;  // 使能[47:32]
-                    2'b11: wr_strb = 8'hC0;  // 使能[63:48]
-                endcase
+                wr_strb = {{(RAM_STRB_WIDTH-2){1'b0}}, 2'b11} << (byte_select_cnt * 2);
             end
             default: begin
-                // 设置32位模式的字节使能
-                case(byte_select_cnt[0])
-                    1'b0: wr_strb = 8'h0F;  // 使能[31:0]
-                    1'b1: wr_strb = 8'hF0;  // 使能[63:32]
-                endcase
+                wr_strb = {{(RAM_STRB_WIDTH-4){1'b0}}, 4'hF} << (byte_select_cnt * 4);
             end
         endcase
     end
 
     always @(*) begin
-        case(wr_strb)
-            8'h03,8'h0F:begin
+        wr_data = {(RAM_DATA_WIDTH*PE_SIZE){1'b0}};
+        case(precision_mode_reg)
+            INT4: begin
                 for(i=0;i<PE_SIZE;i=i+1) begin
-                    wr_data[i*RAM_DATA_WIDTH +: RAM_DATA_WIDTH] = {32'b0,o_data[i*DATA_WIDTH +: DATA_WIDTH]};
+                    wr_data[i*RAM_DATA_WIDTH +: RAM_DATA_WIDTH] =
+                        {{(RAM_DATA_WIDTH-DATA_WIDTH){1'b0}}, o_data[i*DATA_WIDTH +: DATA_WIDTH]} << (byte_select_cnt * 16);
                 end
             end
-            8'h0C:begin
+            default: begin
                 for(i=0;i<PE_SIZE;i=i+1) begin
-                    wr_data[i*RAM_DATA_WIDTH +: RAM_DATA_WIDTH] = {32'b0,o_data[i*DATA_WIDTH +: DATA_WIDTH]}<<16;
-                end
-            end
-            8'h30,8'hF0:begin
-                for(i=0;i<PE_SIZE;i=i+1) begin
-                    wr_data[i*RAM_DATA_WIDTH +: RAM_DATA_WIDTH] = {32'b0,o_data[i*DATA_WIDTH +: DATA_WIDTH]}<<32;
-                end
-            end
-            8'hC0:begin
-                for(i=0;i<PE_SIZE;i=i+1) begin
-                    wr_data[i*RAM_DATA_WIDTH +: RAM_DATA_WIDTH] = {32'b0,o_data[i*DATA_WIDTH +: DATA_WIDTH]}<<48;
+                    wr_data[i*RAM_DATA_WIDTH +: RAM_DATA_WIDTH] =
+                        {{(RAM_DATA_WIDTH-DATA_WIDTH){1'b0}}, o_data[i*DATA_WIDTH +: DATA_WIDTH]} << (byte_select_cnt * 32);
                 end
             end
         endcase

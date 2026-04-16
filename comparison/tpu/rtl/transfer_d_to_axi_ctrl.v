@@ -47,6 +47,8 @@ module transfer_d_to_axi_ctrl #(
     // 精度模式定义
     localparam PM_INT8_ALL    = 4'd1; // ABC 矩阵均为 INT8
     localparam PM_INT8_INT32  = 4'd3; // AB 为 INT8，C 为 INT32
+    localparam INT32S_PER_D_WORD = RAM_DATA_WIDTH / 32;
+    localparam LOG2_INT32S_PER_D_WORD = $clog2(INT32S_PER_D_WORD);
 
     // 数据宽度类型定义
     localparam DATA_WIDTH_HALF_BYTE = 2'd0;
@@ -117,10 +119,12 @@ module transfer_d_to_axi_ctrl #(
                 log2_n_div_epw_d = (log2_matrix_n > 2) ? (log2_matrix_n - 2) : 0;
             end
             DATA_WIDTH_FOUR_BYTE: begin
-                log2_n_div_epw_d = (log2_matrix_n > 1) ? (log2_matrix_n - 1) : 0;
+                log2_n_div_epw_d = (log2_matrix_n > LOG2_INT32S_PER_D_WORD) ?
+                    (log2_matrix_n - LOG2_INT32S_PER_D_WORD) : 0;
             end
             default: begin
-                log2_n_div_epw_d = (log2_matrix_n > 1) ? (log2_matrix_n - 1) : 0;
+                log2_n_div_epw_d = (log2_matrix_n > LOG2_INT32S_PER_D_WORD) ?
+                    (log2_matrix_n - LOG2_INT32S_PER_D_WORD) : 0;
             end
         endcase
     end

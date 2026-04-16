@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import log2
 
 import cocotb
 from cocotb.clock import Clock
@@ -58,6 +59,8 @@ declare_bins(
         "pm_int8_int32",
         "dim_8x8",
         "dim_16x16",
+        "dim_8x32",
+        "dim_32x8",
         "zero_a_case",
         "zero_b_case",
         "zero_c_case",
@@ -75,60 +78,73 @@ def signal_value(signal) -> int:
     return int(signal.value)
 
 
+def signal_width(signal) -> int:
+    return len(signal)
+
+
 def build_config_word(matrix_m: int, matrix_n: int, matrix_k: int, precision_mode: int = PM_INT8_ALL) -> int:
     return ((precision_mode & 0xF) << 24) | ((matrix_m & 0xFF) << 16) | ((matrix_n & 0xFF) << 8) | (matrix_k & 0xFF)
 
 
-def build_int8_words(seed: int, rows: int = 8, cols: int = 8) -> list[int]:
-    words: list[int] = []
+def build_int8_matrix(seed: int, rows: int = 8, cols: int = 8) -> list[list[int]]:
+    matrix: list[list[int]] = []
     for row in range(rows):
-        word = 0
+        row_data: list[int] = []
         for col in range(cols):
-            byte = (seed + row * cols + col) & 0xFF
-            word |= byte << (8 * col)
-        words.append(word)
-    return words
+            row_data.append((seed + row * cols + col) & 0xFF)
+        matrix.append(row_data)
+    return matrix
 
 
-def pack_matrix_int8_row_major(matrix: list[list[int]]) -> list[int]:
+def pack_matrix_int8_row_major(matrix: list[list[int]], bytes_per_word: int) -> list[tuple[int, int]]:
     rows = len(matrix)
     cols = len(matrix[0])
-    if cols % 8 != 0:
-        raise ValueError("int8 pack expects column count to be a multiple of 8")
+    if bytes_per_word <= 0:
+        raise ValueError("bytes_per_word must be positive")
 
-    words: list[int] = []
+    words: list[tuple[int, int]] = []
     for row in range(rows):
-        for col_base in range(0, cols, 8):
+        for col_base in range(0, cols, bytes_per_word):
             word = 0
-            for offset in range(8):
-                word |= (matrix[row][col_base + offset] & 0xFF) << (offset * 8)
-            words.append(word)
+            wstrb = 0
+            chunk = matrix[row][col_base:col_base + bytes_per_word]
+            for offset, value in enumerate(chunk):
+                word |= (value & 0xFF) << (offset * 8)
+                wstrb |= 1 << offset
+            words.append((word, wstrb))
     return words
 
 
-def pack_matrix_int32_pairs_row_major(matrix: list[list[int]]) -> list[int]:
+def pack_matrix_int32_row_major(matrix: list[list[int]], bytes_per_word: int) -> list[tuple[int, int]]:
     rows = len(matrix)
     cols = len(matrix[0])
-    if cols % 2 != 0:
-        raise ValueError("int32 pack expects an even column count")
+    elems_per_word = bytes_per_word // 4
+    if elems_per_word <= 0:
+        raise ValueError("int32 pack expects at least one 32-bit lane")
 
-    words: list[int] = []
+    words: list[tuple[int, int]] = []
     for row in range(rows):
-        for col_base in range(0, cols, 2):
-            low = matrix[row][col_base] & 0xFFFF_FFFF
-            high = matrix[row][col_base + 1] & 0xFFFF_FFFF
-            words.append(low | (high << 32))
+        for col_base in range(0, cols, elems_per_word):
+            word = 0
+            wstrb = 0
+            chunk = matrix[row][col_base:col_base + elems_per_word]
+            for offset, value in enumerate(chunk):
+                word |= (value & 0xFFFF_FFFF) << (offset * 32)
+                wstrb |= 0xF << (offset * 4)
+            words.append((word, wstrb))
     return words
 
 
 def decode_writeback_words(dut, word_count: int) -> tuple[list[int], list[int]]:
     packed_words = signal_value(dut.obs_writeback_words)
     packed_strbs = signal_value(dut.obs_writeback_strbs)
+    axi_data_width = signal_width(dut.obs_last_m_axi_wdata)
+    axi_strb_width = signal_width(dut.obs_last_m_axi_wstrb)
     words: list[int] = []
     strbs: list[int] = []
     for index in range(word_count):
-        words.append((packed_words >> (index * 64)) & 0xFFFF_FFFF_FFFF_FFFF)
-        strbs.append((packed_strbs >> (index * 8)) & 0xFF)
+        words.append((packed_words >> (index * axi_data_width)) & ((1 << axi_data_width) - 1))
+        strbs.append((packed_strbs >> (index * axi_strb_width)) & ((1 << axi_strb_width) - 1))
     return words, strbs
 
 
@@ -141,6 +157,13 @@ class AxilReadResult:
 class TpuTopBench:
     def __init__(self, dut):
         self.dut = dut
+        self.axi_data_width = signal_width(dut.s_axi_wdata)
+        self.axi_strb_width = signal_width(dut.s_axi_wstrb)
+        self.axi_bytes = self.axi_data_width // 8
+        self.int32_lanes_per_word = self.axi_bytes // 4
+        self.full_axi_wstrb = (1 << self.axi_strb_width) - 1
+        self.awsize = int(log2(self.axi_bytes))
+        self.max_axi_burst_beats = 256
 
     async def start(self) -> None:
         self._drive_defaults()
@@ -255,14 +278,11 @@ class TpuTopBench:
         self.dut.s_axil_rready.value = 0
         return result
 
-    async def axi_write_burst(self, addr: int, words: list[int], awid: int = 0) -> int:
-        if not words:
-            raise ValueError("AXI burst must contain at least one beat")
-
+    async def _axi_write_burst_chunk(self, addr: int, beats: list[tuple[int, int]], awid: int = 0) -> int:
         self.dut.s_axi_awid.value = awid
         self.dut.s_axi_awaddr.value = addr
-        self.dut.s_axi_awlen.value = len(words) - 1
-        self.dut.s_axi_awsize.value = 3
+        self.dut.s_axi_awlen.value = len(beats) - 1
+        self.dut.s_axi_awsize.value = self.awsize
         self.dut.s_axi_awburst.value = 1
         self.dut.s_axi_awlock.value = 0
         self.dut.s_axi_awcache.value = 0
@@ -280,10 +300,10 @@ class TpuTopBench:
         )
         self.dut.s_axi_awvalid.value = 0
 
-        for index, word in enumerate(words):
+        for index, (word, wstrb) in enumerate(beats):
             self.dut.s_axi_wdata.value = word
-            self.dut.s_axi_wstrb.value = 0xFF
-            self.dut.s_axi_wlast.value = 1 if index == len(words) - 1 else 0
+            self.dut.s_axi_wstrb.value = wstrb
+            self.dut.s_axi_wlast.value = 1 if index == len(beats) - 1 else 0
             self.dut.s_axi_wuser.value = 0
             self.dut.s_axi_wvalid.value = 1
             await self.wait_for(
@@ -304,11 +324,31 @@ class TpuTopBench:
         self.dut.s_axi_bready.value = 0
         return resp
 
+    async def axi_write_burst(self, addr: int, beats: list[tuple[int, int]], awid: int = 0) -> int:
+        if not beats:
+            raise ValueError("AXI burst must contain at least one beat")
+
+        for chunk_index, start in enumerate(range(0, len(beats), self.max_axi_burst_beats)):
+            chunk = beats[start:start + self.max_axi_burst_beats]
+            chunk_addr = addr + start * self.axi_bytes
+            resp = await self._axi_write_burst_chunk(chunk_addr, chunk, awid=awid + chunk_index)
+            if resp != 0:
+                return resp
+        return 0
+
     async def axi_write_int8_matrix(self, base_addr: int, matrix: list[list[int]], awid: int = 0) -> int:
-        return await self.axi_write_burst(base_addr, pack_matrix_int8_row_major(matrix), awid=awid)
+        return await self.axi_write_burst(
+            base_addr,
+            pack_matrix_int8_row_major(matrix, self.axi_bytes),
+            awid=awid,
+        )
 
     async def axi_write_int32_matrix(self, base_addr: int, matrix: list[list[int]], awid: int = 0) -> int:
-        return await self.axi_write_burst(base_addr, pack_matrix_int32_pairs_row_major(matrix), awid=awid)
+        return await self.axi_write_burst(
+            base_addr,
+            pack_matrix_int32_row_major(matrix, self.axi_bytes),
+            awid=awid,
+        )
 
 
 @cocotb.test()
@@ -390,7 +430,7 @@ async def run_numeric_case(dut, case: NumericCase) -> None:
     matrix_m = len(case.a_matrix)
     matrix_k = len(case.a_matrix[0])
     matrix_n = len(case.b_matrix[0])
-    expected_word_count = matrix_m * (matrix_n // 2)
+    expected_word_count = matrix_m * ((matrix_n + tb.int32_lanes_per_word - 1) // tb.int32_lanes_per_word)
 
     hit(f"cat_{case.category}")
     if case.precision_mode == PM_INT8_ALL:
@@ -401,6 +441,10 @@ async def run_numeric_case(dut, case: NumericCase) -> None:
         hit("dim_8x8")
     if matrix_m == 16 and matrix_n == 16 and matrix_k == 16:
         hit("dim_16x16")
+    if matrix_m == 8 and matrix_n == 32 and matrix_k == 16:
+        hit("dim_8x32")
+    if matrix_m == 32 and matrix_n == 8 and matrix_k == 16:
+        hit("dim_32x8")
     for tag in case.tags:
         hit(tag)
 
@@ -448,12 +492,12 @@ async def run_numeric_case(dut, case: NumericCase) -> None:
     hit("writeback_seen")
 
     actual_words, actual_strbs = decode_writeback_words(dut, expected_word_count)
-    expected_words = pack_matrix_int32_pairs_row_major(case.expected_matrix)
+    expected_words = [word for word, _ in pack_matrix_int32_row_major(case.expected_matrix, tb.axi_bytes)]
     sample_metric("writeback_words", expected_word_count)
     sample_metric("aw_count", signal_value(dut.obs_m_axi_aw_count))
     sample_metric("w_count", signal_value(dut.obs_m_axi_w_count))
     words_match = actual_words == expected_words
-    strbs_match = all(strb == 0xFF for strb in actual_strbs)
+    strbs_match = all(strb == tb.full_axi_wstrb for strb in actual_strbs)
     record_case(
         case.name,
         category=case.category,
@@ -492,13 +536,21 @@ async def test_load_abc_and_observe_writeback_activity(dut) -> None:
 
     await ClockCycles(dut.clk, 4)
 
-    a_words = build_int8_words(0x01)
-    b_words = build_int8_words(0x21)
-    c_words = build_int8_words(0x41)
+    a_matrix = build_int8_matrix(0x01)
+    b_matrix = build_int8_matrix(0x21)
+    c_matrix = build_int8_matrix(0x41)
+    a_beats = pack_matrix_int8_row_major(a_matrix, tb.axi_bytes)
+    b_beats = pack_matrix_int8_row_major(b_matrix, tb.axi_bytes)
+    c_beats = pack_matrix_int8_row_major(c_matrix, tb.axi_bytes)
 
-    assert await tb.axi_write_burst(MATRIX_A_BASE, a_words, awid=1) == 0
-    assert await tb.axi_write_burst(MATRIX_B_BASE, b_words, awid=2) == 0
-    assert await tb.axi_write_burst(MATRIX_C_BASE, c_words, awid=3) == 0
+    if tb.axi_bytes == 16:
+        assert a_beats[0][1] == 0x00FF
+        assert b_beats[0][1] == 0x00FF
+        assert c_beats[0][1] == 0x00FF
+
+    assert await tb.axi_write_burst(MATRIX_A_BASE, a_beats, awid=1) == 0
+    assert await tb.axi_write_burst(MATRIX_B_BASE, b_beats, awid=2) == 0
+    assert await tb.axi_write_burst(MATRIX_C_BASE, c_beats, awid=3) == 0
 
     await tb.wait_for(
         lambda: signal_value(dut.obs_ram_a_wr_done_count) >= 1

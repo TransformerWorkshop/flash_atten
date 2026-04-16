@@ -1,19 +1,19 @@
 module tb_tpu_top_64bit #(
     parameter AXI_ID_WIDTH         = 4,
     parameter AXI_ADDR_WIDTH       = 32,
-    parameter AXI_DATA_WIDTH       = 64,
+    parameter AXI_DATA_WIDTH       = 128,
     parameter AXI_AWUSER_WIDTH     = 8,
     parameter AXI_WUSER_WIDTH      = 8,
     parameter AXI_BUSER_WIDTH      = 8,
     parameter CSR_DATA_WIDTH       = 32,
     parameter CSR_ADDR_WIDTH       = 8,
-    parameter PE_SIZE              = 8,
+    parameter PE_SIZE              = 16,
     parameter MATRIX_DIM_WIDTH     = 8,
     parameter PRECISION_MODE_WIDTH = 4,
     parameter RAM_ADDR_WIDTH       = 8,
     parameter RAM_C_ADDR_WIDTH     = 10,
     parameter RAM_D_ADDR_WIDTH     = 10,
-    parameter RAM_DATA_WIDTH       = 64,
+    parameter RAM_DATA_WIDTH       = 128,
     parameter FIFO_DATA_WIDTH      = 32,
     parameter FIFO_DEPTH           = 512,
     parameter MATRIX_A_BASE_ADDR   = 32'h0000_0000,
@@ -21,7 +21,7 @@ module tb_tpu_top_64bit #(
     parameter MATRIX_C_BASE_ADDR   = 32'h0000_8000,
     parameter MATRIX_D_BASE_ADDR   = 32'h0000_C000,
     parameter DATA_WIDTH           = 32,
-    parameter OBS_MAX_WRITE_WORDS  = 256
+    parameter OBS_MAX_WRITE_WORDS  = 2048
 ) (
     input  wire                              clk,
     input  wire                              rst_n,

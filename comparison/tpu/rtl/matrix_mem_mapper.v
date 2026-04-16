@@ -2,11 +2,11 @@ module matrix_mem_mapper #(
     parameter PE_SIZE              = 8            ,
     parameter MATRIX_DIM_WIDTH     = 8            ,   // 矩阵维度宽度
     parameter PRECISION_MODE_WIDTH = 4            ,   // 精度模式宽度
-    parameter AXI_DATA_WIDTH       = 64           ,
+    parameter AXI_DATA_WIDTH       = 128          ,
     parameter AXI_ADDR_WIDTH       = 32           ,
     parameter RAM_ADDR_WIDTH       = 8            ,
     parameter RAM_C_ADDR_WIDTH     = 4            ,
-    parameter RAM_DATA_WIDTH       = 64           ,
+    parameter RAM_DATA_WIDTH       = 128          ,
     parameter MATRIX_A_BASE_ADDR   = 32'h0000_0000,
     parameter MATRIX_B_BASE_ADDR   = 32'h0000_4000,
     parameter MATRIX_C_BASE_ADDR   = 32'h0000_8000,
@@ -65,6 +65,15 @@ module matrix_mem_mapper #(
     localparam LOG2_PE_SIZE         = $clog2(PE_SIZE);
     localparam REL_RAM_ADDR_WIDTH   = RAM_ADDR_WIDTH + $clog2(PE_SIZE);
     localparam REL_RAM_C_ADDR_WIDTH = RAM_C_ADDR_WIDTH + $clog2(PE_SIZE);
+    localparam AXI_BYTES            = AXI_DATA_WIDTH / 8;
+    localparam RAM_BYTES            = RAM_DATA_WIDTH / 8;
+    localparam LOG2_AXI_BYTES       = $clog2(AXI_BYTES);
+    localparam LOG2_RAM_BYTES       = $clog2(RAM_BYTES);
+    localparam AXI_INT32S_PER_WORD  = AXI_DATA_WIDTH / 32;
+    localparam LOG2_AXI_INT32S_PER_WORD = $clog2(AXI_INT32S_PER_WORD);
+    localparam B_REPLAY_QUEUE_DEPTH = 256;
+    localparam B_REPLAY_PTR_WIDTH   = $clog2(B_REPLAY_QUEUE_DEPTH);
+    localparam B_DIRECT_BYTE_COUNT  = (AXI_BYTES > PE_SIZE) ? PE_SIZE : AXI_BYTES;
 
     // 精度模式定义
     localparam PM_INT8_ALL    = 4'd1; // ABC 矩阵均为 INT8
@@ -82,7 +91,7 @@ module matrix_mem_mapper #(
     localparam TWO_BYTE_PER_WORD   = 5'd4;
     localparam FOUR_BYTE_PER_WORD  = 5'd2;
 
-    localparam ADDR_BYTE_SHIFT = 3;  // 64位=8字节，需要右移3位
+    localparam ADDR_BYTE_SHIFT = LOG2_AXI_BYTES;
 
     // 定义计算对数值的函数
     function [3:0] get_log2;
@@ -99,6 +108,19 @@ module matrix_mem_mapper #(
                 8'd128:  get_log2 = 4'd7;
                 default: get_log2 = 4'd0;
             endcase
+        end
+    endfunction
+
+    function has_b_replay_upper_bytes;
+        input [(AXI_DATA_WIDTH/8)-1:0] strb;
+        integer idx;
+        begin
+            has_b_replay_upper_bytes = 1'b0;
+            for (idx = PE_SIZE; idx < AXI_BYTES; idx = idx + 1) begin
+                if (strb[idx]) begin
+                    has_b_replay_upper_bytes = 1'b1;
+                end
+            end
         end
     endfunction
 
@@ -126,6 +148,7 @@ module matrix_mem_mapper #(
     reg                              is_matrix_b_r     ;
     reg                              is_matrix_c_r     ;
     reg                              is_matrix_a_index_r;
+    reg                              b_replay_needed_r ;
 
     assign mapper_a_active = is_matrix_a_r && ram_wr_en_r;
     assign mapper_b_active = is_matrix_b_r && ram_wr_en_r;
@@ -188,6 +211,29 @@ module matrix_mem_mapper #(
     reg [RAM_ADDR_WIDTH-1:0]       b_wr_addr_i_temp [0:PE_SIZE-1]  ;
     reg [RAM_DATA_WIDTH-1:0]       b_wr_data_i_temp [0:PE_SIZE-1]  ;
     reg [(RAM_DATA_WIDTH/8)-1:0]   b_wr_strb_i_temp [0:PE_SIZE-1]  ; // 写选通
+    reg [REL_RAM_ADDR_WIDTH-1:0]   b_replay_rel_word_addr_q [0:B_REPLAY_QUEUE_DEPTH-1];
+    reg [AXI_DATA_WIDTH-1:0]       b_replay_data_q          [0:B_REPLAY_QUEUE_DEPTH-1];
+    reg [(AXI_DATA_WIDTH/8)-1:0]   b_replay_strb_q          [0:B_REPLAY_QUEUE_DEPTH-1];
+    reg [B_REPLAY_PTR_WIDTH:0]     b_replay_wr_ptr_r;
+    reg [B_REPLAY_PTR_WIDTH:0]     b_replay_rd_ptr_r;
+    reg                            b_replay_done_pulse_r;
+    wire [B_REPLAY_PTR_WIDTH:0]    b_replay_count = b_replay_wr_ptr_r - b_replay_rd_ptr_r;
+    wire                           b_replay_empty = (b_replay_count == {B_REPLAY_PTR_WIDTH+1{1'b0}});
+    wire                           b_replay_full  = (b_replay_count == B_REPLAY_QUEUE_DEPTH);
+    wire [B_REPLAY_PTR_WIDTH-1:0]  b_replay_wr_idx = b_replay_wr_ptr_r[B_REPLAY_PTR_WIDTH-1:0];
+    wire [B_REPLAY_PTR_WIDTH-1:0]  b_replay_rd_idx = b_replay_rd_ptr_r[B_REPLAY_PTR_WIDTH-1:0];
+    wire [REL_RAM_ADDR_WIDTH-1:0]  b_replay_rel_word_addr = b_replay_rel_word_addr_q[b_replay_rd_idx];
+    wire [AXI_DATA_WIDTH-1:0]      b_replay_data = b_replay_data_q[b_replay_rd_idx];
+    wire [(AXI_DATA_WIDTH/8)-1:0]  b_replay_strb = b_replay_strb_q[b_replay_rd_idx];
+    wire [7:0]                     b_replay_axi_row_idx =
+        b_replay_rel_word_addr >> log2_n_div_epw_b;
+    wire [7:0]                     b_replay_axi_col_idx =
+        b_replay_rel_word_addr & ((1 << log2_n_div_epw_b) - 1);
+    wire                           b_replay_head_is_last =
+        (b_replay_axi_row_idx == matrix_k - 1) &&
+        (b_replay_axi_col_idx == ((1 << log2_n_div_epw_b) - 1));
+    wire                           b_current_b_write = is_matrix_b_r && ram_wr_en_r;
+    wire                           b_replay_issue = !b_current_b_write && !b_replay_empty;
 
     // 生成完成信号
     always @(posedge clk or negedge rst_n) begin
@@ -201,8 +247,7 @@ module matrix_mem_mapper #(
             ram_b_wr_done_temp4 <= 1'b0;
         end else begin
             ram_a_wr_done <= a_last_data;
-            // ram_c_wr_done <= c_last_data;
-            ram_b_wr_done <= ram_b_wr_done_temp4;
+            ram_b_wr_done <= 1'b0;
             ram_b_wr_done_temp4 <= ram_b_wr_done_temp3;
             ram_b_wr_done_temp3 <= ram_b_wr_done_temp2;
             ram_b_wr_done_temp2 <= ram_b_wr_done_temp;
@@ -219,10 +264,11 @@ module matrix_mem_mapper #(
                     ram_b_wr_done_temp <= 1'b0;
                 end
             end else if ((matrix_n == 16 || matrix_n == 32) && data_width_b == DATA_WIDTH_HALF_BYTE) begin
+                ram_b_wr_done <= ram_b_wr_done_temp4;
                 ram_b_wr_done_temp <= b_last_data;
             end else begin
-                ram_b_wr_done <= b_last_data;
-                ram_b_wr_done_temp <= b_last_data;
+                ram_b_wr_done <= b_replay_done_pulse_r || (b_last_data && !b_replay_needed_r);
+                ram_b_wr_done_temp <= 1'b0;
             end
 
             if (matrix_n == 8 && data_width_c == DATA_WIDTH_HALF_BYTE) begin
@@ -239,6 +285,30 @@ module matrix_mem_mapper #(
                 end
             end else begin
                 ram_c_wr_done <= c_last_data;
+            end
+        end
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            b_replay_wr_ptr_r <= {B_REPLAY_PTR_WIDTH+1{1'b0}};
+            b_replay_rd_ptr_r <= {B_REPLAY_PTR_WIDTH+1{1'b0}};
+            b_replay_done_pulse_r <= 1'b0;
+        end else begin
+            b_replay_done_pulse_r <= 1'b0;
+
+            if (ram_wr_en_r && is_matrix_b_r && b_replay_needed_r && !b_replay_full) begin
+                b_replay_rel_word_addr_q[b_replay_wr_idx] <= rel_word_addr_b_r;
+                b_replay_data_q[b_replay_wr_idx] <= ram_wr_data_r;
+                b_replay_strb_q[b_replay_wr_idx] <= ram_wr_strb_r;
+                b_replay_wr_ptr_r <= b_replay_wr_ptr_r + 1'b1;
+            end
+
+            if (b_replay_issue) begin
+                b_replay_rd_ptr_r <= b_replay_rd_ptr_r + 1'b1;
+                if (b_replay_head_is_last) begin
+                    b_replay_done_pulse_r <= 1'b1;
+                end
             end
         end
     end
@@ -340,16 +410,17 @@ module matrix_mem_mapper #(
                     log2_k_div_epw_a = (log2_matrix_k > 4) ? (log2_matrix_k - 4) : 0;
                 end
                 DATA_WIDTH_ONE_BYTE: begin
-                    log2_k_div_epw_a = (log2_matrix_k > 3) ? (log2_matrix_k - 3) : 0;
+                    log2_k_div_epw_a = (log2_matrix_k > LOG2_AXI_BYTES) ? (log2_matrix_k - LOG2_AXI_BYTES) : 0;
                 end
                 DATA_WIDTH_TWO_BYTE: begin
                     log2_k_div_epw_a = (log2_matrix_k > 2) ? (log2_matrix_k - 2) : 0;
                 end
                 DATA_WIDTH_FOUR_BYTE: begin
-                    log2_k_div_epw_a = (log2_matrix_k > 1) ? (log2_matrix_k - 1) : 0;
+                    log2_k_div_epw_a = (log2_matrix_k > LOG2_AXI_INT32S_PER_WORD) ?
+                        (log2_matrix_k - LOG2_AXI_INT32S_PER_WORD) : 0;
                 end
                 default: begin
-                    log2_k_div_epw_a = (log2_matrix_k > 3) ? (log2_matrix_k - 3) : 0;
+                    log2_k_div_epw_a = (log2_matrix_k > LOG2_AXI_BYTES) ? (log2_matrix_k - LOG2_AXI_BYTES) : 0;
                 end
             endcase
         end else begin
@@ -381,18 +452,19 @@ module matrix_mem_mapper #(
                 log2_n_div_epw_b = (log2_matrix_n > 4) ? (log2_matrix_n - 4) : 0;
             end
             DATA_WIDTH_ONE_BYTE: begin
-                log2_n_div_epw_b = (log2_matrix_n > 3) ? (log2_matrix_n - 3) : 0;
-            end
-            DATA_WIDTH_TWO_BYTE: begin
-                log2_n_div_epw_b = (log2_matrix_n > 2) ? (log2_matrix_n - 2) : 0;
-            end
-            DATA_WIDTH_FOUR_BYTE: begin
-                log2_n_div_epw_b = (log2_matrix_n > 1) ? (log2_matrix_n - 1) : 0;
-            end
-            default: begin
-                log2_n_div_epw_b = (log2_matrix_n > 3) ? (log2_matrix_n - 3) : 0;
-            end
-        endcase
+                    log2_n_div_epw_b = (log2_matrix_n > LOG2_AXI_BYTES) ? (log2_matrix_n - LOG2_AXI_BYTES) : 0;
+                end
+                DATA_WIDTH_TWO_BYTE: begin
+                    log2_n_div_epw_b = (log2_matrix_n > 2) ? (log2_matrix_n - 2) : 0;
+                end
+                DATA_WIDTH_FOUR_BYTE: begin
+                    log2_n_div_epw_b = (log2_matrix_n > LOG2_AXI_INT32S_PER_WORD) ?
+                        (log2_matrix_n - LOG2_AXI_INT32S_PER_WORD) : 0;
+                end
+                default: begin
+                    log2_n_div_epw_b = (log2_matrix_n > LOG2_AXI_BYTES) ? (log2_matrix_n - LOG2_AXI_BYTES) : 0;
+                end
+            endcase
     end
     
     // 为C矩阵计算参数
@@ -402,18 +474,19 @@ module matrix_mem_mapper #(
                 log2_n_div_epw_c = (log2_matrix_n > 4) ? (log2_matrix_n - 4) : 0;
             end
             DATA_WIDTH_ONE_BYTE: begin
-                log2_n_div_epw_c = (log2_matrix_n > 3) ? (log2_matrix_n - 3) : 0;
-            end
-            DATA_WIDTH_TWO_BYTE: begin
-                log2_n_div_epw_c = (log2_matrix_n > 2) ? (log2_matrix_n - 2) : 0;
-            end
-            DATA_WIDTH_FOUR_BYTE: begin
-                log2_n_div_epw_c = (log2_matrix_n > 1) ? (log2_matrix_n - 1) : 0;
-            end
-            default: begin
-                log2_n_div_epw_c = (log2_matrix_n > 3) ? (log2_matrix_n - 3) : 0;
-            end
-        endcase
+                    log2_n_div_epw_c = (log2_matrix_n > LOG2_AXI_BYTES) ? (log2_matrix_n - LOG2_AXI_BYTES) : 0;
+                end
+                DATA_WIDTH_TWO_BYTE: begin
+                    log2_n_div_epw_c = (log2_matrix_n > 2) ? (log2_matrix_n - 2) : 0;
+                end
+                DATA_WIDTH_FOUR_BYTE: begin
+                    log2_n_div_epw_c = (log2_matrix_n > LOG2_AXI_INT32S_PER_WORD) ?
+                        (log2_matrix_n - LOG2_AXI_INT32S_PER_WORD) : 0;
+                end
+                default: begin
+                    log2_n_div_epw_c = (log2_matrix_n > LOG2_AXI_BYTES) ? (log2_matrix_n - LOG2_AXI_BYTES) : 0;
+                end
+            endcase
     end
     
     // 寄存输入信号 - 提高时序稳定性
@@ -429,6 +502,7 @@ module matrix_mem_mapper #(
             is_matrix_b_r     <= 1'b0                       ;
             is_matrix_c_r     <= 1'b0                       ;
             is_matrix_a_index_r <= 1'b0                     ;
+            b_replay_needed_r <= 1'b0                       ;
         end else begin
             ram_wr_en_r       <= ram_wr_en            ;
             ram_wr_data_r     <= ram_wr_data          ;
@@ -440,6 +514,8 @@ module matrix_mem_mapper #(
             is_matrix_b_r     <= is_matrix_b          ;
             is_matrix_c_r     <= is_matrix_c          ;
             is_matrix_a_index_r <= is_matrix_a_index  ;
+            b_replay_needed_r <= is_matrix_b && (data_width_b == DATA_WIDTH_ONE_BYTE) &&
+                                 has_b_replay_upper_bytes(ram_wr_strb);
         end
     end
 
@@ -506,10 +582,10 @@ module matrix_mem_mapper #(
     reg [7:0]                b_col_base        ; // 8位足够表示列基址
     reg [7:0]                curr_col          ; // 当前处理的列
     reg [RAM_ADDR_WIDTH-1:0] b_ram_addr        ; // RAM地址
-    reg [2:0]                byte_pos          ; // 字节位置 (0-7)
+    reg [LOG2_RAM_BYTES-1:0] byte_pos          ; // 字节位置
     reg [1:0]                byte_pair_pos     ; // 半字位置 (0-3)
     reg                      byte_four_pos     ; // 四字节位置 (0-1)
-    reg [7:0]                data_bytes  [0:7] ; // 拆分AXI数据的8个字节
+    reg [7:0]                data_bytes  [0:AXI_BYTES-1] ; // 拆分AXI数据的字节
 
     reg [127:0]              buf_bytes_n32[0:1] ;
     reg [127:0]              buf_bytes_n16      ;
@@ -588,17 +664,29 @@ module matrix_mem_mapper #(
         end
         
         // 解析AXI数据字节 (小端序)
-        data_bytes[0] = ram_wr_data_r[ 7: 0];
-        data_bytes[1] = ram_wr_data_r[15: 8];
-        data_bytes[2] = ram_wr_data_r[23:16];
-        data_bytes[3] = ram_wr_data_r[31:24];
-        data_bytes[4] = ram_wr_data_r[39:32];
-        data_bytes[5] = ram_wr_data_r[47:40];
-        data_bytes[6] = ram_wr_data_r[55:48];
-        data_bytes[7] = ram_wr_data_r[63:56];
+        for (i = 0; i < AXI_BYTES; i = i + 1) begin
+            data_bytes[i] = ram_wr_data_r[(i*8) +: 8];
+        end
         
-        // 处理B矩阵写入
-        if (is_matrix_b_r && ram_wr_en_r) begin
+        // 处理B矩阵replay写入
+        if (b_replay_issue) begin
+            byte_pos = b_replay_axi_row_idx[LOG2_RAM_BYTES-1:0];
+            b_ram_addr = b_replay_axi_row_idx >> LOG2_RAM_BYTES;
+            b_col_base = (b_replay_axi_col_idx << LOG2_AXI_BYTES) + PE_SIZE;
+
+            for (i = 0; i < PE_SIZE; i = i + 1) begin
+                curr_col = b_col_base + i;
+                if (curr_col < matrix_n && b_replay_strb[PE_SIZE + i]) begin
+                    b_wr_en_i[curr_col[LOG2_PE_SIZE-1:0]] = 1'b1;
+                    b_wr_addr_i[curr_col[LOG2_PE_SIZE-1:0]] =
+                        ((curr_col >> LOG2_PE_SIZE) << log2_k_div_epw_a) + b_ram_addr;
+                    b_wr_strb_i[curr_col[LOG2_PE_SIZE-1:0]] =
+                        ({{(RAM_BYTES-1){1'b0}}, 1'b1}) << byte_pos;
+                    b_wr_data_i[curr_col[LOG2_PE_SIZE-1:0]] =
+                        {{(RAM_DATA_WIDTH-8){1'b0}}, b_replay_data[((PE_SIZE + i) * 8) +: 8]} << (byte_pos * 8);
+                end
+            end
+        end else if (is_matrix_b_r && ram_wr_en_r) begin
             // 计算AXI数据所携带元素的起始列索引
             case (data_width_b)
                 DATA_WIDTH_HALF_BYTE:  b_col_base = {b_axi_col_idx, 4'b0000}; // 乘以16
@@ -649,29 +737,31 @@ module matrix_mem_mapper #(
                 end
 
                 DATA_WIDTH_ONE_BYTE: begin
-                    // 确定行在64位字中的位置，决定写入的字节位置
-                    byte_pos = b_axi_row_idx[2:0];  // 行索引 % 8，对应字节位置
+                    // 确定行在RAM字中的位置，决定写入的字节位置
+                    byte_pos = b_axi_row_idx[LOG2_RAM_BYTES-1:0];
 
-                    // 计算RAM基址：b_axi_row_idx / 8
-                    b_ram_addr = b_axi_row_idx >> 3;
+                    // 计算RAM基址：b_axi_row_idx / (RAM_DATA_WIDTH/8)
+                    b_ram_addr = b_axi_row_idx >> LOG2_RAM_BYTES;
 
-                    // 处理每个INT8元素 (一个AXI字包含8个INT8)
-                    for (i = 0; i < ONE_BYTE_PER_WORD; i = i + 1) begin
+                    // 当前拍只直写前PE_SIZE个字节，后半段通过queue在后续cycle replay
+                    b_col_base = b_axi_col_idx << LOG2_AXI_BYTES;
+                    for (i = 0; i < B_DIRECT_BYTE_COUNT; i = i + 1) begin
                         curr_col = b_col_base + i;
-                        if (curr_col < matrix_n) begin
+                        if (curr_col < matrix_n && ram_wr_strb_r[i]) begin
                             // 确定RAM ID: 列号 % PE_SIZE
                             b_wr_en_i[curr_col[LOG2_PE_SIZE-1:0]] = 1'b1;
                             
-                            // 列的基地址: (列号/PE_SIZE) * (k/8)
+                            // 列的基地址: (列号/PE_SIZE) * ceil(k/RAM字节数) + 行块偏移
                             b_wr_addr_i[curr_col[LOG2_PE_SIZE-1:0]] = 
-                                ((curr_col >> LOG2_PE_SIZE) << (log2_matrix_k - 3)) + b_ram_addr;
+                                ((curr_col >> LOG2_PE_SIZE) << log2_k_div_epw_a) + b_ram_addr;
                             
                             // 写选通：对应行位置的字节(第byte_pos个字节)
-                            b_wr_strb_i[curr_col[LOG2_PE_SIZE-1:0]] = 8'b00000001 << byte_pos;
+                            b_wr_strb_i[curr_col[LOG2_PE_SIZE-1:0]] =
+                                ({{(RAM_BYTES-1){1'b0}}, 1'b1}) << byte_pos;
                             
                             // 数据：将对应字节放在正确位置
-                            // 第i个字节放在第byte_pos个字节位置
-                            b_wr_data_i[curr_col[LOG2_PE_SIZE-1:0]] = {56'b0, data_bytes[i]} << (byte_pos * 8);
+                            b_wr_data_i[curr_col[LOG2_PE_SIZE-1:0]] =
+                                {{(RAM_DATA_WIDTH-8){1'b0}}, data_bytes[i]} << (byte_pos * 8);
                         end
                     end
                 end
@@ -744,29 +834,23 @@ module matrix_mem_mapper #(
 
                 default: begin
                     // 默认按INT8处理
-                    // 确定行在64位字中的位置，决定写入的字节位置
-                    byte_pos = b_axi_row_idx[2:0];  // 行索引 % 8，对应字节位置
-
-                    // 计算RAM基址：b_axi_row_idx / 8
-                    b_ram_addr = b_axi_row_idx >> 3;
-
-                    // 处理每个INT8元素 (一个AXI字包含8个INT8)
-                    for (i = 0; i < ONE_BYTE_PER_WORD; i = i + 1) begin
+                    byte_pos = b_axi_row_idx[LOG2_RAM_BYTES-1:0];
+                    b_ram_addr = b_axi_row_idx >> LOG2_RAM_BYTES;
+                    b_col_base = b_axi_col_idx << LOG2_AXI_BYTES;
+                    for (i = 0; i < B_DIRECT_BYTE_COUNT; i = i + 1) begin
                         curr_col = b_col_base + i;
-                        if (curr_col < matrix_n) begin
+                        if (curr_col < matrix_n && ram_wr_strb_r[i]) begin
                             // 确定RAM ID: 列号 % PE_SIZE
                             b_wr_en_i[curr_col[LOG2_PE_SIZE-1:0]] = 1'b1;
                             
-                            // 列的基地址: (列号/PE_SIZE) * (k/8)
                             b_wr_addr_i[curr_col[LOG2_PE_SIZE-1:0]] = 
-                                ((curr_col >> LOG2_PE_SIZE) << (log2_matrix_k - 3)) + b_ram_addr;
+                                ((curr_col >> LOG2_PE_SIZE) << log2_k_div_epw_a) + b_ram_addr;
                             
-                            // 写选通：对应行位置的字节(第byte_pos个字节)
-                            b_wr_strb_i[curr_col[LOG2_PE_SIZE-1:0]] = 8'b00000001 << byte_pos;
+                            b_wr_strb_i[curr_col[LOG2_PE_SIZE-1:0]] =
+                                ({{(RAM_BYTES-1){1'b0}}, 1'b1}) << byte_pos;
                             
-                            // 数据：将对应字节放在正确位置
-                            // 第i个字节放在第byte_pos个字节位置
-                            b_wr_data_i[curr_col[LOG2_PE_SIZE-1:0]] = {56'b0, data_bytes[i]} << (byte_pos * 8);
+                            b_wr_data_i[curr_col[LOG2_PE_SIZE-1:0]] =
+                                {{(RAM_DATA_WIDTH-8){1'b0}}, data_bytes[i]} << (byte_pos * 8);
                         end
                     end
                 end

@@ -1,7 +1,7 @@
 module tpu_top #(
     parameter AXI_ID_WIDTH         = 4             ,
     parameter AXI_ADDR_WIDTH       = 32            ,
-    parameter AXI_DATA_WIDTH       = 64            ,
+    parameter AXI_DATA_WIDTH       = 128           ,
     parameter AXI_AWUSER_WIDTH     = 8             ,
     parameter AXI_WUSER_WIDTH      = 8             ,
     parameter AXI_BUSER_WIDTH      = 8             ,
@@ -15,7 +15,7 @@ module tpu_top #(
     parameter RAM_ADDR_WIDTH       = 8             ,    // RAM地址宽度
     parameter RAM_C_ADDR_WIDTH     = 10            ,    // RAM地址宽度
     parameter RAM_D_ADDR_WIDTH     = 10            ,    // RAM地址宽度
-    parameter RAM_DATA_WIDTH       = 64            ,    // RAM数据宽度
+    parameter RAM_DATA_WIDTH       = 128           ,    // RAM数据宽度
     parameter FIFO_DATA_WIDTH      = 32            ,    // FIFO数据宽度
     parameter FIFO_DEPTH           = 512           ,    // FIFO深度
     parameter MATRIX_A_BASE_ADDR   = 32'h0000_0000 ,    // 矩阵A的基地址
@@ -361,7 +361,7 @@ module tpu_top #(
     reg  [9:0]                            axi_ram_wr_count_b_dbg;
     reg  [9:0]                            axi_ram_wr_count_c_dbg;
     reg  [7:0]                            axi_last_awlen_dbg   ;
-    reg  [7:0]                            axi_last_wstrb_dbg   ;
+    reg  [(AXI_DATA_WIDTH/8)-1:0]         axi_last_wstrb_dbg   ;
     wire [31:0]                           axi_aw_counts_dbg    ;
     wire [31:0]                           axi_aw_beats_dbg     ;
     wire [31:0]                           axi_w_counts_dbg     ;
@@ -414,7 +414,7 @@ module tpu_top #(
     assign axi_w_counts_dbg       = {2'b00, axi_w_count_c_dbg, axi_w_count_b_dbg, axi_w_count_a_dbg};
     assign axi_wlast_counts_dbg   = {2'b00, axi_wlast_count_c_dbg, axi_wlast_count_b_dbg, axi_wlast_count_a_dbg};
     assign axi_ram_wr_counts_dbg  = {2'b00, axi_ram_wr_count_c_dbg, axi_ram_wr_count_b_dbg, axi_ram_wr_count_a_dbg};
-    assign axi_last_ctrl_dbg      = {12'h000, axi_last_wstrb_dbg, axi_last_awlen_dbg, 4'h0, axi_active_matrix_sel_dbg, axi_last_aw_matrix_sel_dbg};
+    assign axi_last_ctrl_dbg      = {12'h000, axi_last_wstrb_dbg[7:0], axi_last_awlen_dbg, 4'h0, axi_active_matrix_sel_dbg, axi_last_aw_matrix_sel_dbg};
     assign axi_short_burst_counts_dbg = {2'b00, axi_short_burst_count_c_dbg, axi_short_burst_count_b_dbg, axi_short_burst_count_a_dbg};
     assign axi_short_missing_beats_dbg = {2'b00, axi_short_missing_beats_c_dbg, axi_short_missing_beats_b_dbg, axi_short_missing_beats_a_dbg};
     assign axi_totals_dbg         = {axi_ram_wr_total_count_dbg, axi_w_total_count_dbg};
@@ -451,7 +451,7 @@ module tpu_top #(
             axi_w_none_count_dbg        <= 16'd0;
             axi_ram_wr_none_count_dbg   <= 16'd0;
             axi_last_awlen_dbg         <= 8'd0;
-            axi_last_wstrb_dbg         <= 8'd0;
+            axi_last_wstrb_dbg         <= {(AXI_DATA_WIDTH/8){1'b0}};
         end else if (axi_dbg_clear) begin
             axi_active_matrix_sel_dbg  <= AXI_DBG_SEL_NONE;
             axi_last_aw_matrix_sel_dbg <= AXI_DBG_SEL_NONE;
@@ -481,7 +481,7 @@ module tpu_top #(
             axi_w_none_count_dbg        <= 16'd0;
             axi_ram_wr_none_count_dbg   <= 16'd0;
             axi_last_awlen_dbg         <= 8'd0;
-            axi_last_wstrb_dbg         <= 8'd0;
+            axi_last_wstrb_dbg         <= {(AXI_DATA_WIDTH/8){1'b0}};
         end else begin
             if (axi_aw_hs) begin
                 axi_active_matrix_sel_dbg  <= axi_aw_matrix_sel_dbg;
@@ -1167,6 +1167,7 @@ module tpu_top #(
     c_matrix_adder #(
         .DATA_WIDTH(DATA_WIDTH),
         .PE_SIZE(PE_SIZE),
+        .RAM_DATA_WIDTH(RAM_DATA_WIDTH),
         .ADDR_WIDTH(RAM_D_ADDR_WIDTH)
     ) c_matrix_adder_inst(
         .clk            (clk),

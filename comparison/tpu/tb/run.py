@@ -38,6 +38,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--testcase", default=os.getenv("TESTCASE"))
     parser.add_argument("--rtl-root", default=str(DEFAULT_RTL_DIR))
     parser.add_argument("--variant", default="local")
+    parser.add_argument("--pe-size", type=int, default=int(os.getenv("PE_SIZE", "16")))
+    parser.add_argument("--axi-data-width", type=int, default=int(os.getenv("AXI_DATA_WIDTH", "128")))
+    parser.add_argument("--ram-data-width", type=int, default=int(os.getenv("RAM_DATA_WIDTH", "128")))
     parser.add_argument("--waves", action="store_true", default=bool(int(os.getenv("WAVES", "0"))))
     parser.add_argument("--verbose", action="store_true", default=bool(int(os.getenv("VERBOSE", "0"))))
     return parser.parse_args()
@@ -85,7 +88,9 @@ def main() -> None:
     sim_name = normalize_sim_name(args.sim)
     runner = get_runner(sim_name)
     variant_name = sanitize_name(args.variant or rtl_dir.parent.name or "rtl")
-    build_name = f"{sim_name}_{variant_name}_{args.mode}"
+    build_name = (
+        f"{sim_name}_{variant_name}_pe{args.pe_size}_axi{args.axi_data_width}_ram{args.ram_data_width}_{args.mode}"
+    )
     build_dir = BUILD_DIR / build_name
     test_dir = build_dir / "run"
     results_xml = RESULTS_DIR / f"{build_name}.xml"
@@ -98,6 +103,11 @@ def main() -> None:
         sources=rtl_sources(rtl_dir),
         includes=[rtl_dir, TB_DIR],
         hdl_toplevel=TOPLEVEL,
+        parameters={
+            "PE_SIZE": args.pe_size,
+            "AXI_DATA_WIDTH": args.axi_data_width,
+            "RAM_DATA_WIDTH": args.ram_data_width,
+        },
         build_dir=build_dir,
         build_args=build_args,
         always=True,
@@ -115,6 +125,9 @@ def main() -> None:
         "PYTHONPATH": str(TB_DIR) if not existing_pythonpath else f"{TB_DIR}{os.pathsep}{existing_pythonpath}",
         "TPU_VARIANT": variant_name,
         "TPU_RTL_ROOT": str(rtl_dir),
+        "TPU_PE_SIZE": str(args.pe_size),
+        "TPU_AXI_DATA_WIDTH": str(args.axi_data_width),
+        "TPU_RAM_DATA_WIDTH": str(args.ram_data_width),
     }
     if args.mode in {"smoke", "coverage", "numeric"}:
         extra_env["TPU_FUNC_COV_DIR"] = str(TB_DIR / "coverage" / build_name)
