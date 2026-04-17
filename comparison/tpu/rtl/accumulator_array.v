@@ -1,13 +1,13 @@
 module accumulator_array #(
     parameter DATA_WIDTH = 32,
-    parameter PE_SIZE    = 8,
+    parameter PE_SIZE    = 16,
     parameter PREC_WIDTH = 4,
     parameter MATRIX_DIM_WIDTH = 8
 )(
     input                              clk,
     input                              rst_n,
     input  [PREC_WIDTH-1:0]            precision_mode,
-    input  [DATA_WIDTH*PE_SIZE*8-1:0]  num,
+    input  [DATA_WIDTH*PE_SIZE*PE_SIZE-1:0]  num,
     input  [PE_SIZE-1:0]               data_valid,
     input  [MATRIX_DIM_WIDTH-1:0]      matrix_m,
     input  [MATRIX_DIM_WIDTH-1:0]      matrix_n,
@@ -75,14 +75,14 @@ generate
     for (i = 0; i < PE_SIZE; i = i + 1) begin : gen_accumulator_array
         accumulator #(
             .DATA_WIDTH      (32),
-            .PE_SIZE         (8),
+            .PE_SIZE         (PE_SIZE),
             .PREC_WIDTH      (PREC_WIDTH),
             .MATRIX_DIM_WIDTH(MATRIX_DIM_WIDTH),
             .ROW_IDX         (i)
         )accumulator_inst(
             .clk             (clk),
             .rst_n           (rst_n),
-            .num             (num[i*DATA_WIDTH*8 +: DATA_WIDTH*8]),
+            .num             (num[i*DATA_WIDTH*PE_SIZE +: DATA_WIDTH*PE_SIZE]),
             .data_valid      (data_valid[i]),
             .precision_mode  (precision_mode_reg),
             .matrix_m        (matrix_m),

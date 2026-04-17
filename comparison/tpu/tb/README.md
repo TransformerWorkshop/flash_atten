@@ -40,10 +40,27 @@ python run.py numeric --sim verilator --axi-data-width 128 --ram-data-width 128
 python run.py numeric --sim verilator --variant vanilla_v2 --rtl-root ../../../../tpu_vanilla/third_party/tpu_vanilla-v2-local/rtl --axi-data-width 64 --ram-data-width 64
 ```
 
+## Reports
+
+- `PERFORMANCE_REPORT.md`: current `16x16 / AXI128 / RAM128` comparison results
+  versus the `vanilla_v2 8x8 / AXI64 / RAM64` baseline.
+
 ## Current smoke coverage
 
 - Reset defaults and CSR readback.
 - AXI-Lite staggered write/readback plus short soft-reset sequence.
 - AXI full write bursts for A/B/C load path and end-to-end store/writeback activity.
-- Forty numeric cases covering edge, boundary, typical, and randomized INT8 / INT8_INT32 scenarios.
+- Sixty-two numeric cases covering edge, boundary, typical, randomized, shape, and compat INT8 / INT8_INT32 scenarios.
 - Functional coverage report output under `comparison/tpu/tb/coverage/`.
+
+## Current 16x16 Snapshot
+
+- The checked-in `comparison/tpu/rtl` now runs as a true `16x16` datapath rather
+  than a mixed `16x16` wrapper around several `8`-lane internal stages.
+- Local validation status:
+  - `make smoke`: `3/3` pass
+  - `make numeric`: `62/62` pass
+- End-to-end performance versus `vanilla_v2 8x8 / AXI64 / RAM64`:
+  - weighted speedup across all `62` numeric cases: `2.124x`
+  - arithmetic mean speedup: `1.547x`
+  - median speedup: `1.657x`

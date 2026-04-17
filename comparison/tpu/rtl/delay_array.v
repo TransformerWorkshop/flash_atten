@@ -1,5 +1,5 @@
 module delay_array #(
-    parameter PE_SIZE         = 8 ,
+    parameter PE_SIZE         = 16,
     parameter DATA_WIDTH      = 32 
 ) (
     // 时钟和复位

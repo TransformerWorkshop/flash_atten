@@ -1,5 +1,5 @@
 module c_matrix_adder #(
-    parameter PE_SIZE    = 8,
+    parameter PE_SIZE    = 16,
     parameter RAM_DATA_WIDTH = 64,
     parameter DATA_WIDTH = 32,
     parameter ADDR_WIDTH = 5,
@@ -286,11 +286,12 @@ module c_matrix_adder #(
 
     adder_array_8 #(
         .DATA_WIDTH(DATA_WIDTH),
+        .PE_SIZE(PE_SIZE),
         .PREC_WIDTH(PREC_WIDTH)
     ) adder_array_8_inst (
         .clk            (clk),              
         .precision_mode (precision_mode_reg),
-        .num_16         (i_data),//左侧开始，每两个数据相加，结果从输出的最左侧开始排列
-        .num_8          (o_data)
+        .num_in         (i_data),//左侧开始，每两个数据相加，结果从输出的最左侧开始排列
+        .num_out        (o_data)
     );
 endmodule

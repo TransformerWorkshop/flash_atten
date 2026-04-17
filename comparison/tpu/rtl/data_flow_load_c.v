@@ -1,5 +1,5 @@
 module data_flow_load_c #(
-    parameter PE_SIZE              = 8 ,   // PE数量/阵列大小
+    parameter PE_SIZE              = 16,   // PE数量/阵列大小
     parameter MATRIX_DIM_WIDTH     = 8 ,   // 矩阵维度宽度
     parameter PRECISION_MODE_WIDTH = 4 ,   // 精度模式宽度
     parameter RAM_ADDR_WIDTH       = 12,   // RAM地址宽度

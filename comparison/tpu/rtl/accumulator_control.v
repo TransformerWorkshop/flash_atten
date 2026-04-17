@@ -1,5 +1,5 @@
 module accumulator_control#(
-    parameter PE_SIZE          = 8,
+    parameter PE_SIZE          = 16,
     parameter PREC_WIDTH       = 4,
     parameter MATRIX_DIM_WIDTH = 8
 )(
@@ -26,7 +26,7 @@ module accumulator_control#(
 );
 
 localparam LOG2_PE_SIZE      = $clog2(PE_SIZE);
-localparam TREE_LATENCY_INT  = 5;
+localparam TREE_LATENCY_INT  = LOG2_PE_SIZE + 3;
 localparam COUNTER_WIDTH     = 20;
 
 localparam INT8     = 4'd1;

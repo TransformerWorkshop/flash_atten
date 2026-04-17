@@ -21,7 +21,7 @@ module system_pro (
     parameter CSR_DATA_WIDTH       = 32;
     parameter CSR_ADDR_WIDTH       = 8 ;
 
-    parameter PE_SIZE              = 8;
+    parameter PE_SIZE              = 16;
     parameter MATRIX_DIM_WIDTH     = 8;
     parameter PRECISION_MODE_WIDTH = 4;
     parameter RAM_ADDR_WIDTH       = 5;

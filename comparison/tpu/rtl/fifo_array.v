@@ -1,5 +1,5 @@
 module fifo_array #(
-    parameter PE_SIZE                = 8,   // FIFO数量/阵列大小
+    parameter PE_SIZE                = 16,  // FIFO数量/阵列大小
     parameter DATA_WIDTH             = 32,  // 每个FIFO的数据宽度
     parameter FIFO_DEPTH             = 32,  // 每个FIFO的深度
     parameter ALMOST_FULL_TH         = 3,   // 接近满阈值

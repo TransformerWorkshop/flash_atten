@@ -1,5 +1,5 @@
 module ram_array #(
-    parameter PE_SIZE        = 8 ,   // PE数量/阵列大小
+    parameter PE_SIZE        = 16,   // PE数量/阵列大小
     parameter RAM_ADDR_WIDTH = 12,   // RAM地址宽度
     parameter RAM_DATA_WIDTH = 32    // RAM数据宽度
 ) (

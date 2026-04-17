@@ -9,7 +9,7 @@ module tpu_top #(
     parameter CSR_DATA_WIDTH       = 32            ,
     parameter CSR_ADDR_WIDTH       = 8             ,
 
-    parameter PE_SIZE              = 8             ,    // PE数量/阵列大小
+    parameter PE_SIZE              = 16            ,    // PE数量/阵列大小
     parameter MATRIX_DIM_WIDTH     = 8             ,    // 矩阵维度宽度
     parameter PRECISION_MODE_WIDTH = 4             ,    // 精度模式宽度
     parameter RAM_ADDR_WIDTH       = 8             ,    // RAM地址宽度
@@ -269,7 +269,7 @@ module tpu_top #(
     wire                                  first_data         ;
     wire                                  last_data          ;
 
-    wire [     DATA_WIDTH*PE_SIZE*8-1:0]  systolic_to_accu_data ;
+    wire [     DATA_WIDTH*PE_SIZE*PE_SIZE-1:0]  systolic_to_accu_data ;
     wire [     PE_SIZE-1:0]               systolic_to_accu_sel  ;
 
     wire [     DATA_WIDTH*PE_SIZE-1:0]    accu_to_fifo_data     ;
@@ -1099,6 +1099,7 @@ module tpu_top #(
         .clk            (clk),
         .rst_n          (core_rst_n),
         .control        (control),
+        .matrix_n       (matrix_n1),
         .up_all         (up_all),      //8columns input,8bit num
         .left_all       (left_all),    //8rows input ,8bit num
         .precision_mode (precision_mode1),

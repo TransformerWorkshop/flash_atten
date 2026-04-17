@@ -1,5 +1,5 @@
 module transfer_d_to_axi_ctrl #(
-    parameter PE_SIZE              = 8             ,
+    parameter PE_SIZE              = 16            ,
     parameter MATRIX_DIM_WIDTH     = 8             ,   // 矩阵维度宽度
     parameter PRECISION_MODE_WIDTH = 4             ,   // 精度模式宽度
     parameter AXI_DATA_WIDTH       = 32            ,

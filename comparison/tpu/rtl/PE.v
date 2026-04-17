@@ -3,6 +3,7 @@
 2. output_valid作为写使能，每当其拉高，address+1
 */
 module PE #(
+    parameter PE_SIZE    = 16,
     parameter DATA_WIDTH = 32,
     parameter PREC_WIDTH = 4
     )(
@@ -13,11 +14,11 @@ module PE #(
     input         [DATA_WIDTH-1:0]     up,
     input         [1:0]                control_up,
     input         [1:0]                control_left,
-    input         [DATA_WIDTH*8-1:0]   i_data,
+    input         [DATA_WIDTH*PE_SIZE-1:0] i_data,
 
     output  reg   [DATA_WIDTH-1:0]     right,
     output  reg   [DATA_WIDTH-1:0]     down,
-    output        [DATA_WIDTH*8-1:0]   o_data,
+    output        [DATA_WIDTH*PE_SIZE-1:0] o_data,
     output  reg                        data_valid,
     output        [1:0]                control_down,//the control of next PE
     output  reg   [1:0]                control_right,
@@ -31,6 +32,7 @@ module PE #(
     localparam DELAY_FP   = 4;//寄存器级数+1
     localparam DELAY_FP32 = 8;
     localparam DELAY_INT  = 3;
+    localparam PACKET_ADDR_WIDTH = (PE_SIZE <= 2) ? 1 : $clog2(PE_SIZE);
 
     localparam INT4     = 4'd0;
     localparam INT8     = 4'd1;
@@ -52,11 +54,11 @@ module PE #(
     reg                 [2:0]                cnt_delay;//计数首次计算演示
     reg                 [3:0]                cnt_end;//计数结束
     reg                 [1:0]                cnt_input_valid;//计数给出valid的时间
-    reg                 [2:0]                address;
-    reg                 [DATA_WIDTH-1:0]     mem     [0:7];
+    reg [PACKET_ADDR_WIDTH-1:0]              address;
+    reg [DATA_WIDTH-1:0]                     mem     [0:PE_SIZE-1];
+    reg [DATA_WIDTH*PE_SIZE-1:0]             packed_mem;
 
-
-assign o_data = (data_valid)?{mem[0],mem[1],mem[2],mem[3],mem[4],mem[5],mem[6],mem[7]}:i_data;
+assign o_data = data_valid ? packed_mem : i_data;
 assign input_valid = (next_state==STORE_FP32 && cnt_input_valid==0);
 
 wire [8:0] mode_onehot = 1 << precision_mode_left;
@@ -65,6 +67,14 @@ assign int_wire = | {mode_onehot[INT4],
                 mode_onehot[INT4_32],
                 mode_onehot[INT8_32]};
 assign fp32 = mode_onehot[FP32];
+
+integer pack_idx;
+always @(*) begin
+    packed_mem = {(DATA_WIDTH*PE_SIZE){1'b0}};
+    for (pack_idx = 0; pack_idx < PE_SIZE; pack_idx = pack_idx + 1) begin
+        packed_mem[((PE_SIZE - 1 - pack_idx) * DATA_WIDTH) +: DATA_WIDTH] = mem[pack_idx];
+    end
+end
 
 always @(*) begin
     case(curr_state)
@@ -136,7 +146,7 @@ always @(posedge clk ) begin
             is_first_store <= is_first_store;
         end
 
-        if (address == 7) begin
+        if (address == PE_SIZE - 1) begin
             data_valid <= 1;
         end else begin
             data_valid <= 0;
@@ -155,7 +165,7 @@ always @(posedge clk ) begin
             address <= address + 1;
         end
 
-        if (address == 7 && wr_en) begin
+        if (address == PE_SIZE - 1 && wr_en) begin
             data_valid <= 1;
         end else begin
             data_valid <= 0;
@@ -187,10 +197,6 @@ integer i;
 always @(posedge clk) begin
     if (wr_en) begin
         mem[address] <= result_sel;
-    end else begin
-        for (i=0;i<8;i=i+1) begin
-            mem[i] <= mem[i];
-        end
     end
 end
 

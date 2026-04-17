@@ -1,6 +1,6 @@
 module accumulator #(
     parameter DATA_WIDTH = 32,
-    parameter PE_SIZE    = 8,
+    parameter PE_SIZE    = 16,
     parameter PREC_WIDTH = 4,
     parameter MATRIX_DIM_WIDTH = 8,
     parameter ROW_IDX    = 0
@@ -49,7 +49,8 @@ module accumulator #(
     end
 
     tree_adder #(
-        .DATA_WIDTH(32),
+        .DATA_WIDTH(DATA_WIDTH),
+        .PE_SIZE(PE_SIZE),
         .PREC_WIDTH(PREC_WIDTH),
         .ROW_IDX(ROW_IDX)
     )tree_adder_inst(

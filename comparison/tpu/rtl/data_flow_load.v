@@ -1,5 +1,5 @@
 module data_flow_load #(
-    parameter PE_SIZE              = 8 ,   // PE数量/阵列大小
+    parameter PE_SIZE              = 16,   // PE数量/阵列大小
     parameter MATRIX_DIM_WIDTH     = 8 ,   // 矩阵维度宽度
     parameter PRECISION_MODE_WIDTH = 4 ,   // 精度模式宽度
     parameter RAM_ADDR_WIDTH       = 8 ,   // RAM地址宽度
@@ -100,6 +100,7 @@ module data_flow_load #(
     reg [5:0] max_sub_elem;  // 每RAM字的最大子元素索引
     reg [5:0] max_elem_k;    // 每次迭代的最大列索引
     reg [5:0] max_block_n;   // 每个块的最大迭代次数
+    reg [5:0] block_groups_n;
     reg [5:0] max_block_m;   // 最大块索引
     reg [5:0] block_groups_m;
 
@@ -223,7 +224,12 @@ module data_flow_load #(
     // 矩阵维度和计数器上限计算 - 使用时序逻辑
     always @(*) begin
         // 计算每个维度的最大计数器值
-        max_block_n = (matrix_n >> LOG2_PE_SIZE) - 8'd1;
+        if (matrix_n == 0) begin
+            block_groups_n = 6'd0;
+        end else begin
+            block_groups_n = (matrix_n + PE_SIZE - 1) >> LOG2_PE_SIZE;
+        end
+        max_block_n = (block_groups_n == 0) ? 6'd0 : (block_groups_n - 6'd1);
         if (matrix_m == 0) begin
             block_groups_m = 6'd0;
         end else begin
