@@ -15,7 +15,7 @@ module tpu_top #(
     parameter RAM_ADDR_WIDTH       = 8             ,    // RAM地址宽度
     parameter RAM_C_ADDR_WIDTH     = 10            ,    // RAM地址宽度
     parameter RAM_D_ADDR_WIDTH     = 10            ,    // RAM地址宽度
-    parameter RAM_DATA_WIDTH       = 128           ,    // RAM数据宽度
+    parameter RAM_DATA_WIDTH       = 64            ,    // RAM数据宽度
     parameter FIFO_DATA_WIDTH      = 32            ,    // FIFO数据宽度
     parameter FIFO_DEPTH           = 512           ,    // FIFO深度
     parameter MATRIX_A_BASE_ADDR   = 32'h0000_0000 ,    // 矩阵A的基地址
@@ -1262,6 +1262,7 @@ module tpu_top #(
         .AXI_ID_WIDTH     (AXI_ID_WIDTH) ,
         .AXI_ADDR_WIDTH   (AXI_ADDR_WIDTH) ,
         .AXI_DATA_WIDTH   (AXI_DATA_WIDTH) ,
+        .RAM_DATA_WIDTH   (RAM_DATA_WIDTH) ,
         .AXI_AWUSER_WIDTH (AXI_AWUSER_WIDTH) ,
         .AXI_WUSER_WIDTH  (AXI_WUSER_WIDTH) ,
         .AXI_BUSER_WIDTH  (AXI_BUSER_WIDTH) ,

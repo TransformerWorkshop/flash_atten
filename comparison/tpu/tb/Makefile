@@ -4,7 +4,7 @@ WAVES ?= 0
 VERBOSE ?= 0
 PYTHON ?= python
 AXI_DATA_WIDTH ?= 128
-RAM_DATA_WIDTH ?= 128
+RAM_DATA_WIDTH ?= 64
 PE_SIZE ?= 16
 VANILLA_RTL_ROOT ?= $(abspath ../../../../tpu_vanilla/third_party/tpu_vanilla-v2-local/rtl)
 

@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--variant", default="local")
     parser.add_argument("--pe-size", type=int, default=int(os.getenv("PE_SIZE", "16")))
     parser.add_argument("--axi-data-width", type=int, default=int(os.getenv("AXI_DATA_WIDTH", "128")))
-    parser.add_argument("--ram-data-width", type=int, default=int(os.getenv("RAM_DATA_WIDTH", "128")))
+    parser.add_argument("--ram-data-width", type=int, default=int(os.getenv("RAM_DATA_WIDTH", "64")))
     parser.add_argument("--waves", action="store_true", default=bool(int(os.getenv("WAVES", "0"))))
     parser.add_argument("--verbose", action="store_true", default=bool(int(os.getenv("VERBOSE", "0"))))
     return parser.parse_args()
@@ -70,6 +70,22 @@ def rtl_sources(rtl_dir: Path) -> list[Path]:
     sources = sorted(rtl_dir.rglob("*.v"))
     sources.append(TB_DIR / "tb_tpu_top_64bit.v")
     return sources
+
+
+def detect_tpu_defines(rtl_dir: Path) -> dict[str, int]:
+    top_path = rtl_dir / "tpu_top.v"
+    if not top_path.is_file():
+        return {}
+
+    top_text = top_path.read_text(encoding="utf-8", errors="ignore")
+    defines: dict[str, int] = {}
+    if re.search(r"\bdbg_m00_awvalid\b", top_text):
+        defines["TPU_HAS_DBG_BRANCH_PORTS"] = 1
+    if re.search(r"\bm_axi_rd_arid\b", top_text):
+        defines["TPU_HAS_RD_MASTER_PORTS"] = 1
+    if re.search(r"\blegacy_load_done\b", top_text):
+        defines["TPU_OBS_LOAD_DONE_USES_LEGACY_NAME"] = 1
+    return defines
 
 
 def main() -> None:
@@ -102,6 +118,7 @@ def main() -> None:
     runner.build(
         sources=rtl_sources(rtl_dir),
         includes=[rtl_dir, TB_DIR],
+        defines=detect_tpu_defines(rtl_dir),
         hdl_toplevel=TOPLEVEL,
         parameters={
             "PE_SIZE": args.pe_size,

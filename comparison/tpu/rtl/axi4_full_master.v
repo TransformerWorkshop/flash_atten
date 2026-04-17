@@ -2,6 +2,7 @@ module axi4_full_master#(
     parameter  AXI_ID_WIDTH          = 4  ,
     parameter  AXI_ADDR_WIDTH        = 32 ,
     parameter  AXI_DATA_WIDTH        = 32 ,
+    parameter  RAM_DATA_WIDTH        = AXI_DATA_WIDTH ,
     parameter  AXI_AWUSER_WIDTH      = 8  ,
     parameter  AXI_WUSER_WIDTH       = 8  ,
     parameter  AXI_BUSER_WIDTH       = 8  ,
@@ -107,7 +108,12 @@ module axi4_full_master#(
     
     // FIFO参数定义
     localparam FIFO_ADDR_WIDTH = $clog2(FIFO_DEPTH);
+    localparam AXI_STRB_WIDTH = AXI_DATA_WIDTH / 8;
+    localparam RAM_STRB_WIDTH = RAM_DATA_WIDTH / 8;
+    localparam RAM_WORDS_PER_AXI_BEAT = (RAM_DATA_WIDTH >= AXI_DATA_WIDTH) ? 1 : (AXI_DATA_WIDTH / RAM_DATA_WIDTH);
+    localparam PACK_COUNT_WIDTH = (RAM_WORDS_PER_AXI_BEAT > 1) ? $clog2(RAM_WORDS_PER_AXI_BEAT + 1) : 1;
     reg [AXI_DATA_WIDTH-1:0] fifo_data [0:FIFO_DEPTH-1]; // 数据存储
+    reg [AXI_STRB_WIDTH-1:0] fifo_strb [0:FIFO_DEPTH-1];
     reg [FIFO_ADDR_WIDTH:0]  fifo_wr_ptr; // 写指针，多一位用于判断FIFO满
     reg [FIFO_ADDR_WIDTH:0]  fifo_rd_ptr; // 读指针，多一位用于判断FIFO空
     wire [FIFO_ADDR_WIDTH:0] fifo_count;  // FIFO中数据计数
@@ -123,14 +129,47 @@ module axi4_full_master#(
     assign fifo_almost_full  = (fifo_count >= (FIFO_DEPTH - 4));
     assign fifo_almost_empty = (fifo_count <= 4);
     
+    reg [AXI_DATA_WIDTH-1:0] pack_data_r;
+    reg [AXI_STRB_WIDTH-1:0] pack_strb_r;
+    reg [PACK_COUNT_WIDTH-1:0] pack_count_r;
+    reg [15:0] data_recv_count;
+    wire [15:0] transfer_beat_count = (transfer_count + RAM_WORDS_PER_AXI_BEAT - 1'b1) / RAM_WORDS_PER_AXI_BEAT;
+
     wire [AXI_DATA_WIDTH-1:0] fifo_data_out;
+    wire [AXI_STRB_WIDTH-1:0] fifo_strb_out;
     assign fifo_data_out = fifo_empty ? {AXI_DATA_WIDTH{1'b0}} : fifo_data[fifo_rd_ptr[FIFO_ADDR_WIDTH-1:0]];
+    assign fifo_strb_out = fifo_empty ? {AXI_STRB_WIDTH{1'b0}} : fifo_strb[fifo_rd_ptr[FIFO_ADDR_WIDTH-1:0]];
+    wire fifo_push_this_cycle = axi_rd_data_vld &&
+        ((pack_count_r == RAM_WORDS_PER_AXI_BEAT - 1) || (data_recv_count == transfer_count - 1));
     wire last_w_beat_handshake;
     wire same_cycle_bresp_handshake;
     wire [15:0] data_sent_count_after_beat;
     assign last_w_beat_handshake = (curr_state == DATA_PHASE) && m_axi_wready && wvalid_r && wlast_r;
     assign same_cycle_bresp_handshake = last_w_beat_handshake && m_axi_bvalid && bready_r;
     assign data_sent_count_after_beat = data_sent_count + 16'd1;
+
+    function [AXI_DATA_WIDTH-1:0] pack_ram_word;
+        input [AXI_DATA_WIDTH-1:0] current_word;
+        input [PACK_COUNT_WIDTH-1:0] slot_idx;
+        input [RAM_DATA_WIDTH-1:0] ram_word;
+        reg [AXI_DATA_WIDTH-1:0] temp_word;
+        begin
+            temp_word = current_word;
+            temp_word[slot_idx*RAM_DATA_WIDTH +: RAM_DATA_WIDTH] = ram_word;
+            pack_ram_word = temp_word;
+        end
+    endfunction
+
+    function [AXI_STRB_WIDTH-1:0] pack_ram_strb;
+        input [AXI_STRB_WIDTH-1:0] current_strb;
+        input [PACK_COUNT_WIDTH-1:0] slot_idx;
+        reg [AXI_STRB_WIDTH-1:0] temp_strb;
+        begin
+            temp_strb = current_strb;
+            temp_strb[slot_idx*RAM_STRB_WIDTH +: RAM_STRB_WIDTH] = {RAM_STRB_WIDTH{1'b1}};
+            pack_ram_strb = temp_strb;
+        end
+    endfunction
     
     // 将内部寄存器连接到输出端口
     assign m_axi_awid     = awid_r;
@@ -192,7 +231,7 @@ module axi4_full_master#(
                 if (same_cycle_bresp_handshake) begin
                     if (m_axi_bresp != 2'b00)
                         next_state = ERROR;
-                    else if (data_sent_count_after_beat < transfer_count)
+                    else if (data_sent_count_after_beat < transfer_beat_count)
                         next_state = ADDR_PHASE;
                     else
                         next_state = COMPLETE;
@@ -205,7 +244,7 @@ module axi4_full_master#(
                 if (m_axi_bvalid && bready_r) begin
                     if (m_axi_bresp != 2'b00) // 非OKAY响应
                         next_state = ERROR;
-                    else if (data_sent_count < transfer_count)
+                    else if (data_sent_count < transfer_beat_count)
                         next_state = ADDR_PHASE; // 直接进入下一个地址阶段
                     else
                         next_state = COMPLETE;
@@ -230,18 +269,31 @@ module axi4_full_master#(
             ram_rd_en_r     <= 1'b0;
             ram_rd_addr_r   <= {AXI_ADDR_WIDTH{1'b0}};
             data_read_count <= 16'd0;
+            data_recv_count <= 16'd0;
             fifo_wr_ptr     <= 0;
+            pack_data_r     <= {AXI_DATA_WIDTH{1'b0}};
+            pack_strb_r     <= {AXI_STRB_WIDTH{1'b0}};
+            pack_count_r    <= {PACK_COUNT_WIDTH{1'b0}};
         end else begin
             case (curr_state)
                 IDLE: begin
                     ram_rd_en_r     <= 1'b0;
                     ram_rd_addr_r   <= {AXI_ADDR_WIDTH{1'b0}};
                     data_read_count <= 16'd0;
+                    data_recv_count <= 16'd0;
+                    fifo_wr_ptr     <= 0;
+                    pack_data_r     <= {AXI_DATA_WIDTH{1'b0}};
+                    pack_strb_r     <= {AXI_STRB_WIDTH{1'b0}};
+                    pack_count_r    <= {PACK_COUNT_WIDTH{1'b0}};
                 end
                 
                 SETUP: begin
                     // 重置读计数
                     data_read_count <= 16'd0;
+                    data_recv_count <= 16'd0;
+                    pack_data_r     <= {AXI_DATA_WIDTH{1'b0}};
+                    pack_strb_r     <= {AXI_STRB_WIDTH{1'b0}};
+                    pack_count_r    <= {PACK_COUNT_WIDTH{1'b0}};
                     // 开始预读数据
                     ram_rd_en_r   <= 1'b1;
                     ram_rd_addr_r <= ram_base_addr;
@@ -258,20 +310,50 @@ module axi4_full_master#(
                     end
 
                     if (axi_rd_data_vld) begin
-                        fifo_data[fifo_wr_ptr[FIFO_ADDR_WIDTH-1:0]] <= axi_rd_data;
-                        fifo_wr_ptr <= fifo_wr_ptr + 1'b1;
+                        data_recv_count <= data_recv_count + 1'b1;
+                        if ((pack_count_r == RAM_WORDS_PER_AXI_BEAT - 1) || (data_recv_count == transfer_count - 1)) begin
+                            fifo_data[fifo_wr_ptr[FIFO_ADDR_WIDTH-1:0]] <=
+                                pack_ram_word(pack_data_r, pack_count_r, axi_rd_data[RAM_DATA_WIDTH-1:0]);
+                            fifo_strb[fifo_wr_ptr[FIFO_ADDR_WIDTH-1:0]] <=
+                                pack_ram_strb(pack_strb_r, pack_count_r);
+                            fifo_wr_ptr  <= fifo_wr_ptr + 1'b1;
+                            pack_data_r  <= {AXI_DATA_WIDTH{1'b0}};
+                            pack_strb_r  <= {AXI_STRB_WIDTH{1'b0}};
+                            pack_count_r <= {PACK_COUNT_WIDTH{1'b0}};
+                        end else begin
+                            pack_data_r  <= pack_ram_word(pack_data_r, pack_count_r, axi_rd_data[RAM_DATA_WIDTH-1:0]);
+                            pack_strb_r  <= pack_ram_strb(pack_strb_r, pack_count_r);
+                            pack_count_r <= pack_count_r + 1'b1;
+                        end
                     end
                 end
 
                 COMPLETE: begin
                     data_read_count <= 16'd0;
+                    data_recv_count <= 16'd0;
+                    pack_data_r     <= {AXI_DATA_WIDTH{1'b0}};
+                    pack_strb_r     <= {AXI_STRB_WIDTH{1'b0}};
+                    pack_count_r    <= {PACK_COUNT_WIDTH{1'b0}};
                 end
                 
                 default: begin
                     ram_rd_en_r <= 1'b0;
                     if (axi_rd_data_vld) begin
-                        fifo_data[fifo_wr_ptr[FIFO_ADDR_WIDTH-1:0]] <= axi_rd_data;
-                        fifo_wr_ptr <= fifo_wr_ptr + 1'b1;
+                        data_recv_count <= data_recv_count + 1'b1;
+                        if ((pack_count_r == RAM_WORDS_PER_AXI_BEAT - 1) || (data_recv_count == transfer_count - 1)) begin
+                            fifo_data[fifo_wr_ptr[FIFO_ADDR_WIDTH-1:0]] <=
+                                pack_ram_word(pack_data_r, pack_count_r, axi_rd_data[RAM_DATA_WIDTH-1:0]);
+                            fifo_strb[fifo_wr_ptr[FIFO_ADDR_WIDTH-1:0]] <=
+                                pack_ram_strb(pack_strb_r, pack_count_r);
+                            fifo_wr_ptr  <= fifo_wr_ptr + 1'b1;
+                            pack_data_r  <= {AXI_DATA_WIDTH{1'b0}};
+                            pack_strb_r  <= {AXI_STRB_WIDTH{1'b0}};
+                            pack_count_r <= {PACK_COUNT_WIDTH{1'b0}};
+                        end else begin
+                            pack_data_r  <= pack_ram_word(pack_data_r, pack_count_r, axi_rd_data[RAM_DATA_WIDTH-1:0]);
+                            pack_strb_r  <= pack_ram_strb(pack_strb_r, pack_count_r);
+                            pack_count_r <= pack_count_r + 1'b1;
+                        end
                     end
                 end
             endcase
@@ -320,8 +402,8 @@ module axi4_full_master#(
                 end
 
                 SETUP: begin
-                    if (transfer_count <= MAX_BURST_LEN + 1)
-                        current_burst_len <= transfer_count - 1'b1; // len=传输次数-1
+                    if (transfer_beat_count <= MAX_BURST_LEN + 1)
+                        current_burst_len <= transfer_beat_count - 1'b1; // len=传输次数-1
                     else
                         current_burst_len <= MAX_BURST_LEN;
                     
@@ -344,10 +426,10 @@ module axi4_full_master#(
                 
                 RESP_PHASE: begin
                     // 如果收到响应，准备下一次突发传输的参数
-                    if (m_axi_bvalid && bready_r && data_sent_count < transfer_count) begin
+                    if (m_axi_bvalid && bready_r && data_sent_count < transfer_beat_count) begin
                         // 计算下一次突发长度
-                        if (transfer_count - data_sent_count <= MAX_BURST_LEN + 1)
-                            current_burst_len <= transfer_count - data_sent_count - 1'b1;
+                        if (transfer_beat_count - data_sent_count <= MAX_BURST_LEN + 1)
+                            current_burst_len <= transfer_beat_count - data_sent_count - 1'b1;
                         else
                             current_burst_len <= MAX_BURST_LEN;
                         
@@ -357,9 +439,9 @@ module axi4_full_master#(
                 end
 
                 DATA_PHASE: begin
-                    if (same_cycle_bresp_handshake && m_axi_bresp == 2'b00 && data_sent_count_after_beat < transfer_count) begin
-                        if (transfer_count - data_sent_count_after_beat <= MAX_BURST_LEN + 1)
-                            current_burst_len <= transfer_count - data_sent_count_after_beat - 1'b1;
+                    if (same_cycle_bresp_handshake && m_axi_bresp == 2'b00 && data_sent_count_after_beat < transfer_beat_count) begin
+                        if (transfer_beat_count - data_sent_count_after_beat <= MAX_BURST_LEN + 1)
+                            current_burst_len <= transfer_beat_count - data_sent_count_after_beat - 1'b1;
                         else
                             current_burst_len <= MAX_BURST_LEN;
 
@@ -379,7 +461,7 @@ module axi4_full_master#(
         if (!m_axi_aresetn) begin
             wvalid_r <= 1'b0;
             wlast_r <= 1'b0;
-            wstrb_r <= {(AXI_DATA_WIDTH/8){1'b1}};
+            wstrb_r <= {AXI_STRB_WIDTH{1'b0}};
             wuser_r <= {AXI_WUSER_WIDTH{1'b0}};
             burst_data_count <= 8'd0;
             data_sent_count <= 16'd0;
@@ -389,14 +471,15 @@ module axi4_full_master#(
                 IDLE, SETUP: begin
                     wvalid_r <= 1'b0;
                     wlast_r <= 1'b0;
+                    wstrb_r <= {AXI_STRB_WIDTH{1'b0}};
                     burst_data_count <= 8'd0;
                     data_sent_count  <= 16'd0;
+                    fifo_rd_ptr <= 0;
                 end
                 
                 DATA_PHASE: begin
-                    wstrb_r <= {(AXI_DATA_WIDTH/8){1'b1}};
-                    
                     if (!fifo_empty) begin
+                        wstrb_r <= fifo_strb_out;
                         wvalid_r <= 1'b1;
                         if (burst_data_count == awlen_r) begin
                             wlast_r <= 1'b1;
@@ -418,10 +501,15 @@ module axi4_full_master#(
                                 if (burst_data_count + 1 == awlen_r) begin
                                     wlast_r <= 1'b1;
                                 end
+
+                                if ((fifo_count == 1) && !fifo_push_this_cycle) begin
+                                    wvalid_r <= 1'b0;
+                                end
                             end
                         end
                     end else begin
                         // FIFO为空时，清除有效标志
+                        wstrb_r <= {AXI_STRB_WIDTH{1'b0}};
                         wvalid_r <= 1'b0;
                     end
                 end
@@ -430,11 +518,13 @@ module axi4_full_master#(
                     data_sent_count  <= 16'd0;
                     wvalid_r <= 1'b0;
                     wlast_r <= 1'b0;
+                    wstrb_r <= {AXI_STRB_WIDTH{1'b0}};
                 end
                 
                 default: begin
                     wvalid_r <= 1'b0;
                     wlast_r <= 1'b0;
+                    wstrb_r <= {AXI_STRB_WIDTH{1'b0}};
                 end
             endcase
         end

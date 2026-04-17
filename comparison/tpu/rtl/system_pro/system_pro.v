@@ -323,6 +323,7 @@ module system_pro (
         .AXI_ID_WIDTH     (AXI_ID_WIDTH) ,
         .AXI_ADDR_WIDTH   (AXI_ADDR_WIDTH) ,
         .AXI_DATA_WIDTH   (AXI_DATA_WIDTH) ,
+        .RAM_DATA_WIDTH   (RAM_DATA_WIDTH) ,
         .AXI_AWUSER_WIDTH (AXI_AWUSER_WIDTH) ,
         .AXI_WUSER_WIDTH  (AXI_WUSER_WIDTH) ,
         .AXI_BUSER_WIDTH  (AXI_BUSER_WIDTH) ,

@@ -13,7 +13,7 @@ module tb_tpu_top_64bit #(
     parameter RAM_ADDR_WIDTH       = 8,
     parameter RAM_C_ADDR_WIDTH     = 10,
     parameter RAM_D_ADDR_WIDTH     = 10,
-    parameter RAM_DATA_WIDTH       = 128,
+    parameter RAM_DATA_WIDTH       = 64,
     parameter FIFO_DATA_WIDTH      = 32,
     parameter FIFO_DEPTH           = 512,
     parameter MATRIX_A_BASE_ADDR   = 32'h0000_0000,
@@ -165,6 +165,30 @@ module tb_tpu_top_64bit #(
     assign dbg_m01_bvalid   = 1'b0;
     assign dbg_m01_bready   = 1'b0;
 
+`ifdef TPU_HAS_RD_MASTER_PORTS
+    wire [      AXI_ID_WIDTH-1:0] m_axi_rd_arid;
+    wire [    AXI_ADDR_WIDTH-1:0] m_axi_rd_araddr;
+    wire [                   7:0] m_axi_rd_arlen;
+    wire [                   2:0] m_axi_rd_arsize;
+    wire [                   1:0] m_axi_rd_arburst;
+    wire                          m_axi_rd_arlock;
+    wire [                   3:0] m_axi_rd_arcache;
+    wire [                   2:0] m_axi_rd_arprot;
+    wire [                   3:0] m_axi_rd_arqos;
+    wire [                   3:0] m_axi_rd_arregion;
+    wire                          m_axi_rd_arvalid;
+    wire                          m_axi_rd_arready;
+    reg  [      AXI_ID_WIDTH-1:0] m_axi_rd_rid;
+    reg  [    AXI_DATA_WIDTH-1:0] m_axi_rd_rdata;
+    reg  [                   1:0] m_axi_rd_rresp;
+    reg                           m_axi_rd_rlast;
+    reg                           m_axi_rd_rvalid;
+    wire                          m_axi_rd_rready;
+    reg                           m_axi_rd_pending;
+    reg  [      AXI_ID_WIDTH-1:0] m_axi_rd_pending_id;
+    reg  [                   7:0] m_axi_rd_beats_remaining;
+`endif
+
     tpu_top #(
         .AXI_ID_WIDTH         (AXI_ID_WIDTH),
         .AXI_ADDR_WIDTH       (AXI_ADDR_WIDTH),
@@ -260,7 +284,30 @@ module tb_tpu_top_64bit #(
         .m_axi_bresp      (m_axi_bresp),
         .m_axi_buser      (m_axi_buser),
         .m_axi_bvalid     (m_axi_bvalid),
-        .m_axi_bready     (m_axi_bready),
+        .m_axi_bready     (m_axi_bready)
+`ifdef TPU_HAS_RD_MASTER_PORTS
+        ,
+        .m_axi_rd_arid    (m_axi_rd_arid),
+        .m_axi_rd_araddr  (m_axi_rd_araddr),
+        .m_axi_rd_arlen   (m_axi_rd_arlen),
+        .m_axi_rd_arsize  (m_axi_rd_arsize),
+        .m_axi_rd_arburst (m_axi_rd_arburst),
+        .m_axi_rd_arlock  (m_axi_rd_arlock),
+        .m_axi_rd_arcache (m_axi_rd_arcache),
+        .m_axi_rd_arprot  (m_axi_rd_arprot),
+        .m_axi_rd_arqos   (m_axi_rd_arqos),
+        .m_axi_rd_arregion(m_axi_rd_arregion),
+        .m_axi_rd_arvalid (m_axi_rd_arvalid),
+        .m_axi_rd_arready (m_axi_rd_arready),
+        .m_axi_rd_rid     (m_axi_rd_rid),
+        .m_axi_rd_rdata   (m_axi_rd_rdata),
+        .m_axi_rd_rresp   (m_axi_rd_rresp),
+        .m_axi_rd_rlast   (m_axi_rd_rlast),
+        .m_axi_rd_rvalid  (m_axi_rd_rvalid),
+        .m_axi_rd_rready  (m_axi_rd_rready)
+`endif
+`ifdef TPU_HAS_DBG_BRANCH_PORTS
+        ,
         .dbg_m00_awvalid  (dbg_m00_awvalid),
         .dbg_m00_awready  (dbg_m00_awready),
         .dbg_m00_wvalid   (dbg_m00_wvalid),
@@ -275,18 +322,64 @@ module tb_tpu_top_64bit #(
         .dbg_m01_wlast    (dbg_m01_wlast),
         .dbg_m01_bvalid   (dbg_m01_bvalid),
         .dbg_m01_bready   (dbg_m01_bready)
+`endif
     );
 
     assign obs_soft_reset_active = u_dut.soft_reset_active;
     assign obs_axi_wr_ready      = u_dut.axi_wr_ready;
     assign obs_load_busy         = u_dut.load_busy;
+`ifdef TPU_OBS_LOAD_DONE_USES_LEGACY_NAME
+    assign obs_load_done         = u_dut.legacy_load_done;
+`else
     assign obs_load_done         = u_dut.load_done;
+`endif
     assign obs_compute_done      = u_dut.compute_done;
     assign obs_transfer_done     = u_dut.transfer_done;
     assign obs_ram_a_wr_done     = u_dut.ram_a_wr_done;
     assign obs_ram_b_wr_done     = u_dut.ram_b_wr_done;
     assign obs_ram_c_wr_done     = u_dut.ram_c_wr_done;
     assign sink_rst_n            = rst_n && !obs_soft_reset_active;
+
+`ifdef TPU_HAS_RD_MASTER_PORTS
+    assign m_axi_rd_arready = sink_rst_n && !m_axi_rd_pending;
+
+    always @(posedge clk or negedge sink_rst_n) begin
+        if (!sink_rst_n) begin
+            m_axi_rd_rid             <= {AXI_ID_WIDTH{1'b0}};
+            m_axi_rd_rdata           <= {AXI_DATA_WIDTH{1'b0}};
+            m_axi_rd_rresp           <= 2'b00;
+            m_axi_rd_rlast           <= 1'b0;
+            m_axi_rd_rvalid          <= 1'b0;
+            m_axi_rd_pending         <= 1'b0;
+            m_axi_rd_pending_id      <= {AXI_ID_WIDTH{1'b0}};
+            m_axi_rd_beats_remaining <= 8'd0;
+        end else begin
+            if (!m_axi_rd_pending && m_axi_rd_arvalid && m_axi_rd_arready) begin
+                m_axi_rd_pending         <= 1'b1;
+                m_axi_rd_pending_id      <= m_axi_rd_arid;
+                m_axi_rd_beats_remaining <= m_axi_rd_arlen;
+                m_axi_rd_rid             <= m_axi_rd_arid;
+                m_axi_rd_rdata           <= {AXI_DATA_WIDTH{1'b0}};
+                m_axi_rd_rresp           <= 2'b00;
+                m_axi_rd_rlast           <= (m_axi_rd_arlen == 8'd0);
+                m_axi_rd_rvalid          <= 1'b1;
+            end else if (m_axi_rd_rvalid && m_axi_rd_rready) begin
+                if (m_axi_rd_beats_remaining == 8'd0) begin
+                    m_axi_rd_rvalid  <= 1'b0;
+                    m_axi_rd_rlast   <= 1'b0;
+                    m_axi_rd_pending <= 1'b0;
+                end else begin
+                    m_axi_rd_beats_remaining <= m_axi_rd_beats_remaining - 8'd1;
+                    m_axi_rd_rid             <= m_axi_rd_pending_id;
+                    m_axi_rd_rdata           <= {AXI_DATA_WIDTH{1'b0}};
+                    m_axi_rd_rresp           <= 2'b00;
+                    m_axi_rd_rlast           <= (m_axi_rd_beats_remaining == 8'd1);
+                    m_axi_rd_rvalid          <= 1'b1;
+                end
+            end
+        end
+    end
+`endif
 
     always @(posedge clk or negedge sink_rst_n) begin
         if (!sink_rst_n) begin

@@ -33,16 +33,16 @@ Or run directly:
 ```bash
 python run.py build --sim verilator
 python run.py smoke --sim verilator
-python run.py smoke --sim verilator --axi-data-width 128 --ram-data-width 128
+python run.py smoke --sim verilator --axi-data-width 128 --ram-data-width 64
 python run.py coverage --sim verilator
 python run.py numeric --sim verilator
-python run.py numeric --sim verilator --axi-data-width 128 --ram-data-width 128
+python run.py numeric --sim verilator --axi-data-width 128 --ram-data-width 64
 python run.py numeric --sim verilator --variant vanilla_v2 --rtl-root ../../../../tpu_vanilla/third_party/tpu_vanilla-v2-local/rtl --axi-data-width 64 --ram-data-width 64
 ```
 
 ## Reports
 
-- `PERFORMANCE_REPORT.md`: current `16x16 / AXI128 / RAM128` comparison results
+- `PERFORMANCE_REPORT.md`: historical `16x16 / AXI128 / RAM128` comparison results
   versus the `vanilla_v2 8x8 / AXI64 / RAM64` baseline.
 
 ## Current smoke coverage
@@ -57,10 +57,7 @@ python run.py numeric --sim verilator --variant vanilla_v2 --rtl-root ../../../.
 
 - The checked-in `comparison/tpu/rtl` now runs as a true `16x16` datapath rather
   than a mixed `16x16` wrapper around several `8`-lane internal stages.
+- Default testbench configuration is now `AXI128 / RAM64`.
 - Local validation status:
   - `make smoke`: `3/3` pass
   - `make numeric`: `62/62` pass
-- End-to-end performance versus `vanilla_v2 8x8 / AXI64 / RAM64`:
-  - weighted speedup across all `62` numeric cases: `2.124x`
-  - arithmetic mean speedup: `1.547x`
-  - median speedup: `1.657x`
