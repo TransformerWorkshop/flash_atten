@@ -4,7 +4,7 @@ module PT_MALLOC #(
 	parameter GEMM_X_DIM   = 4,
 	parameter GEMM_Y_DIM   = 4,
 	parameter LUT_DEPTH    = 8,
-	parameter A_BANK_DEPTH = 8,
+	parameter A_BANK_DEPTH = 16,
 	parameter B_BANK_DEPTH = 16
 ) (
 	input  wire                       clk,
@@ -23,6 +23,9 @@ module PT_MALLOC #(
 	output wire [31:0]                fill_req_id,
 	output wire [`PT_LOCAL_ADDR_W-1:0] fill_req_local_base,
 	output wire [`PT_SIZE_W-1:0]      fill_req_len,
+	output wire [3:0]                 fill_req_m_tiles,
+	output wire [3:0]                 fill_req_n_tiles,
+	output wire [3:0]                 fill_req_k_tiles,
 
 	input  wire                       fill_done_valid,
 	input  wire [`PT_DMA_KIND_W-1:0]  fill_done_kind,
@@ -39,6 +42,8 @@ module PT_MALLOC #(
 	input  wire                       m_alloc_ready,
 	input  wire                       m_alloc_buf,
 	output wire                       m_alloc_take,
+	input  wire                       m_buf0_single_output,
+	input  wire                       m_buf1_single_output,
 
 	input  wire                       ce_resp_valid,
 	input  wire [31:0]                ce_resp,
@@ -75,10 +80,14 @@ module PT_MALLOC #(
 	reg        lut_a_valid [0:LUT_DEPTH-1];
 	reg [`PT_LOCAL_ADDR_W-1:0] lut_a_base [0:LUT_DEPTH-1];
 	reg [`PT_SIZE_W-1:0] lut_a_len [0:LUT_DEPTH-1];
+	reg [3:0] lut_a_m_tiles [0:LUT_DEPTH-1];
+	reg [3:0] lut_a_k_tiles [0:LUT_DEPTH-1];
 	reg        lut_b_valid [0:LUT_DEPTH-1];
 	reg        lut_b_is_c [0:LUT_DEPTH-1];
 	reg [`PT_LOCAL_ADDR_W-1:0] lut_b_base [0:LUT_DEPTH-1];
 	reg [`PT_SIZE_W-1:0] lut_b_len [0:LUT_DEPTH-1];
+	reg [3:0] lut_b_k_tiles [0:LUT_DEPTH-1];
+	reg [3:0] lut_b_n_tiles [0:LUT_DEPTH-1];
 
 	reg [A_PTR_W-1:0] a_alloc_next_r;
 	reg [B_PTR_W-1:0] b_alloc_next_r;
@@ -90,6 +99,9 @@ module PT_MALLOC #(
 	reg                         active_need_a_fill_r;
 	reg                         active_need_b_fill_r;
 	reg                         active_b_is_c_r;
+	reg [3:0]                   active_m_tiles_r;
+	reg [3:0]                   active_n_tiles_r;
+	reg [3:0]                   active_k_tiles_r;
 	reg [`PT_LOCAL_ADDR_W-1:0]  active_a_base_r;
 	reg [`PT_LOCAL_ADDR_W-1:0]  active_b_base_r;
 	reg [`PT_SIZE_W-1:0]        active_a_len_r;
@@ -114,11 +126,17 @@ module PT_MALLOC #(
 	reg                         dec_need_a;
 	reg                         dec_need_b;
 	reg                         dec_b_is_c;
+	reg [3:0]                   dec_m_tiles;
+	reg [3:0]                   dec_n_tiles;
+	reg [3:0]                   dec_k_tiles;
 	reg [LUT_AW-1:0]            cmd_slot_idx;
 	reg [`PT_LOCAL_ADDR_W-1:0]  cmd_a_base;
 	reg [`PT_LOCAL_ADDR_W-1:0]  cmd_b_base;
 	reg [`PT_SIZE_W-1:0]        cmd_a_len;
 	reg [`PT_SIZE_W-1:0]        cmd_b_len;
+	reg [3:0]                   cmd_m_tiles;
+	reg [3:0]                   cmd_n_tiles;
+	reg [3:0]                   cmd_k_tiles;
 	reg [`PT_SIZE_W-1:0]        dec_a_len;
 	reg [`PT_SIZE_W-1:0]        dec_b_len;
 	reg [A_PTR_W-1:0]           cmd_a_alloc_next;
@@ -147,20 +165,39 @@ module PT_MALLOC #(
 	wire cmd_load_need_a = malloc_cmd_inst[`PT_LOAD_NEED_A_BIT];
 	wire cmd_load_need_b = malloc_cmd_inst[`PT_LOAD_NEED_B_BIT];
 	wire [5:0] cmd_load_reserved = malloc_cmd_inst[`PT_LOAD_RSV_H:`PT_LOAD_RSV_L];
+	wire [1:0] cmd_load_m_code = malloc_cmd_inst[`PT_LOAD_M_CODE_H:`PT_LOAD_M_CODE_L];
+	wire [1:0] cmd_load_n_code = malloc_cmd_inst[`PT_LOAD_N_CODE_H:`PT_LOAD_N_CODE_L];
+	wire [1:0] cmd_load_k_code = malloc_cmd_inst[`PT_LOAD_K_CODE_H:`PT_LOAD_K_CODE_L];
 	wire [9:0] cmd_m_off = malloc_cmd_inst[`PT_MATADD_M_OFF_H:`PT_MATADD_M_OFF_L];
 	wire [9:0] cmd_c_field = malloc_cmd_inst[`PT_MATADD_C_FIELD_H:`PT_MATADD_C_FIELD_L];
 	wire [5:0] cmd_matadd_reserved_hi = malloc_cmd_inst[`PT_MATADD_RESERVED_HI_H:`PT_MATADD_RESERVED_HI_L];
 	wire [1:0] cmd_matadd_reserved_lo = malloc_cmd_inst[`PT_MATADD_RESERVED_LO_H:`PT_MATADD_RESERVED_LO_L];
-
+	wire cmd_matadd_src_single_output = cmd_m_off[8] ? m_buf1_single_output : m_buf0_single_output;
+	wire [3:0] cmd_load_m_tiles = (cmd_load_m_code == 2'b00) ? `PT_TILES_1 :
+	                              (cmd_load_m_code == 2'b01) ? `PT_TILES_2 :
+	                              (cmd_load_m_code == 2'b10) ? `PT_TILES_4 :
+	                              4'd0;
+	wire [3:0] cmd_load_n_tiles = (cmd_load_n_code == 2'b00) ? `PT_TILES_1 :
+	                              (cmd_load_n_code == 2'b01) ? `PT_TILES_2 :
+	                              (cmd_load_n_code == 2'b10) ? `PT_TILES_4 :
+	                              4'd0;
+	wire [3:0] cmd_load_k_tiles = (cmd_load_k_code == 2'b00) ? `PT_TILES_1 :
+	                              (cmd_load_k_code == 2'b01) ? `PT_TILES_2 :
+	                              (cmd_load_k_code == 2'b10) ? `PT_TILES_4 :
+	                              4'd0;
+	wire cmd_matmul_m_valid = (cmd_matmul_m_tiles == `PT_TILES_1) || (cmd_matmul_m_tiles == `PT_TILES_2) || (cmd_matmul_m_tiles == `PT_TILES_4);
+	wire cmd_matmul_n_valid = (cmd_matmul_n_tiles == `PT_TILES_1) || (cmd_matmul_n_tiles == `PT_TILES_2) || (cmd_matmul_n_tiles == `PT_TILES_4);
+	wire cmd_matmul_k_valid = (cmd_matmul_k_tiles == `PT_TILES_1) || (cmd_matmul_k_tiles == `PT_TILES_2) || (cmd_matmul_k_tiles == `PT_TILES_4);
+	wire cmd_load_shape_valid = (cmd_load_m_code != 2'b11) && (cmd_load_n_code != 2'b11) && (cmd_load_k_code != 2'b11);
 	wire cmd_matmul_legal = (cmd_opcode == `PT_OP_MATMUL) &&
-	                        (cmd_matmul_m_tiles == `PT_TILES_1) &&
-	                        (cmd_matmul_n_tiles == `PT_TILES_1) &&
-	                        ((cmd_matmul_k_tiles == `PT_TILES_1) || (cmd_matmul_k_tiles == `PT_TILES_2) || (cmd_matmul_k_tiles == `PT_TILES_4)) &&
+	                        cmd_matmul_m_valid &&
+	                        cmd_matmul_n_valid &&
+	                        cmd_matmul_k_valid &&
 	                        (cmd_matmul_reserved_a == 8'd0) &&
 	                        (cmd_matmul_reserved_b == 8'd0);
 	wire cmd_load_legal = (cmd_opcode == `PT_OP_LOAD) &&
 	                      (cmd_load_need_a || cmd_load_need_b) &&
-	                      (cmd_load_reserved == 6'd0) &&
+	                      cmd_load_shape_valid &&
 	                      (!cmd_load_need_a || (cmd_load_a_size != {`PT_SIZE_W{1'b0}})) &&
 	                      (!cmd_load_need_b || (cmd_load_b_size != {`PT_SIZE_W{1'b0}}));
 	wire cmd_matadd_legal = (cmd_opcode == `PT_OP_MATADD) &&
@@ -270,17 +307,29 @@ module PT_MALLOC #(
 				dec_need_a = cmd_load_need_a;
 				dec_need_b = cmd_load_need_b;
 				dec_b_is_c = 1'b0;
+				dec_m_tiles = cmd_load_m_tiles;
+				dec_n_tiles = cmd_load_n_tiles;
+				dec_k_tiles = cmd_load_k_tiles;
 				dec_a_len  = cmd_load_need_a ? cmd_load_a_size : {`PT_SIZE_W{1'b0}};
 				dec_b_len  = cmd_load_need_b ? cmd_load_b_size : {`PT_SIZE_W{1'b0}};
 				dec_error  = !cmd_load_legal;
+				if (cmd_load_need_a && (cmd_load_a_size != (cmd_load_m_tiles * cmd_load_k_tiles * A_TILE_LEN))) begin
+					dec_error = 1'b1;
+				end
+				if (cmd_load_need_b && (cmd_load_b_size != (cmd_load_k_tiles * cmd_load_n_tiles * B_TILE_LEN))) begin
+					dec_error = 1'b1;
+				end
 			end
 
 			`PT_MALLOC_KIND_MATMUL: begin
 				dec_need_a = 1'b1;
 				dec_need_b = 1'b1;
 				dec_b_is_c = 1'b0;
-				dec_a_len  = cmd_matmul_k_tiles * A_TILE_LEN;
-				dec_b_len  = cmd_matmul_k_tiles * B_TILE_LEN;
+				dec_m_tiles = cmd_matmul_m_tiles;
+				dec_n_tiles = cmd_matmul_n_tiles;
+				dec_k_tiles = cmd_matmul_k_tiles;
+				dec_a_len  = cmd_matmul_m_tiles * cmd_matmul_k_tiles * A_TILE_LEN;
+				dec_b_len  = cmd_matmul_k_tiles * cmd_matmul_n_tiles * B_TILE_LEN;
 				dec_error  = !cmd_matmul_legal;
 			end
 
@@ -288,15 +337,21 @@ module PT_MALLOC #(
 				dec_need_a = 1'b0;
 				dec_need_b = 1'b1;
 				dec_b_is_c = 1'b1;
+				dec_m_tiles = `PT_TILES_1;
+				dec_n_tiles = `PT_TILES_1;
+				dec_k_tiles = `PT_TILES_1;
 				dec_a_len  = {`PT_SIZE_W{1'b0}};
 				dec_b_len  = B_TILE_LEN[`PT_SIZE_W-1:0];
-				dec_error  = !cmd_matadd_legal;
+				dec_error  = !cmd_matadd_legal || !cmd_matadd_src_single_output;
 			end
 
 			default: begin
 				dec_need_a = 1'b0;
 				dec_need_b = 1'b0;
 				dec_b_is_c = 1'b0;
+				dec_m_tiles = `PT_TILES_1;
+				dec_n_tiles = `PT_TILES_1;
+				dec_k_tiles = `PT_TILES_1;
 				dec_a_len  = {`PT_SIZE_W{1'b0}};
 				dec_b_len  = {`PT_SIZE_W{1'b0}};
 				dec_error  = 1'b1;
@@ -314,6 +369,9 @@ module PT_MALLOC #(
 		cmd_b_base       = {`PT_LOCAL_ADDR_W{1'b0}};
 		cmd_a_len        = dec_a_len;
 		cmd_b_len        = dec_b_len;
+		cmd_m_tiles      = dec_m_tiles;
+		cmd_n_tiles      = dec_n_tiles;
+		cmd_k_tiles      = dec_k_tiles;
 		cmd_a_alloc_next = a_alloc_next_r;
 		cmd_b_alloc_next = b_alloc_next_r;
 
@@ -325,7 +383,9 @@ module PT_MALLOC #(
 					`PT_MALLOC_KIND_LOAD: begin
 						if (dec_need_a) begin
 							if (slot_found && lut_a_valid[slot_idx]) begin
-								if (lut_a_len[slot_idx] == dec_a_len) begin
+								if ((lut_a_len[slot_idx] == dec_a_len) &&
+								    (lut_a_m_tiles[slot_idx] == dec_m_tiles) &&
+								    (lut_a_k_tiles[slot_idx] == dec_k_tiles)) begin
 									cmd_a_base = lut_a_base[slot_idx];
 								end else begin
 									cmd_error = 1'b1;
@@ -341,7 +401,9 @@ module PT_MALLOC #(
 
 						if (dec_need_b && !cmd_error) begin
 							if (slot_found && lut_b_valid[slot_idx] && !lut_b_is_c[slot_idx]) begin
-								if (lut_b_len[slot_idx] == dec_b_len) begin
+								if ((lut_b_len[slot_idx] == dec_b_len) &&
+								    (lut_b_k_tiles[slot_idx] == dec_k_tiles) &&
+								    (lut_b_n_tiles[slot_idx] == dec_n_tiles)) begin
 									cmd_b_base = lut_b_base[slot_idx];
 								end else begin
 									cmd_error = 1'b1;
@@ -358,7 +420,9 @@ module PT_MALLOC #(
 
 					`PT_MALLOC_KIND_MATMUL: begin
 						if (slot_found && lut_a_valid[slot_idx]) begin
-							if (lut_a_len[slot_idx] == dec_a_len) begin
+							if ((lut_a_len[slot_idx] == dec_a_len) &&
+							    (lut_a_m_tiles[slot_idx] == dec_m_tiles) &&
+							    (lut_a_k_tiles[slot_idx] == dec_k_tiles)) begin
 								cmd_a_base = lut_a_base[slot_idx];
 							end else begin
 								cmd_error = 1'b1;
@@ -373,7 +437,9 @@ module PT_MALLOC #(
 
 						if (!cmd_error) begin
 							if (slot_found && lut_b_valid[slot_idx] && !lut_b_is_c[slot_idx]) begin
-								if (lut_b_len[slot_idx] == dec_b_len) begin
+								if ((lut_b_len[slot_idx] == dec_b_len) &&
+								    (lut_b_k_tiles[slot_idx] == dec_k_tiles) &&
+								    (lut_b_n_tiles[slot_idx] == dec_n_tiles)) begin
 									cmd_b_base = lut_b_base[slot_idx];
 								end else begin
 									cmd_error = 1'b1;
@@ -420,6 +486,9 @@ module PT_MALLOC #(
 	assign fill_req_id         = active_id_r;
 	assign fill_req_local_base = (state_r == ST_FILL_REQ_A) ? active_a_base_r : active_b_base_r;
 	assign fill_req_len        = (state_r == ST_FILL_REQ_A) ? active_a_len_r : active_b_len_r;
+	assign fill_req_m_tiles    = active_m_tiles_r;
+	assign fill_req_n_tiles    = active_n_tiles_r;
+	assign fill_req_k_tiles    = active_k_tiles_r;
 
 	assign ce_cmd_valid        = (state_r == ST_CE_REQ) && (!active_is_exec || m_alloc_ready);
 	assign ce_cmd_ctrl         = active_inst_r;
@@ -536,6 +605,9 @@ module PT_MALLOC #(
 			active_need_a_fill_r <= 1'b0;
 			active_need_b_fill_r <= 1'b0;
 			active_b_is_c_r      <= 1'b0;
+			active_m_tiles_r     <= `PT_TILES_1;
+			active_n_tiles_r     <= `PT_TILES_1;
+			active_k_tiles_r     <= `PT_TILES_1;
 			active_a_base_r      <= {`PT_LOCAL_ADDR_W{1'b0}};
 			active_b_base_r      <= {`PT_LOCAL_ADDR_W{1'b0}};
 			active_a_len_r       <= {`PT_SIZE_W{1'b0}};
@@ -552,10 +624,14 @@ module PT_MALLOC #(
 				lut_a_valid[li] <= 1'b0;
 				lut_a_base[li]  <= {`PT_LOCAL_ADDR_W{1'b0}};
 				lut_a_len[li]   <= {`PT_SIZE_W{1'b0}};
+				lut_a_m_tiles[li] <= `PT_TILES_1;
+				lut_a_k_tiles[li] <= `PT_TILES_1;
 				lut_b_valid[li] <= 1'b0;
 				lut_b_is_c[li]  <= 1'b0;
 				lut_b_base[li]  <= {`PT_LOCAL_ADDR_W{1'b0}};
 				lut_b_len[li]   <= {`PT_SIZE_W{1'b0}};
+				lut_b_k_tiles[li] <= `PT_TILES_1;
+				lut_b_n_tiles[li] <= `PT_TILES_1;
 			end
 		end else if (clear) begin
 			malloc_resp_valid    <= 1'b0;
@@ -570,6 +646,9 @@ module PT_MALLOC #(
 			active_need_a_fill_r <= 1'b0;
 			active_need_b_fill_r <= 1'b0;
 			active_b_is_c_r      <= 1'b0;
+			active_m_tiles_r     <= `PT_TILES_1;
+			active_n_tiles_r     <= `PT_TILES_1;
+			active_k_tiles_r     <= `PT_TILES_1;
 			active_a_base_r      <= {`PT_LOCAL_ADDR_W{1'b0}};
 			active_b_base_r      <= {`PT_LOCAL_ADDR_W{1'b0}};
 			active_a_len_r       <= {`PT_SIZE_W{1'b0}};
@@ -586,10 +665,14 @@ module PT_MALLOC #(
 				lut_a_valid[li] <= 1'b0;
 				lut_a_base[li]  <= {`PT_LOCAL_ADDR_W{1'b0}};
 				lut_a_len[li]   <= {`PT_SIZE_W{1'b0}};
+				lut_a_m_tiles[li] <= `PT_TILES_1;
+				lut_a_k_tiles[li] <= `PT_TILES_1;
 				lut_b_valid[li] <= 1'b0;
 				lut_b_is_c[li]  <= 1'b0;
 				lut_b_base[li]  <= {`PT_LOCAL_ADDR_W{1'b0}};
 				lut_b_len[li]   <= {`PT_SIZE_W{1'b0}};
+				lut_b_k_tiles[li] <= `PT_TILES_1;
+				lut_b_n_tiles[li] <= `PT_TILES_1;
 			end
 		end else begin
 			malloc_resp_valid <= 1'b0;
@@ -614,6 +697,9 @@ module PT_MALLOC #(
 						active_need_a_fill_r  <= cmd_need_a_fill;
 						active_need_b_fill_r  <= cmd_need_b_fill;
 						active_b_is_c_r       <= cmd_b_is_c;
+						active_m_tiles_r      <= cmd_m_tiles;
+						active_n_tiles_r      <= cmd_n_tiles;
+						active_k_tiles_r      <= cmd_k_tiles;
 						active_a_base_r       <= cmd_a_base;
 						active_b_base_r       <= cmd_b_base;
 						active_a_len_r        <= cmd_a_len;
@@ -641,6 +727,8 @@ module PT_MALLOC #(
 							lut_a_valid[active_slot_idx_r] <= 1'b1;
 							lut_a_base[active_slot_idx_r]  <= active_a_base_r;
 							lut_a_len[active_slot_idx_r]   <= active_a_len_r;
+							lut_a_m_tiles[active_slot_idx_r] <= active_m_tiles_r;
+							lut_a_k_tiles[active_slot_idx_r] <= active_k_tiles_r;
 							a_alloc_next_r                 <= active_a_alloc_next_r;
 							active_need_a_fill_r          <= 1'b0;
 							if (!active_need_b_fill_r && (active_kind_r == `PT_MALLOC_KIND_LOAD)) begin
@@ -665,6 +753,8 @@ module PT_MALLOC #(
 							lut_b_is_c[active_slot_idx_r]  <= active_b_is_c_r;
 							lut_b_base[active_slot_idx_r]  <= active_b_base_r;
 							lut_b_len[active_slot_idx_r]   <= active_b_len_r;
+							lut_b_k_tiles[active_slot_idx_r] <= active_k_tiles_r;
+							lut_b_n_tiles[active_slot_idx_r] <= active_n_tiles_r;
 							b_alloc_next_r                 <= active_b_alloc_next_r;
 							active_need_b_fill_r          <= 1'b0;
 							if (active_kind_r == `PT_MALLOC_KIND_LOAD) begin

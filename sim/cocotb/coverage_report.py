@@ -42,6 +42,13 @@ EXCLUDED_EXPR_COMMENTS = {
 		"(gemm_b_ready==0) => 0",
 		"((M_WRITE_LANES <= 32'sh0)==1) => 1",
 		"((M_WRITE_LANES > GEMM_Y_DIM)==1) => 1",
+		"(shadow_launch_fire==1) => 1",
+		"(shadow_launch_fire==0) => 0",
+		"(drain_chunking_r==0) => 1",
+		"(drain_chunking_r==1) => 0",
+		"((wi < (store_chunk_base_r + M_WRITE_LANES))==0) => 0",
+		"((wi >= store_chunk_base_r)==0) => 0",
+		"((wi >= store_chunk_base_r)==1 && (wi < (store_chunk_base_r + M_WRITE_LANES))==1) => 1",
 	},
 	"pt_md_v2.v": {
 		"((value > 32'sh0)==0) => 0",
@@ -53,6 +60,10 @@ EXCLUDED_EXPR_COMMENTS = {
 		"((M_EXPORT_LANES > GEMM_Y_DIM)==1) => 1",
 		"(md_cmd_ready==0) => 0",
 		"(ce_resp[31]==1) => 0",
+		"((fi >= fill_a_row_base)==0) => 0",
+		"((fi >= fill_a_row_base)==1 && (fi < (fill_a_row_base + A_LOAD_LANES))==1 && ((fi - fill_a_row_base) < fill_a_valid_elems)==1) => 1",
+		"((fi >= fill_b_col_base)==0) => 0",
+		"((fi >= fill_b_col_base)==1 && (fi < (fill_b_col_base + B_LOAD_LANES))==1 && ((fi - fill_b_col_base) < fill_b_valid_elems)==1) => 1",
 	},
 }
 
@@ -72,6 +83,17 @@ CLASSIFICATION_OVERRIDES = {
 	("line", "pt_md.v", 326, ""): ("unreachable", "Guarded by top-level power-of-two constraint."),
 	("line", "pt_md.v", 333, ""): ("unreachable", "Guarded by top-level power-of-two constraint."),
 	("line", "pt_md.v", 334, ""): ("unreachable", "Guarded by top-level power-of-two constraint."),
+}
+
+OVERALL_COVERAGE_THRESHOLDS = {
+	"line_adj": 95.0,
+	"expr_adj": 92.0,
+}
+
+PER_FILE_COVERAGE_THRESHOLDS = {
+	("pt_md_v2.v", "expr_adj"): 89.0,
+	("pt_ce_v2.v", "expr_adj"): 94.0,
+	("pt.v", "line_adj"): 90.0,
 }
 
 
@@ -119,6 +141,24 @@ class ResidualPoint:
 
 def pct(covered: int, total: int) -> float:
 	return round((100.0 * covered / total) if total else 0.0, 2)
+
+
+def _coverage_gate_failures(metrics: Mapping[str, object]) -> List[str]:
+	failures: List[str] = []
+	overall = dict(metrics.get("overall", {}))
+	for key, threshold in OVERALL_COVERAGE_THRESHOLDS.items():
+		entry = dict(overall.get(key, {}))
+		actual = float(entry.get("pct", 0.0))
+		if actual < threshold:
+			failures.append(f"overall {key} {actual:.2f}% < required {threshold:.2f}%")
+
+	per_file = dict(metrics.get("per_file", {}))
+	for (file_name, key), threshold in PER_FILE_COVERAGE_THRESHOLDS.items():
+		entry = dict(dict(per_file.get(file_name, {})).get(key, {}))
+		actual = float(entry.get("pct", 0.0))
+		if actual < threshold:
+			failures.append(f"{file_name} {key} {actual:.2f}% < required {threshold:.2f}%")
+	return failures
 
 
 def _count_or_zero(summary: Mapping[str, CoverageCount], key: str) -> CoverageCount:
@@ -537,6 +577,10 @@ def generate_coverage_reports(coverage_dat: Path, coverage_info: Path, summary_t
 		coverage_types_lines.append("- All current user coverage points are covered.")
 	coverage_types_path = coverage_dat.parent / "coverage_types.md"
 	coverage_types_path.write_text("\n".join(coverage_types_lines) + "\n", encoding="utf-8")
+
+	gate_failures = _coverage_gate_failures(metrics)
+	if gate_failures:
+		raise SystemExit("coverage thresholds not met: " + "; ".join(gate_failures))
 
 	DEBUG_ROOT.mkdir(parents=True, exist_ok=True)
 	timestamp = datetime.now().strftime("%Y%m%d")

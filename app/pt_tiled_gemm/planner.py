@@ -11,6 +11,9 @@ from .perf_adapter import load_perf_baselines
 
 
 LOAD_CTRL_OVERHEAD_CYCLES = 10
+PIPELINED_FIRST_OUTPUT_TILE_CYCLES = 118
+PIPELINED_SECOND_K_TILE_OVERLAP_CYCLES = 42
+PIPELINED_STEADY_K_TILE_OVERLAP_CYCLES = 59
 
 
 @dataclass(frozen=True)
@@ -169,6 +172,30 @@ def _tile_export_beats() -> int:
 	return PT_PARAMS["GEMM_X_DIM"] * math.ceil(PT_PARAMS["GEMM_Y_DIM"] / PT_PARAMS["M_EXPORT_LANES"])
 
 
+def _estimate_pipelined_output_tile_cycles(problem: ProblemSpec) -> int:
+	"""Empirical app-level fallback for the current 16x16 direct pipeline.
+
+	The cocotb app flow keeps up to 2 MATMULs in flight (limited by
+	`M_PHYSICAL_COPIES=2`), so one output tile pays:
+
+	- 118 cycles when `K_tiles == 1`
+	- +42 cycles for the second K tile
+	- +59 cycles for each additional K tile once the overlap window is full
+
+	This matches the currently re-measured single-output-tile points:
+	`16x16x16 -> 117`, `16x32x16 -> 159`, `16x64x16 -> 277`,
+	`16x128x16 -> 513` total cycles.
+	"""
+
+	if problem.k_tiles <= 1:
+		return PIPELINED_FIRST_OUTPUT_TILE_CYCLES
+	return (
+		PIPELINED_FIRST_OUTPUT_TILE_CYCLES
+		+ PIPELINED_SECOND_K_TILE_OVERLAP_CYCLES
+		+ max(problem.k_tiles - 2, 0) * PIPELINED_STEADY_K_TILE_OVERLAP_CYCLES
+	)
+
+
 def _build_candidates(problem: ProblemSpec) -> List[CandidatePlan]:
 	perf = load_perf_baselines()
 	matmul_cold_cycles = perf["cold_miss"].single_tile_latency_cycles
@@ -181,11 +208,17 @@ def _build_candidates(problem: ProblemSpec) -> List[CandidatePlan]:
 	tile_export_beats = _tile_export_beats()
 	host_add_ops = problem.host_add_ops
 	matadd_count = output_tile_count * max(problem.k_tiles - 1, 0)
+	pipelined_output_tile_cycles = _estimate_pipelined_output_tile_cycles(problem)
+	pipelined_total_cycles = (output_tile_count * pipelined_output_tile_cycles) - 1
 
 	return [
 		CandidatePlan(
 			name="host_reduce_direct_tiled_matmul",
-			metric_keys=["host_reduce_direct_tiled_matmul", "host_reduce_direct_4x_matmul"],
+			metric_keys=[
+				"host_reduce_direct_tiled_matmul",
+				"host_reduce_direct_4x_matmul",
+				"numeric_host_reduce_per_tensor",
+			],
 			description="每个输出 tile 的所有 K-partial 都直接用 MATMUL 计算，partial result 导出后由 host 精确累加。",
 			command_sequence=[
 				"CFG A_BASE",
@@ -204,6 +237,30 @@ def _build_candidates(problem: ProblemSpec) -> List[CandidatePlan]:
 			notes=[
 				"最贴合当前 RTL：所有 partial 只用原生 full-tile MATMUL。",
 				f"host 端额外逐元素加法 = (K_tiles-1) * M * N = {host_add_ops}。",
+			],
+		),
+		CandidatePlan(
+			name="host_reduce_direct_pipelined",
+			metric_keys=["host_reduce_direct_pipelined", "numeric_host_reduce_pipelined"],
+			description="和 direct path 一样只做 MATMUL + host reduce，但保持最多 2 个 MATMUL in-flight，重叠下一 tile 的 DMA-fill 与当前 tile 的 compute/export。",
+			command_sequence=[
+				"CFG A_BASE",
+				"CFG B_BASE",
+				"QCFG(per_tensor, payload=0x0001_0000)",
+				"对每个输出 tile C[m_i, n_j]，遍历所有 K tiles：",
+				"  先发起 MATMUL(A[m_i, k_t], B[k_t, n_j])",
+				"  在前一个 partial 仍在 compute/export 时继续发下一个 MATMUL",
+				"HOST: drain/export 完成后 reduce(P_0..P_t) -> C[m_i, n_j]",
+			],
+			estimated_cycles=pipelined_total_cycles,
+			dma_req_count=2 * partial_matmuls,
+			export_req_count=partial_matmuls,
+			export_beats=partial_matmuls * tile_export_beats,
+			matadd_count=0,
+			host_side_add_ops=host_add_ops,
+			notes=[
+				"当前 app testbench 使用 pipeline_depth=2，受 `M_PHYSICAL_COPIES=2` 限制。",
+				"fallback estimate 来自当前 16x16 app-level re-measurement，而不是低层 structural perf model。",
 			],
 		),
 		CandidatePlan(
@@ -230,6 +287,7 @@ def _build_candidates(problem: ProblemSpec) -> List[CandidatePlan]:
 		),
 		CandidatePlan(
 			name="pt_matadd_reduce",
+			metric_keys=["pt_matadd_reduce", "numeric_pt_matadd_reduce_per_tensor"],
 			description="每个输出 tile 先算所有 K-partial，再在 PT 内用 MATADD 串联归约。",
 			command_sequence=[
 				"CFG A_BASE",
@@ -292,8 +350,11 @@ def build_recommendation(problem: ProblemSpec, metrics_path: Optional[Path] = No
 	unsupported_paths = _build_unsupported_paths(problem)
 
 	measured_algorithms = metrics.get("algorithms", {})
+	measured_tests = metrics.get("tests", {})
 	for candidate in candidates:
 		payload = _lookup_metric(measured_algorithms, candidate.metric_keys)
+		if payload is None:
+			payload = _lookup_metric(measured_tests, candidate.metric_keys)
 		if payload:
 			candidate.merge_measured(payload)
 
@@ -304,7 +365,13 @@ def build_recommendation(problem: ProblemSpec, metrics_path: Optional[Path] = No
 			item.merge_measured(payload)
 
 	winner_candidate = min(candidates, key=lambda item: item.ranking_cycles)
-	ranking_source = "measured" if all(item.measured_cycles is not None for item in candidates) else "estimated"
+	measured_count = sum(1 for item in candidates if item.measured_cycles is not None)
+	if measured_count == len(candidates):
+		ranking_source = "measured"
+	elif measured_count > 0:
+		ranking_source = "mixed"
+	else:
+		ranking_source = "estimated"
 
 	tile_summary = {
 		"tile_dim": TILE_DIM,
@@ -322,6 +389,8 @@ def build_recommendation(problem: ProblemSpec, metrics_path: Optional[Path] = No
 	]
 	if ranking_source == "measured":
 		notes.append(f"当前 winner 基于 `{active_metrics_path}` 中的实测结果排序。")
+	elif ranking_source == "mixed":
+		notes.append(f"当前 winner 基于 `{active_metrics_path}` 中的部分实测结果与 fallback estimate 混合排序。")
 	else:
 		notes.append("当前 winner 基于 app 内的 fallback estimate 排序。")
 
@@ -589,4 +658,3 @@ def build_report_markdown(recommendation: Recommendation, verify_summary: Option
 			lines.append(f"- metrics_path: `{metrics_path}`")
 
 	return "\n".join(lines) + "\n"
-

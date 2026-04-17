@@ -4,7 +4,7 @@ module PT_CE_V2 #(
 	parameter DATA_WIDTH   = 32,
 	parameter GEMM_X_DIM   = 4,
 	parameter GEMM_Y_DIM   = 4,
-	parameter A_BANK_DEPTH = 8,
+	parameter A_BANK_DEPTH = 16,
 	parameter B_BANK_DEPTH = 16,
 	parameter M_BANK_DEPTH = 16,
 	parameter M_WRITE_LANES = GEMM_Y_DIM
@@ -42,6 +42,8 @@ module PT_CE_V2 #(
 	output wire                       quant_m_ready,
 	input  wire [GEMM_Y_DIM*DATA_WIDTH-1:0] b_mem_row_data,
 	input  wire [GEMM_Y_DIM*DATA_WIDTH-1:0] m_mem_row_data,
+	input  wire                       m_buf0_single_output,
+	input  wire                       m_buf1_single_output,
 	output wire [GEMM_Y_DIM*DATA_WIDTH-1:0] gema_lhs_data,
 	output wire [GEMM_Y_DIM*DATA_WIDTH-1:0] gema_rhs_data,
 	output wire [31:0]                gema_in_idx,
@@ -60,6 +62,8 @@ module PT_CE_V2 #(
 	output reg  [GEMM_Y_DIM*DATA_WIDTH-1:0]      m_mem_wr_data,
 	output reg                        ce_resp_valid,
 	output reg  [31:0]                ce_resp,
+	output reg  [`PT_SIZE_W-1:0]      ce_resp_row_chunk_count,
+	output reg                        ce_resp_single_output,
 	output reg                        ce_irq
 );
 
@@ -74,6 +78,7 @@ module PT_CE_V2 #(
 	localparam integer STORE_BASE_W = (GEMM_Y_DIM <= 1) ? 1 : $clog2(GEMM_Y_DIM + 1);
 	localparam integer DRAIN_FULL_WIDTH = (M_WRITE_LANES >= GEMM_Y_DIM) ? 1 : 0;
 	localparam integer MATMUL_ACC_W = 16;
+	localparam integer TILE_IDX_W = 3;
 
 	localparam [2:0] ADD_IDLE        = 3'd0;
 	localparam [2:0] ADD_REQ         = 3'd1;
@@ -91,6 +96,10 @@ module PT_CE_V2 #(
 	reg [A_AW-1:0] shadow_a_row_base_r;
 	reg [B_AW-1:0] shadow_b_row_base_r;
 	reg        shadow_m_wr_buf_r;
+	reg [TILE_IDX_W-1:0] shadow_m_tile_idx_r, shadow_n_tile_idx_r;
+	reg [3:0] shadow_total_n_tiles_r;
+	reg shadow_single_output_r;
+	reg shadow_final_tile_r;
 
 	reg        exec_valid_r;
 	reg [31:0] exec_ctrl_r;
@@ -100,6 +109,10 @@ module PT_CE_V2 #(
 	reg [A_AW-1:0] exec_a_row_base_r;
 	reg [B_AW-1:0] exec_b_row_base_r;
 	reg        exec_m_wr_buf_r;
+	reg [TILE_IDX_W-1:0] exec_m_tile_idx_r, exec_n_tile_idx_r;
+	reg [3:0] exec_total_n_tiles_r;
+	reg exec_single_output_r;
+	reg exec_final_tile_r;
 	reg [MATMUL_ACC_W-1:0] exec_total_accs_r;
 	reg [15:0] exec_issue_cnt_r, exec_rsp_cnt_r;
 
@@ -107,6 +120,21 @@ module PT_CE_V2 #(
 	reg [31:0] drain_id_r;
 	reg        drain_m_wr_buf_r;
 	reg        drain_chunking_r;
+	reg [TILE_IDX_W-1:0] drain_m_tile_idx_r, drain_n_tile_idx_r;
+	reg [3:0] drain_total_n_tiles_r;
+	reg drain_single_output_r;
+	reg drain_final_tile_r;
+
+	reg        macro_active_r;
+	reg [31:0] macro_ctrl_r;
+	reg [31:0] macro_id_r;
+	reg        macro_a_buf_r;
+	reg        macro_b_buf_r;
+	reg [A_AW-1:0] macro_a_row_base_r;
+	reg [B_AW-1:0] macro_b_row_base_r;
+	reg        macro_m_wr_buf_r;
+	reg [3:0] macro_m_tiles_r, macro_n_tiles_r, macro_k_tiles_r;
+	reg [TILE_IDX_W-1:0] macro_next_m_tile_r, macro_next_n_tile_r;
 
 	reg [2:0] add_state_r;
 	reg [31:0] add_id_r;
@@ -124,10 +152,16 @@ module PT_CE_V2 #(
 
 	wire incoming_is_matmul = (ce_cmd_ctrl[`PT_INST_OPCODE_H:`PT_INST_OPCODE_L] == `PT_OP_MATMUL);
 	wire incoming_is_matadd = (ce_cmd_ctrl[`PT_INST_OPCODE_H:`PT_INST_OPCODE_L] == `PT_OP_MATADD);
+	wire [3:0] cmd_matmul_m_tiles = ce_cmd_ctrl[`PT_MATMUL_M_TILES_H:`PT_MATMUL_M_TILES_L];
+	wire [3:0] cmd_matmul_n_tiles = ce_cmd_ctrl[`PT_MATMUL_N_TILES_H:`PT_MATMUL_N_TILES_L];
 	wire [3:0] cmd_matmul_k_tiles = ce_cmd_ctrl[`PT_MATMUL_K_TILES_H:`PT_MATMUL_K_TILES_L];
 	wire cmd_matadd_m_src_buf = ce_cmd_ctrl[`PT_MATADD_M_OFF_L+8];
 	wire [A_AW-1:0] cmd_a_row_base = ce_a_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] >> A_DIM_SHIFT;
 	wire [B_AW-1:0] cmd_b_row_base = ce_b_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] >> B_DIM_SHIFT;
+	wire incoming_multitile_matmul = incoming_is_matmul &&
+	                                ((cmd_matmul_m_tiles != `PT_TILES_1) || (cmd_matmul_n_tiles != `PT_TILES_1));
+	wire cmd_single_output_tile = (cmd_matmul_m_tiles == `PT_TILES_1) && (cmd_matmul_n_tiles == `PT_TILES_1);
+	wire cmd_macro_has_more_tiles = !cmd_single_output_tile;
 	// In DRAIN_FULL_WIDTH mode, drain activates at exec launch and runs
 	// concurrently with exec.  Count exec+drain as a single pipeline slot
 	// so that the outstanding limit still works correctly.
@@ -140,9 +174,11 @@ module PT_CE_V2 #(
 	                         !(DRAIN_FULL_WIDTH && drain_valid_r) &&
 	                         shadow_valid_r && !shadow_done_exec_r && gemm_start_ready;
 	wire matmul_ready_for_cmd = !matadd_busy &&
-	                            (matmul_outstanding_count < 2) &&
-	                            (!shadow_valid_r || shadow_launch_fire);
-	wire matadd_ready_for_cmd = !matmul_busy && (add_state_r == ADD_IDLE);
+	                            !macro_active_r &&
+	                            (incoming_multitile_matmul ? !matmul_busy :
+	                             ((matmul_outstanding_count < 2) &&
+	                              (!shadow_valid_r || shadow_launch_fire)));
+	wire matadd_ready_for_cmd = !matmul_busy && !macro_active_r && (add_state_r == ADD_IDLE);
 	wire ce_cmd_fire_matmul = ce_cmd_valid && incoming_is_matmul && ce_cmd_ready;
 	wire ce_cmd_fire_matadd = ce_cmd_valid && incoming_is_matadd && ce_cmd_ready;
 	wire launch_cmd_direct_fire = ce_cmd_fire_matmul && !shadow_launch_fire && !exec_valid_r &&
@@ -186,6 +222,24 @@ module PT_CE_V2 #(
 
 	wire add_send_fire = (add_state_r == ADD_SEND) && gema_in_ready;
 	wire add_res_fire = (add_state_r == ADD_WAIT_RESULT) && add_m_valid;
+	wire selected_m_buf_single_output = cmd_matadd_m_src_buf ? m_buf1_single_output : m_buf0_single_output;
+	wire matadd_mwindow_multitile = incoming_is_matadd && !selected_m_buf_single_output;
+	wire [31:0] drain_row_chunk_base =
+		(drain_m_tile_idx_r * GEMM_X_DIM * drain_total_n_tiles_r) + drain_n_tile_idx_r;
+	wire [31:0] drain_quant_store_addr = drain_row_chunk_base + (quant_m_idx * drain_total_n_tiles_r);
+	wire schedule_macro_shadow_fire = drain_complete_fire && !drain_final_tile_r;
+	wire [31:0] macro_next_a_row_base_calc =
+		macro_a_row_base_r + (macro_next_m_tile_r * (macro_k_tiles_r * GEMM_X_DIM));
+	wire [31:0] macro_next_b_row_base_calc =
+		macro_b_row_base_r + (macro_next_n_tile_r * (macro_k_tiles_r * GEMM_Y_DIM));
+	wire macro_queued_final_tile =
+		(macro_next_m_tile_r == (macro_m_tiles_r[TILE_IDX_W-1:0] - 1'b1)) &&
+		(macro_next_n_tile_r == (macro_n_tiles_r[TILE_IDX_W-1:0] - 1'b1));
+	wire macro_wrap_n_after_queue = ((macro_next_n_tile_r + 1'b1) >= macro_n_tiles_r[TILE_IDX_W-1:0]);
+	wire [TILE_IDX_W-1:0] macro_after_queue_n_tile =
+		macro_wrap_n_after_queue ? {TILE_IDX_W{1'b0}} : (macro_next_n_tile_r + 1'b1);
+	wire [TILE_IDX_W-1:0] macro_after_queue_m_tile =
+		macro_wrap_n_after_queue ? (macro_next_m_tile_r + 1'b1) : macro_next_m_tile_r;
 
 	function is_pow2;
 		input integer value;
@@ -242,6 +296,11 @@ module PT_CE_V2 #(
 			shadow_a_row_base_r <= {A_AW{1'b0}};
 			shadow_b_row_base_r <= {B_AW{1'b0}};
 			shadow_m_wr_buf_r   <= 1'b0;
+			shadow_m_tile_idx_r <= {TILE_IDX_W{1'b0}};
+			shadow_n_tile_idx_r <= {TILE_IDX_W{1'b0}};
+			shadow_total_n_tiles_r <= `PT_TILES_1;
+			shadow_single_output_r <= 1'b1;
+			shadow_final_tile_r <= 1'b1;
 			exec_valid_r        <= 1'b0;
 			exec_ctrl_r         <= 32'd0;
 			exec_id_r           <= 32'd0;
@@ -250,6 +309,11 @@ module PT_CE_V2 #(
 			exec_a_row_base_r   <= {A_AW{1'b0}};
 			exec_b_row_base_r   <= {B_AW{1'b0}};
 			exec_m_wr_buf_r     <= 1'b0;
+			exec_m_tile_idx_r   <= {TILE_IDX_W{1'b0}};
+			exec_n_tile_idx_r   <= {TILE_IDX_W{1'b0}};
+			exec_total_n_tiles_r <= `PT_TILES_1;
+			exec_single_output_r <= 1'b1;
+			exec_final_tile_r   <= 1'b1;
 			exec_total_accs_r   <= {MATMUL_ACC_W{1'b0}};
 			exec_issue_cnt_r    <= 16'd0;
 			exec_rsp_cnt_r      <= 16'd0;
@@ -257,6 +321,24 @@ module PT_CE_V2 #(
 			drain_id_r          <= 32'd0;
 			drain_m_wr_buf_r    <= 1'b0;
 			drain_chunking_r    <= 1'b0;
+			drain_m_tile_idx_r  <= {TILE_IDX_W{1'b0}};
+			drain_n_tile_idx_r  <= {TILE_IDX_W{1'b0}};
+			drain_total_n_tiles_r <= `PT_TILES_1;
+			drain_single_output_r <= 1'b1;
+			drain_final_tile_r  <= 1'b1;
+			macro_active_r      <= 1'b0;
+			macro_ctrl_r        <= 32'd0;
+			macro_id_r          <= 32'd0;
+			macro_a_buf_r       <= 1'b0;
+			macro_b_buf_r       <= 1'b0;
+			macro_a_row_base_r  <= {A_AW{1'b0}};
+			macro_b_row_base_r  <= {B_AW{1'b0}};
+			macro_m_wr_buf_r    <= 1'b0;
+			macro_m_tiles_r     <= `PT_TILES_1;
+			macro_n_tiles_r     <= `PT_TILES_1;
+			macro_k_tiles_r     <= `PT_TILES_1;
+			macro_next_m_tile_r <= {TILE_IDX_W{1'b0}};
+			macro_next_n_tile_r <= {TILE_IDX_W{1'b0}};
 			add_state_r         <= ADD_IDLE;
 			add_id_r            <= 32'd0;
 			add_b_buf_r         <= 1'b0;
@@ -283,6 +365,8 @@ module PT_CE_V2 #(
 			m_mem_wr_data       <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
 			ce_resp_valid       <= 1'b0;
 			ce_resp             <= 32'd0;
+			ce_resp_row_chunk_count <= GEMM_X_DIM[`PT_SIZE_W-1:0];
+			ce_resp_single_output <= 1'b1;
 			ce_irq              <= 1'b0;
 		end else if (clear) begin
 			shadow_valid_r      <= 1'b0;
@@ -294,6 +378,11 @@ module PT_CE_V2 #(
 			shadow_a_row_base_r <= {A_AW{1'b0}};
 			shadow_b_row_base_r <= {B_AW{1'b0}};
 			shadow_m_wr_buf_r   <= 1'b0;
+			shadow_m_tile_idx_r <= {TILE_IDX_W{1'b0}};
+			shadow_n_tile_idx_r <= {TILE_IDX_W{1'b0}};
+			shadow_total_n_tiles_r <= `PT_TILES_1;
+			shadow_single_output_r <= 1'b1;
+			shadow_final_tile_r <= 1'b1;
 			exec_valid_r        <= 1'b0;
 			exec_ctrl_r         <= 32'd0;
 			exec_id_r           <= 32'd0;
@@ -302,6 +391,11 @@ module PT_CE_V2 #(
 			exec_a_row_base_r   <= {A_AW{1'b0}};
 			exec_b_row_base_r   <= {B_AW{1'b0}};
 			exec_m_wr_buf_r     <= 1'b0;
+			exec_m_tile_idx_r   <= {TILE_IDX_W{1'b0}};
+			exec_n_tile_idx_r   <= {TILE_IDX_W{1'b0}};
+			exec_total_n_tiles_r <= `PT_TILES_1;
+			exec_single_output_r <= 1'b1;
+			exec_final_tile_r   <= 1'b1;
 			exec_total_accs_r   <= {MATMUL_ACC_W{1'b0}};
 			exec_issue_cnt_r    <= 16'd0;
 			exec_rsp_cnt_r      <= 16'd0;
@@ -309,6 +403,24 @@ module PT_CE_V2 #(
 			drain_id_r          <= 32'd0;
 			drain_m_wr_buf_r    <= 1'b0;
 			drain_chunking_r    <= 1'b0;
+			drain_m_tile_idx_r  <= {TILE_IDX_W{1'b0}};
+			drain_n_tile_idx_r  <= {TILE_IDX_W{1'b0}};
+			drain_total_n_tiles_r <= `PT_TILES_1;
+			drain_single_output_r <= 1'b1;
+			drain_final_tile_r  <= 1'b1;
+			macro_active_r      <= 1'b0;
+			macro_ctrl_r        <= 32'd0;
+			macro_id_r          <= 32'd0;
+			macro_a_buf_r       <= 1'b0;
+			macro_b_buf_r       <= 1'b0;
+			macro_a_row_base_r  <= {A_AW{1'b0}};
+			macro_b_row_base_r  <= {B_AW{1'b0}};
+			macro_m_wr_buf_r    <= 1'b0;
+			macro_m_tiles_r     <= `PT_TILES_1;
+			macro_n_tiles_r     <= `PT_TILES_1;
+			macro_k_tiles_r     <= `PT_TILES_1;
+			macro_next_m_tile_r <= {TILE_IDX_W{1'b0}};
+			macro_next_n_tile_r <= {TILE_IDX_W{1'b0}};
 			add_state_r         <= ADD_IDLE;
 			add_id_r            <= 32'd0;
 			add_b_buf_r         <= 1'b0;
@@ -335,14 +447,35 @@ module PT_CE_V2 #(
 			m_mem_wr_data       <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
 			ce_resp_valid       <= 1'b0;
 			ce_resp             <= 32'd0;
+			ce_resp_row_chunk_count <= GEMM_X_DIM[`PT_SIZE_W-1:0];
+			ce_resp_single_output <= 1'b1;
 			ce_irq              <= 1'b0;
 		end else begin
 			ce_resp_valid <= 1'b0;
 			ce_irq        <= 1'b0;
+			ce_resp_row_chunk_count <= GEMM_X_DIM[`PT_SIZE_W-1:0];
+			ce_resp_single_output <= 1'b1;
 			m_mem_wr_en   <= 1'b0;
 			m_mem_wr_mask <= {GEMM_Y_DIM{1'b0}};
 
-			if (shadow_launch_fire) begin
+			if (schedule_macro_shadow_fire) begin
+				shadow_valid_r      <= 1'b1;
+				shadow_done_exec_r  <= 1'b0;
+				shadow_ctrl_r       <= macro_ctrl_r;
+				shadow_id_r         <= macro_id_r;
+				shadow_a_buf_r      <= macro_a_buf_r;
+				shadow_b_buf_r      <= macro_b_buf_r;
+				shadow_a_row_base_r <= macro_next_a_row_base_calc[A_AW-1:0];
+				shadow_b_row_base_r <= macro_next_b_row_base_calc[B_AW-1:0];
+				shadow_m_wr_buf_r   <= macro_m_wr_buf_r;
+				shadow_m_tile_idx_r <= macro_next_m_tile_r;
+				shadow_n_tile_idx_r <= macro_next_n_tile_r;
+				shadow_total_n_tiles_r <= macro_n_tiles_r;
+				shadow_single_output_r <= 1'b0;
+				shadow_final_tile_r <= macro_queued_final_tile;
+				macro_next_m_tile_r <= macro_after_queue_m_tile;
+				macro_next_n_tile_r <= macro_after_queue_n_tile;
+			end else if (shadow_launch_fire) begin
 				if (shadow_store_cmd_fire) begin
 					shadow_valid_r      <= 1'b1;
 					shadow_done_exec_r  <= 1'b0;
@@ -353,6 +486,11 @@ module PT_CE_V2 #(
 					shadow_a_row_base_r <= cmd_a_row_base;
 					shadow_b_row_base_r <= cmd_b_row_base;
 					shadow_m_wr_buf_r   <= ce_m_wr_buf;
+					shadow_m_tile_idx_r <= {TILE_IDX_W{1'b0}};
+					shadow_n_tile_idx_r <= {TILE_IDX_W{1'b0}};
+					shadow_total_n_tiles_r <= cmd_matmul_n_tiles;
+					shadow_single_output_r <= cmd_single_output_tile;
+					shadow_final_tile_r <= !cmd_macro_has_more_tiles;
 				end else begin
 					shadow_valid_r <= 1'b0;
 				end
@@ -366,6 +504,11 @@ module PT_CE_V2 #(
 				shadow_a_row_base_r <= exec_a_row_base_r;
 				shadow_b_row_base_r <= exec_b_row_base_r;
 				shadow_m_wr_buf_r   <= exec_m_wr_buf_r;
+				shadow_m_tile_idx_r <= exec_m_tile_idx_r;
+				shadow_n_tile_idx_r <= exec_n_tile_idx_r;
+				shadow_total_n_tiles_r <= exec_total_n_tiles_r;
+				shadow_single_output_r <= exec_single_output_r;
+				shadow_final_tile_r <= exec_final_tile_r;
 			end else if (promote_shadow_done_to_drain_fire) begin
 				shadow_valid_r <= 1'b0;
 			end else if (shadow_store_cmd_fire) begin
@@ -378,6 +521,29 @@ module PT_CE_V2 #(
 				shadow_a_row_base_r <= cmd_a_row_base;
 				shadow_b_row_base_r <= cmd_b_row_base;
 				shadow_m_wr_buf_r   <= ce_m_wr_buf;
+				shadow_m_tile_idx_r <= {TILE_IDX_W{1'b0}};
+				shadow_n_tile_idx_r <= {TILE_IDX_W{1'b0}};
+				shadow_total_n_tiles_r <= cmd_matmul_n_tiles;
+				shadow_single_output_r <= cmd_single_output_tile;
+				shadow_final_tile_r <= !cmd_macro_has_more_tiles;
+			end
+
+			if (ce_cmd_fire_matmul && cmd_macro_has_more_tiles) begin
+				macro_active_r      <= 1'b1;
+				macro_ctrl_r        <= ce_cmd_ctrl;
+				macro_id_r          <= ce_cmd_id;
+				macro_a_buf_r       <= ce_a_local_base[`PT_LOCAL_BUF_BIT];
+				macro_b_buf_r       <= ce_b_local_base[`PT_LOCAL_BUF_BIT];
+				macro_a_row_base_r  <= cmd_a_row_base;
+				macro_b_row_base_r  <= cmd_b_row_base;
+				macro_m_wr_buf_r    <= ce_m_wr_buf;
+				macro_m_tiles_r     <= cmd_matmul_m_tiles;
+				macro_n_tiles_r     <= cmd_matmul_n_tiles;
+				macro_k_tiles_r     <= cmd_matmul_k_tiles;
+				macro_next_m_tile_r <= (cmd_matmul_n_tiles == `PT_TILES_1) ? {{(TILE_IDX_W-1){1'b0}}, 1'b1} : {TILE_IDX_W{1'b0}};
+				macro_next_n_tile_r <= (cmd_matmul_n_tiles == `PT_TILES_1) ? {TILE_IDX_W{1'b0}} : {{(TILE_IDX_W-1){1'b0}}, 1'b1};
+			end else if (drain_complete_fire && drain_final_tile_r) begin
+				macro_active_r <= 1'b0;
 			end
 
 			if (launch_cmd_direct_fire || shadow_launch_fire) begin
@@ -389,6 +555,11 @@ module PT_CE_V2 #(
 				exec_a_row_base_r <= shadow_launch_fire ? shadow_a_row_base_r : cmd_a_row_base;
 				exec_b_row_base_r <= shadow_launch_fire ? shadow_b_row_base_r : cmd_b_row_base;
 				exec_m_wr_buf_r   <= shadow_launch_fire ? shadow_m_wr_buf_r : ce_m_wr_buf;
+				exec_m_tile_idx_r <= shadow_launch_fire ? shadow_m_tile_idx_r : {TILE_IDX_W{1'b0}};
+				exec_n_tile_idx_r <= shadow_launch_fire ? shadow_n_tile_idx_r : {TILE_IDX_W{1'b0}};
+				exec_total_n_tiles_r <= shadow_launch_fire ? shadow_total_n_tiles_r : cmd_matmul_n_tiles;
+				exec_single_output_r <= shadow_launch_fire ? shadow_single_output_r : cmd_single_output_tile;
+				exec_final_tile_r <= shadow_launch_fire ? shadow_final_tile_r : !cmd_macro_has_more_tiles;
 				exec_total_accs_r <= launch_total_accs;
 				exec_issue_cnt_r  <= 16'd0;
 				exec_rsp_cnt_r    <= 16'd0;
@@ -403,6 +574,11 @@ module PT_CE_V2 #(
 					drain_id_r        <= shadow_launch_fire ? shadow_id_r : ce_cmd_id;
 					drain_m_wr_buf_r  <= shadow_launch_fire ? shadow_m_wr_buf_r : ce_m_wr_buf;
 					drain_chunking_r  <= 1'b0;
+					drain_m_tile_idx_r <= shadow_launch_fire ? shadow_m_tile_idx_r : {TILE_IDX_W{1'b0}};
+					drain_n_tile_idx_r <= shadow_launch_fire ? shadow_n_tile_idx_r : {TILE_IDX_W{1'b0}};
+					drain_total_n_tiles_r <= shadow_launch_fire ? shadow_total_n_tiles_r : cmd_matmul_n_tiles;
+					drain_single_output_r <= shadow_launch_fire ? shadow_single_output_r : cmd_single_output_tile;
+					drain_final_tile_r <= shadow_launch_fire ? shadow_final_tile_r : !cmd_macro_has_more_tiles;
 					store_chunk_base_r <= {STORE_BASE_W{1'b0}};
 				end
 			end else if (exec_valid_r) begin
@@ -426,12 +602,22 @@ module PT_CE_V2 #(
 				drain_id_r        <= exec_id_r;
 				drain_m_wr_buf_r  <= exec_m_wr_buf_r;
 				drain_chunking_r  <= 1'b0;
+				drain_m_tile_idx_r <= exec_m_tile_idx_r;
+				drain_n_tile_idx_r <= exec_n_tile_idx_r;
+				drain_total_n_tiles_r <= exec_total_n_tiles_r;
+				drain_single_output_r <= exec_single_output_r;
+				drain_final_tile_r <= exec_final_tile_r;
 				store_chunk_base_r <= {STORE_BASE_W{1'b0}};
 			end else if (promote_shadow_done_to_drain_fire) begin
 				drain_valid_r     <= 1'b1;
 				drain_id_r        <= shadow_id_r;
 				drain_m_wr_buf_r  <= shadow_m_wr_buf_r;
 				drain_chunking_r  <= 1'b0;
+				drain_m_tile_idx_r <= shadow_m_tile_idx_r;
+				drain_n_tile_idx_r <= shadow_n_tile_idx_r;
+				drain_total_n_tiles_r <= shadow_total_n_tiles_r;
+				drain_single_output_r <= shadow_single_output_r;
+				drain_final_tile_r <= shadow_final_tile_r;
 				store_chunk_base_r <= {STORE_BASE_W{1'b0}};
 			end else if (drain_complete_fire) begin
 				drain_valid_r    <= 1'b0;
@@ -444,18 +630,24 @@ module PT_CE_V2 #(
 						m_mem_wr_en   <= 1'b1;
 						m_mem_wr_buf  <= drain_m_wr_buf_r;
 						m_mem_wr_mask <= {GEMM_Y_DIM{1'b1}};
-						m_mem_wr_addr <= quant_m_idx[M_AW-1:0];
+						m_mem_wr_addr <= drain_quant_store_addr[M_AW-1:0];
 						m_mem_wr_data <= quant_m_data;
 						if (quant_m_last) begin
-							ce_resp       <= pack_resp(1'b0, drain_m_wr_buf_r, drain_id_r);
-							ce_resp_valid <= 1'b1;
-							ce_irq        <= 1'b1;
+							if (drain_final_tile_r) begin
+								ce_resp       <= pack_resp(1'b0, drain_m_wr_buf_r, drain_id_r);
+								ce_resp_valid <= 1'b1;
+								ce_resp_row_chunk_count <= drain_single_output_r ?
+								                           GEMM_X_DIM[`PT_SIZE_W-1:0] :
+								                           (macro_m_tiles_r * macro_n_tiles_r * GEMM_X_DIM);
+								ce_resp_single_output <= drain_single_output_r;
+								ce_irq        <= 1'b1;
+							end
 						end
 					end
 				end else if (!drain_chunking_r) begin
 					if (drain_accept_fire) begin
 						store_result_row_r <= quant_m_data;
-						store_row_addr_r   <= quant_m_idx[M_AW-1:0];
+						store_row_addr_r   <= drain_quant_store_addr[M_AW-1:0];
 						store_row_last_r   <= quant_m_last;
 						store_chunk_base_r <= {STORE_BASE_W{1'b0}};
 						drain_chunking_r   <= 1'b1;
@@ -474,9 +666,15 @@ module PT_CE_V2 #(
 					if (store_chunk_last) begin
 						drain_chunking_r <= 1'b0;
 						if (store_row_last_r) begin
-							ce_resp       <= pack_resp(1'b0, drain_m_wr_buf_r, drain_id_r);
-							ce_resp_valid <= 1'b1;
-							ce_irq        <= 1'b1;
+							if (drain_final_tile_r) begin
+								ce_resp       <= pack_resp(1'b0, drain_m_wr_buf_r, drain_id_r);
+								ce_resp_valid <= 1'b1;
+								ce_resp_row_chunk_count <= drain_single_output_r ?
+								                           GEMM_X_DIM[`PT_SIZE_W-1:0] :
+								                           (macro_m_tiles_r * macro_n_tiles_r * GEMM_X_DIM);
+								ce_resp_single_output <= drain_single_output_r;
+								ce_irq        <= 1'b1;
+							end
 						end
 					end else begin
 						store_chunk_base_r <= store_chunk_base_r + M_WRITE_LANES;
@@ -485,17 +683,23 @@ module PT_CE_V2 #(
 			end
 
 			if (ce_cmd_fire_matadd) begin
-				add_state_r      <= ADD_REQ;
-				add_id_r         <= ce_cmd_id;
-				add_b_buf_r      <= ce_b_local_base[`PT_LOCAL_BUF_BIT];
-				add_b_row_base_r <= cmd_b_row_base;
-				add_m_src_buf_r  <= cmd_matadd_m_src_buf;
-				add_m_wr_buf_r   <= ce_m_wr_buf;
-				add_row_idx_r    <= {M_AW{1'b0}};
-				exec_b_buf       <= ce_b_local_base[`PT_LOCAL_BUF_BIT];
-				exec_b_addr      <= cmd_b_row_base;
-				exec_m_b_buf     <= cmd_matadd_m_src_buf;
-				exec_m_b_addr    <= {M_AW{1'b0}};
+				if (matadd_mwindow_multitile) begin
+					ce_resp       <= pack_resp(1'b1, 1'b0, ce_cmd_id);
+					ce_resp_valid <= 1'b1;
+					ce_irq        <= 1'b1;
+				end else begin
+					add_state_r      <= ADD_REQ;
+					add_id_r         <= ce_cmd_id;
+					add_b_buf_r      <= ce_b_local_base[`PT_LOCAL_BUF_BIT];
+					add_b_row_base_r <= cmd_b_row_base;
+					add_m_src_buf_r  <= cmd_matadd_m_src_buf;
+					add_m_wr_buf_r   <= ce_m_wr_buf;
+					add_row_idx_r    <= {M_AW{1'b0}};
+					exec_b_buf       <= ce_b_local_base[`PT_LOCAL_BUF_BIT];
+					exec_b_addr      <= cmd_b_row_base;
+					exec_m_b_buf     <= cmd_matadd_m_src_buf;
+					exec_m_b_addr    <= {M_AW{1'b0}};
+				end
 			end else begin
 				case (add_state_r)
 					ADD_IDLE: begin
@@ -545,6 +749,8 @@ module PT_CE_V2 #(
 							if (store_row_last_r) begin
 								ce_resp       <= pack_resp(1'b0, add_m_wr_buf_r, add_id_r);
 								ce_resp_valid <= 1'b1;
+								ce_resp_row_chunk_count <= GEMM_X_DIM[`PT_SIZE_W-1:0];
+								ce_resp_single_output <= 1'b1;
 								ce_irq        <= 1'b1;
 								add_state_r   <= ADD_IDLE;
 							end else begin

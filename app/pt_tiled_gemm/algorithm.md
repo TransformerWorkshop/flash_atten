@@ -22,13 +22,18 @@
 - `n_tiles = inst[23:20]`
 - `k_tiles = inst[19:16]`
 
-当前这条扩展路径聚焦 K 方向累加：
+当前原生 `MATMUL` 已经把三条轴都扩成对称的 raw tile count：
 
-- `m_tiles = 1`
-- `n_tiles = 1`
-- `k_tiles = 2` 或 `4`
+- `m_tiles ∈ {1, 2, 4}`
+- `n_tiles ∈ {1, 2, 4}`
+- `k_tiles ∈ {1, 2, 4}`
 
-同时保留 `k_tiles = 1` 的单-tile 兼容路径，方便已有基础测试继续工作。
+单条原生命令的语义是：
+
+- 输入 A 视为 `(m_tiles * 16) x (k_tiles * 16)`
+- 输入 B 视为 `(k_tiles * 16) x (n_tiles * 16)`
+- 输出 C 视为 `(m_tiles * 16) x (n_tiles * 16)`
+- PT 内部串行完成全部 output subtile，但对外只返回一次 `ctrl_resp`，并导出一次聚合结果
 
 对 app 的问题分解来说，仍然定义：
 
@@ -42,7 +47,7 @@
 partial_matmuls = M_tiles * K_tiles * N_tiles
 ```
 
-每个 partial GEMM 都是：
+app 侧仍然把更大问题拆成 `16x16x16` primitive 的 tiled 循环，因此每个 partial GEMM 都是：
 
 ```text
 16x16 * 16x16 -> 16x16
@@ -115,6 +120,11 @@ C[m_i, n_j] = Σ_t A[m_i, k_t] * B[k_t, n_j]
   - `MATADD` 次数
   - external C tile 回喂
   - export 次数
+
+补充限制：
+
+- 当前原生 PT 虽然支持多 `M/N/K` `MATMUL`，但多 `M/N` 结果暂时只支持导出，不支持被 `MATADD` 作为 retained-M 输入再次消费。
+- 因此 app 的 `pt_matadd_reduce` 仍然只建立在单 output-tile 的 primitive 上，而不是直接复用原生多 `M/N` 结果。
 
 ## 5. Unsupported Path
 

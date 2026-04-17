@@ -4,7 +4,7 @@ module PT_CE #(
 	parameter DATA_WIDTH   = 32,
 	parameter GEMM_X_DIM   = 4,
 	parameter GEMM_Y_DIM   = 4,
-	parameter A_BANK_DEPTH = 8,
+	parameter A_BANK_DEPTH = 16,
 	parameter B_BANK_DEPTH = 16,
 	parameter M_BANK_DEPTH = 16,
 	parameter M_WRITE_LANES = GEMM_Y_DIM
@@ -42,6 +42,8 @@ module PT_CE #(
 	output wire                       quant_m_ready,
 	input  wire [GEMM_Y_DIM*DATA_WIDTH-1:0] b_mem_row_data,
 	input  wire [GEMM_Y_DIM*DATA_WIDTH-1:0] m_mem_row_data,
+	input  wire                       m_buf0_single_output,
+	input  wire                       m_buf1_single_output,
 	output wire [GEMM_Y_DIM*DATA_WIDTH-1:0] gema_lhs_data,
 	output wire [GEMM_Y_DIM*DATA_WIDTH-1:0] gema_rhs_data,
 	output wire [31:0]                gema_in_idx,
@@ -60,6 +62,8 @@ module PT_CE #(
 	output wire [GEMM_Y_DIM*DATA_WIDTH-1:0]      m_mem_wr_data,
 	output wire                       ce_resp_valid,
 	output wire [31:0]                ce_resp,
+	output wire [`PT_SIZE_W-1:0]      ce_resp_row_chunk_count,
+	output wire                       ce_resp_single_output,
 	output wire                       ce_irq
 );
 
@@ -105,6 +109,8 @@ module PT_CE #(
 		.quant_m_ready  (quant_m_ready),
 		.b_mem_row_data (b_mem_row_data),
 		.m_mem_row_data (m_mem_row_data),
+		.m_buf0_single_output(m_buf0_single_output),
+		.m_buf1_single_output(m_buf1_single_output),
 		.gema_lhs_data  (gema_lhs_data),
 		.gema_rhs_data  (gema_rhs_data),
 		.gema_in_idx    (gema_in_idx),
@@ -123,6 +129,8 @@ module PT_CE #(
 		.m_mem_wr_data  (m_mem_wr_data),
 		.ce_resp_valid  (ce_resp_valid),
 		.ce_resp        (ce_resp),
+		.ce_resp_row_chunk_count(ce_resp_row_chunk_count),
+		.ce_resp_single_output(ce_resp_single_output),
 		.ce_irq         (ce_irq)
 	);
 

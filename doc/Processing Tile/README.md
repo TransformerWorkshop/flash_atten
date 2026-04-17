@@ -7,11 +7,11 @@
 - Architecture overview: [README.md](./README.md)
 - Programmer and integration guide: [programming_guide.md](./programming_guide.md)
 - Verification methodology: [verification_methodology.md](./verification_methodology.md)
-- Top-level block diagram: [block_diagram.svg](./block_diagram.svg)
+- Symbol block diagram: [block_diagram.md](./block_diagram.md)
 
 This directory is the authoritative home for PT documentation. Architecture, programming, and verification are kept as separate but aligned documents.
 
-The SVG block diagram is a conceptual aid. For exact signal widths, parameter semantics, and currently supported behaviors, treat the written documentation and RTL as authoritative.
+The symbol block diagram is the main conceptual architecture view. For exact signal widths, parameter semantics, and currently supported behaviors, treat the written documentation and RTL as authoritative.
 
 ## 2. Role In The System
 
@@ -22,6 +22,7 @@ PT accepts tile-level control commands, fetches operand tiles A and B on demand,
 | Module | Role | Current behavior |
 | --- | --- | --- |
 | [`PT`](../../rtl/pt.v) | Public top-level wrapper | Exposes the native PT control interface plus A/B load and M export DMA/stream ports |
+| [`PT_DMA_TOP`](../../rtl/pt_dma_top.v) | AXI-Lite + DMA descriptor wrapper | Wraps `PT` with AXI-Lite staging registers, command/response FIFOs, and external read/write DMA descriptor ports while keeping the existing PT data streams |
 | [`PT_V2`](../../rtl/pt_top_v2.v) | Canonical assembled implementation | Connects dispatch, allocation, memory/control execution, compute, storage, and response merge |
 | [`PT_DISPATCH`](../../rtl/pt_dispatch.v) | Front-end dispatch | Owns `ctrl_*` ingress, command classification, ordering, and QCFG barrier handling |
 | [`PT_MALLOC`](../../rtl/pt_malloc.v) | Residency and allocation control | Tracks A/B cache entries by `ctrl_id`, allocates local buffer space, and issues fill/compute work |
@@ -51,6 +52,12 @@ PT accepts tile-level control commands, fetches operand tiles A and B on demand,
 | Completion/error indication | `irq` | Pulses on successful compute completion and error paths |
 
 PT is programmed through its native command interface. It is not driven through [`csr_array.v`](../../rtl/csr_array.v).
+
+For software-facing bring-up that prefers an AXI-Lite mailbox over native `ctrl_*`, use [`PT_DMA_TOP`](../../rtl/pt_dma_top.v). That wrapper keeps the existing `s_axis_*` / `m_axis_*` payload semantics, but replaces native `ctrl_*`, `dma_req_*`, and `m_dma_req_*` with:
+
+- `s_axil_*` staging/control registers
+- `rd_dma_desc_*` for A/B/C read descriptors
+- `wr_dma_desc_*` for M export descriptors
 
 ### 4.2 Width And Streaming Semantics
 
@@ -178,10 +185,11 @@ Implementation detail:
 
 ## 8. Current Architectural Constraints
 
-- `MATMUL` currently accepts only full-tile `M/N/K = PT_SCALE_FULL`
+- `MATMUL` accepts `M/N/K ∈ {1,2,4}` tile counts and returns one aggregated response/export for the full `(M_tiles x N_tiles)` output
 - `MATMUL` currently requires `a_off == 0` and `b_off == 0`
 - `M` as a `MATMUL` operand is **not** implemented in the current RTL
 - `MATADD` accepts only `M-window + external/B-style tile`
+- retained M produced by a multi-`M/N` `MATMUL` is export-only in the current RTL and is rejected if reused by `MATADD`
 - External A/B offsets must remain tile-row aligned
 - `QCFG` supports only `PT_QTYPE_SYMMETRIC` with the `PT_QCFG_CMD_HDR` header format
 - `ctrl_resp` returns only `ctrl_id[29:0]`; exact round-trip recovery therefore assumes IDs are constrained to 30 bits

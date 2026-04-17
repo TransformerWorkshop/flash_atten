@@ -2,6 +2,8 @@
 
 This document describes how software or an upstream controller should drive the native PT interface and what assumptions are valid for the current RTL.
 
+If your integration point is [`PT_DMA_TOP`](../../rtl/pt_dma_top.v) instead of native [`PT`](../../rtl/pt.v), the command payload and response encoding stay the same, but software injects them through AXI-Lite staging registers and consumes DMA descriptors from `rd_dma_desc_*` / `wr_dma_desc_*` rather than driving `ctrl_*` directly.
+
 ## 1. Native Command Model
 
 PT is not programmed through AXI-Lite directly. Its native command plane is the `ctrl_*` stream:
@@ -55,14 +57,19 @@ Unknown opcodes are rejected and return `err=1`.
 Current accepted encoding:
 
 - `opcode == PT_OP_MATMUL`
-- `M/N/K == PT_SCALE_FULL`
+- `M/N/K ∈ {PT_TILES_1, PT_TILES_2, PT_TILES_4}`
 - `a_off == 0`
 - `b_off == 0`
 - low reserved bits are zero
 
 Current architectural meaning:
 
-- PT performs a full-tile GEMM using the A and B banks only
+- PT performs one aggregated GEMM using the A and B banks only
+- logical shapes are:
+  - A = `(m_tiles * GEMM_X_DIM) x (k_tiles * GEMM_X_DIM)`
+  - B = `(k_tiles * GEMM_Y_DIM) x (n_tiles * GEMM_Y_DIM)`
+  - C = `(m_tiles * GEMM_X_DIM) x (n_tiles * GEMM_Y_DIM)`
+- PT internally iterates over all output subtile positions and returns exactly one final `ctrl_resp` plus one aggregated export
 - A and B residency may come from explicit `LOAD`, compute-side fill, or same-`ctrl_id` cache reuse
 - `M`-as-`A` or `M`-as-`B` `MATMUL` reuse is **not** implemented in the current RTL
 
@@ -92,11 +99,12 @@ Current accepted encoding:
 - `opcode == PT_OP_LOAD`
 - at least one of `need_a` or `need_b` must be set
 - size fields must be non-zero for requested sides
-- reserved bits must be zero
+- `reserved_lo[5:0]` encodes `m_tiles/n_tiles/k_tiles` as `00->1`, `01->2`, `10->4`, `11->illegal`
 
 Semantics:
 
 - `LOAD` prefetches A and/or B/C external payload into the PT side caches associated with `ctrl_id`
+- A-side residency matches `(m_tiles, k_tiles)` and B-side residency matches `(k_tiles, n_tiles)`; cache hit requires both shape and length to match
 - success returns `pack_resp(err=0, m_buf=0, id=ctrl_id)`
 - success does not itself raise `irq`
 

@@ -7,7 +7,7 @@ module PT #(
 	parameter EXT_ADDR_W   = 32,
 	parameter DMA_BEATS_W  = 16,
 	parameter LUT_DEPTH    = 8,
-	parameter A_BANK_DEPTH = 8,
+	parameter A_BANK_DEPTH = 16,
 	parameter B_BANK_DEPTH = 16,
 	parameter M_BANK_DEPTH = 16,
 	parameter A_LOAD_LANES = GEMM_X_DIM,

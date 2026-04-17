@@ -107,23 +107,31 @@ async def test_pt_stress_slot_scan_nonzero_hit_free_and_lut_full_reject(dut) -> 
 async def test_pt_stress_near_full_b_capacity_reject(dut) -> None:
 	env = await _prepare_env(dut)
 	try:
-		fill_size = min(1000, env.b_capacity_elems - 1)
-		fill_matrix = [idx & 0xFFFF_FFFF for idx in range(fill_size)]
 		reject_matrix = [idx & 0xFFFF_FFFF for idx in range(env.y_dim * env.y_dim)]
+		target_fill = max(1, (2 * env.b_capacity_elems) - len(reject_matrix) + 1)
+		max_fill_per_load = min(1023, env.b_capacity_elems)
+		fills_needed = (target_fill + max_fill_per_load - 1) // max_fill_per_load
+		expected_reject = "reject:b_capacity" if fills_needed < env.lut_depth else "reject:lut_full_miss"
+		filled = 0
+		offset = 0
 
-		for offset in range(2):
+		while filled < target_fill:
+			fill_size = min(max_fill_per_load, target_fill - filled)
+			fill_matrix = [idx & 0xFFFF_FFFF for idx in range(fill_size)]
 			ctrl_id = 0xD00 + offset
 			env.register_external_matrix("B", ctrl_id, fill_matrix)
 			plan = env.plan_load(ctrl_id, 0, fill_size, need_a=False, need_b=True)
 			assert not plan.err
 			await env.send_ctrl(build_load_inst(0, fill_size, need_a=False, need_b=True), ctrl_id)
 			await env.wait_ctrl_resp(plan.response_word, 12000)
+			filled += fill_size
+			offset += 1
 
 		reject_id = 0xD10
 		env.register_external_matrix("B", reject_id, reject_matrix)
 		reject_plan = env.plan_load(reject_id, 0, len(reject_matrix), need_a=False, need_b=True)
 		assert reject_plan.err
-		assert reject_plan.reject_reason == "reject:b_capacity"
+		assert reject_plan.reject_reason == expected_reject
 		await env.send_ctrl(build_load_inst(0, len(reject_matrix), need_a=False, need_b=True), reject_id)
 		await env.wait_ctrl_resp(reject_plan.response_word, 12000)
 	finally:

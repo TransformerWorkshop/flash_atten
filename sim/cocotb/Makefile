@@ -35,6 +35,9 @@ full:
 ci:
 	$(RUNNER) ci --sim $(SIM) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG)
 
+stress:
+	$(RUNNER) stress --sim $(SIM) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG)
+
 randomized:
 	$(RUNNER) randomized --sim $(SIM) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG)
 
@@ -50,4 +53,4 @@ coverage:
 clean:
 	rm -rf build results logs waves coverage
 
-.PHONY: all smoke full ci randomized extended soak coverage clean
+.PHONY: all smoke full ci stress randomized extended soak coverage clean

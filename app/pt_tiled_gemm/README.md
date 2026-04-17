@@ -64,6 +64,9 @@ python3 app/pt_tiled_gemm/run.py report --m 32 --k 32 --n 16 --sim icarus
 - `host_reduce_direct_tiled_matmul`
   - 所有 partial 都直接 `MATMUL`
   - 导出后由 host 精确累加
+- `host_reduce_direct_pipelined`
+  - 仍然是 `MATMUL + host reduce`
+  - 但保持最多 `2` 个 MATMUL in-flight，默认作为优先 direct path 候选
 - `host_reduce_load_then_matmul`
   - 每个 partial 先 `LOAD` 再 `MATMUL`
   - 导出后由 host 精确累加
@@ -72,8 +75,8 @@ python3 app/pt_tiled_gemm/run.py report --m 32 --k 32 --n 16 --sim icarus
 
 补充说明：
 
-- `verify` 的 testbench 当前还会额外测一个内部 path：`host_reduce_direct_pipelined`
-- 这个 path 已经有 measured cycles，但 `recommend/report` 还没有把它纳入 planner 的候选排名
+- `verify` 的 testbench 会测 `host_reduce_direct_pipelined`
+- `recommend/report` 现在也会把它纳入候选排名；有实测数据时会直接参与默认 winner 决策
 
 ## 输出风格
 

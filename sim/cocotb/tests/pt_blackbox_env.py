@@ -152,7 +152,7 @@ class PTBlackBoxEnv:
 		self.data_width = env_int("PT_DATA_WIDTH", 32)
 		self.a_base = env_int("PT_A_BASE", DEFAULT_A_BASE)
 		self.b_base = env_int("PT_B_BASE", DEFAULT_B_BASE)
-		self.a_bank_depth = env_int("PT_A_BANK_DEPTH", 8)
+		self.a_bank_depth = env_int("PT_A_BANK_DEPTH", 16)
 		self.b_bank_depth = env_int("PT_B_BANK_DEPTH", 16)
 		self.m_bank_depth = env_int("PT_M_BANK_DEPTH", 16)
 		self.a_load_lanes = env_int("PT_A_LOAD_LANES", 1)
@@ -222,11 +222,21 @@ class PTBlackBoxEnv:
 	def _full_lane_strb(self, lanes: int) -> int:
 		return (1 << (lanes * (self.data_width // 8))) - 1
 
-	def _pack_ab_beats(self, kind: str, matrix: Sequence[int]) -> List[Tuple[int, int]]:
+	def _pack_ab_beats(self, kind: str, matrix: Sequence[int], expectation: Optional[DmaLoadExpectation] = None) -> List[Tuple[int, int]]:
 		beats: List[Tuple[int, int]] = []
 		byte_mask = (1 << (self.data_width // 8)) - 1
 		if kind == "A":
-			if len(matrix) % self.x_dim == 0:
+			if expectation is not None:
+				k_dim = self.x_dim * expectation.k_tiles
+				m_dim = self.x_dim * expectation.m_tiles
+				assert len(matrix) == m_dim * k_dim
+				stream_words = [
+					int(matrix[((m_tile * self.x_dim) + row) * k_dim + col])
+					for m_tile in range(expectation.m_tiles)
+					for col in range(k_dim)
+					for row in range(self.x_dim)
+				]
+			elif len(matrix) % self.x_dim == 0:
 				k_dim = len(matrix) // self.x_dim
 				stream_words = [int(matrix[row * k_dim + col]) for col in range(k_dim) for row in range(self.x_dim)]
 			else:
@@ -241,7 +251,18 @@ class PTBlackBoxEnv:
 				if beat_strb != 0:
 					beats.append((beat_data, beat_strb))
 		else:
-			stream_words = [int(word) for word in matrix]
+			if expectation is not None and kind == "B":
+				k_dim = self.y_dim * expectation.k_tiles
+				n_dim = self.y_dim * expectation.n_tiles
+				assert len(matrix) == k_dim * n_dim
+				stream_words = [
+					int(matrix[row * n_dim + (n_tile * self.y_dim) + col])
+					for n_tile in range(expectation.n_tiles)
+					for row in range(k_dim)
+					for col in range(self.y_dim)
+				]
+			else:
+				stream_words = [int(word) for word in matrix]
 			for start in range(0, len(stream_words), self.b_load_lanes):
 				chunk = stream_words[start : start + self.b_load_lanes]
 				beat_data = 0
@@ -270,7 +291,7 @@ class PTBlackBoxEnv:
 		return CounterSnapshot(self.dma_req_count, self.export_req_count, self.export_done_count, self.export_error_count, self.irq_count)
 
 	def register_external_matrix(self, kind: str, ctrl_id: int, matrix: Sequence[int] | Sequence[Sequence[int]]) -> None:
-		if len(matrix) == self.x_dim and all(isinstance(row, (list, tuple)) for row in matrix):  # type: ignore[arg-type]
+		if matrix and all(isinstance(row, (list, tuple)) for row in matrix):  # type: ignore[arg-type]
 			flat = [to_unsigned(int(value), self.data_width) for row in matrix for value in row]  # type: ignore[union-attr]
 		else:
 			flat = [to_unsigned(int(value), self.data_width) for value in matrix]  # type: ignore[arg-type]
@@ -518,6 +539,7 @@ class PTBlackBoxEnv:
 					req_id = value_to_int(self.dut.dma_req_id.value)
 					kind_label, expected_tuser = self._dma_kind_to_label(req_kind)
 					self.dut._log.info("dma_req kind=%s id=0x%08x", kind_label, req_id)
+					expected_req = None
 					if self.expected_dma_loads:
 						expected_req = self.expected_dma_loads.popleft()
 						assert expected_req.kind == kind_label, f"dma_req kind mismatch exp={expected_req.kind} got={kind_label}"
@@ -529,7 +551,7 @@ class PTBlackBoxEnv:
 						matrix = self.external_b_tiles[req_id]
 					else:
 						matrix = self.external_c_tiles[req_id]
-					load_beats = self._pack_ab_beats(kind_label, matrix)
+					load_beats = self._pack_ab_beats(kind_label, matrix, expected_req)
 					self.dut._log.info("dma_stream kind=%s beats=%d", kind_label, len(load_beats))
 					self.dma_stream_busy = True
 					await self._serve_dma_stream(expected_tuser, load_beats, injection)

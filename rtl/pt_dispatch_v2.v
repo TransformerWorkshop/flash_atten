@@ -53,19 +53,28 @@ module PT_DISPATCH_V2 #(
 	wire [`PT_SIZE_W-1:0] ctrl_load_a_size = ctrl_inst[`PT_LOAD_A_SIZE_H:`PT_LOAD_A_SIZE_L];
 	wire [`PT_SIZE_W-1:0] ctrl_load_b_size = ctrl_inst[`PT_LOAD_B_SIZE_H:`PT_LOAD_B_SIZE_L];
 	wire [5:0] ctrl_load_reserved = ctrl_inst[`PT_LOAD_RSV_H:`PT_LOAD_RSV_L];
+	wire [1:0] ctrl_load_m_code = ctrl_inst[`PT_LOAD_M_CODE_H:`PT_LOAD_M_CODE_L];
+	wire [1:0] ctrl_load_n_code = ctrl_inst[`PT_LOAD_N_CODE_H:`PT_LOAD_N_CODE_L];
+	wire [1:0] ctrl_load_k_code = ctrl_inst[`PT_LOAD_K_CODE_H:`PT_LOAD_K_CODE_L];
 	wire ctrl_qcfg_hdr_cmd = (ctrl_inst[`PT_QCFG_CMD_H:`PT_QCFG_CMD_L] == `PT_QCFG_CMD_HDR);
 	wire [1:0] ctrl_qcfg_qtype = ctrl_inst[`PT_QCFG_QTYPE_H:`PT_QCFG_QTYPE_L];
 	wire [2:0] ctrl_qcfg_gran = ctrl_inst[`PT_QCFG_GRAN_H:`PT_QCFG_GRAN_L];
+	wire ctrl_matmul_m_valid = (ctrl_matmul_m_tiles == `PT_TILES_1) || (ctrl_matmul_m_tiles == `PT_TILES_2) || (ctrl_matmul_m_tiles == `PT_TILES_4);
+	wire ctrl_matmul_n_valid = (ctrl_matmul_n_tiles == `PT_TILES_1) || (ctrl_matmul_n_tiles == `PT_TILES_2) || (ctrl_matmul_n_tiles == `PT_TILES_4);
+	wire ctrl_matmul_k_valid = (ctrl_matmul_k_tiles == `PT_TILES_1) || (ctrl_matmul_k_tiles == `PT_TILES_2) || (ctrl_matmul_k_tiles == `PT_TILES_4);
+	wire ctrl_load_shape_legal = (ctrl_load_m_code != 2'b11) &&
+	                            (ctrl_load_n_code != 2'b11) &&
+	                            (ctrl_load_k_code != 2'b11);
 
 	wire ctrl_matmul_legal = (ctrl_opcode == `PT_OP_MATMUL) &&
-	                         (ctrl_matmul_m_tiles == `PT_TILES_1) &&
-	                         (ctrl_matmul_n_tiles == `PT_TILES_1) &&
-	                         ((ctrl_matmul_k_tiles == `PT_TILES_1) || (ctrl_matmul_k_tiles == `PT_TILES_2) || (ctrl_matmul_k_tiles == `PT_TILES_4)) &&
+	                         ctrl_matmul_m_valid &&
+	                         ctrl_matmul_n_valid &&
+	                         ctrl_matmul_k_valid &&
 	                         (ctrl_matmul_reserved_a == 8'd0) &&
 	                         (ctrl_matmul_reserved_b == 8'd0);
 	wire ctrl_load_legal = (ctrl_opcode == `PT_OP_LOAD) &&
 	                       (ctrl_load_need_a || ctrl_load_need_b) &&
-	                       (ctrl_load_reserved == 6'd0) &&
+	                       ctrl_load_shape_legal &&
 	                       (!ctrl_load_need_a || (ctrl_load_a_size != {`PT_SIZE_W{1'b0}})) &&
 	                       (!ctrl_load_need_b || (ctrl_load_b_size != {`PT_SIZE_W{1'b0}}));
 	wire ctrl_matadd_legal = (ctrl_opcode == `PT_OP_MATADD) &&

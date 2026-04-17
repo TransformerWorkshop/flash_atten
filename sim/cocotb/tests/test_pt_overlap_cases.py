@@ -151,11 +151,20 @@ async def test_pt_overlap_non_matmul_waits_until_overlap_drains(dut) -> None:
 		await env.send_ctrl(inst, ctrl_id)
 		load_send = cocotb.start_soon(env.send_ctrl_timed(build_load_inst(env.x_dim * env.x_dim, 0, need_a=True, need_b=False), load_id, 12000))
 
-		await env.wait_ctrl_resp(first_plan.response_word, 12000)
-		await env.wait_ctrl_resp(second_plan.response_word, 12000)
+		observed = set()
+		expected = {first_plan.response_word, second_plan.response_word}
+		while not expected.issubset(observed):
+			for _ in range(12000):
+				if env.ctrl_resp_queue:
+					observed.add(env.ctrl_resp_queue.popleft())
+					break
+				await RisingEdge(dut.clk)
+			else:
+				raise AssertionError(f"timeout waiting overlap matmul responses: observed={sorted(observed)} expected={sorted(expected)}")
 		load_trace = await load_send
 		assert load_trace.wait_cycles >= 1
-		await env.wait_ctrl_resp(load_plan.response_word, 12000)
+		if load_plan.response_word not in observed:
+			await env.wait_ctrl_resp(load_plan.response_word, 12000)
 	finally:
 		env.shutdown()
 

@@ -7,7 +7,7 @@ module PT_V2 #(
 	parameter EXT_ADDR_W   = 32,
 	parameter DMA_BEATS_W  = 16,
 	parameter LUT_DEPTH    = 8,
-	parameter A_BANK_DEPTH = 8,
+	parameter A_BANK_DEPTH = 16,
 	parameter B_BANK_DEPTH = 16,
 	parameter M_BANK_DEPTH = 16,
 	parameter A_LOAD_LANES = GEMM_X_DIM,
@@ -109,6 +109,9 @@ module PT_V2 #(
 	wire [31:0]           fill_req_id;
 	wire [`PT_LOCAL_ADDR_W-1:0] fill_req_local_base;
 	wire [`PT_SIZE_W-1:0] fill_req_len;
+	wire [3:0]            fill_req_m_tiles;
+	wire [3:0]            fill_req_n_tiles;
+	wire [3:0]            fill_req_k_tiles;
 	wire                  fill_done_valid;
 	wire [`PT_DMA_KIND_W-1:0] fill_done_kind;
 	wire [31:0]           fill_done_id;
@@ -185,6 +188,8 @@ module PT_V2 #(
 	wire                  malloc_serial_busy;
 	wire                  ce_resp_valid;
 	wire [31:0]           ce_resp;
+	wire [`PT_SIZE_W-1:0] ce_resp_row_chunk_count;
+	wire                  ce_resp_single_output;
 	wire                  ce_irq;
 	reg  [31:0]           ctrl_resp_r;
 	reg                   ctrl_resp_valid_r;
@@ -199,6 +204,8 @@ module PT_V2 #(
 	wire                  m_alloc_ready;
 	wire                  m_alloc_buf;
 	wire                  m_alloc_take;
+	wire                  m_buf0_single_output;
+	wire                  m_buf1_single_output;
 
 	PT_DISPATCH #(
 		.GEMM_X_DIM(GEMM_X_DIM),
@@ -248,6 +255,9 @@ module PT_V2 #(
 		.fill_req_id    (fill_req_id),
 		.fill_req_local_base(fill_req_local_base),
 		.fill_req_len   (fill_req_len),
+		.fill_req_m_tiles(fill_req_m_tiles),
+		.fill_req_n_tiles(fill_req_n_tiles),
+		.fill_req_k_tiles(fill_req_k_tiles),
 		.fill_done_valid(fill_done_valid),
 		.fill_done_kind (fill_done_kind),
 		.fill_done_id   (fill_done_id),
@@ -262,6 +272,8 @@ module PT_V2 #(
 		.m_alloc_ready  (m_alloc_ready),
 		.m_alloc_buf    (m_alloc_buf),
 		.m_alloc_take   (m_alloc_take),
+		.m_buf0_single_output(m_buf0_single_output),
+		.m_buf1_single_output(m_buf1_single_output),
 		.ce_resp_valid  (ce_resp_valid),
 		.ce_resp        (ce_resp),
 		.malloc_resp_valid(malloc_resp_valid),
@@ -303,6 +315,9 @@ module PT_V2 #(
 		.fill_req_id    (fill_req_id),
 		.fill_req_local_base(fill_req_local_base),
 		.fill_req_len   (fill_req_len),
+		.fill_req_m_tiles(fill_req_m_tiles),
+		.fill_req_n_tiles(fill_req_n_tiles),
+		.fill_req_k_tiles(fill_req_k_tiles),
 		.fill_done_valid(fill_done_valid),
 		.fill_done_kind (fill_done_kind),
 		.fill_done_id   (fill_done_id),
@@ -329,8 +344,12 @@ module PT_V2 #(
 		.m_alloc_take   (m_alloc_take),
 		.m_alloc_ready  (m_alloc_ready),
 		.m_alloc_buf    (m_alloc_buf),
+		.m_buf0_single_output(m_buf0_single_output),
+		.m_buf1_single_output(m_buf1_single_output),
 		.ce_resp_valid  (ce_resp_valid),
 		.ce_resp        (ce_resp),
+		.ce_resp_row_chunk_count(ce_resp_row_chunk_count),
+		.ce_resp_single_output(ce_resp_single_output),
 		.m_dma_req_valid(m_dma_req_valid),
 		.m_dma_req_ready(m_dma_req_ready),
 		.m_dma_req_id   (m_dma_req_id),
@@ -426,6 +445,8 @@ module PT_V2 #(
 		.quant_m_ready  (quant_m_ready),
 		.b_mem_row_data (b_mem_rd_data),
 		.m_mem_row_data (m_b_mem_rd_data),
+		.m_buf0_single_output(m_buf0_single_output),
+		.m_buf1_single_output(m_buf1_single_output),
 		.gema_lhs_data  (gema_lhs_data),
 		.gema_rhs_data  (gema_rhs_data),
 		.gema_in_idx    (gema_in_idx),
@@ -444,6 +465,8 @@ module PT_V2 #(
 		.m_mem_wr_data  (m_mem_wr_data),
 		.ce_resp_valid  (ce_resp_valid),
 		.ce_resp        (ce_resp),
+		.ce_resp_row_chunk_count(ce_resp_row_chunk_count),
+		.ce_resp_single_output(ce_resp_single_output),
 		.ce_irq         (ce_irq)
 	);
 

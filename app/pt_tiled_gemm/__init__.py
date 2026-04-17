@@ -22,7 +22,7 @@ PT_PARAMS = {
 	"EXT_ADDR_W": 32,
 	"DMA_BEATS_W": 16,
 	"LUT_DEPTH": 8,
-	"A_BANK_DEPTH": 8,
+	"A_BANK_DEPTH": 16,
 	"B_BANK_DEPTH": 16,
 	"M_BANK_DEPTH": 16,
 	"A_LOAD_LANES": TILE_DIM,
@@ -104,4 +104,3 @@ def default_report_path(problem: ProblemSpec) -> Path:
 
 def cocotb_output_root(problem: ProblemSpec) -> Path:
 	return DEFAULT_OUT_DIR / "cocotb" / problem.tag
-
