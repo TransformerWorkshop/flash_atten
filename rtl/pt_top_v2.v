@@ -207,7 +207,7 @@ module PT_V2 #(
 	wire                  m_buf0_single_output;
 	wire                  m_buf1_single_output;
 
-	PT_DISPATCH #(
+	PT_DISPATCH_V2 #(
 		.GEMM_X_DIM(GEMM_X_DIM),
 		.GEMM_Y_DIM(GEMM_Y_DIM)
 	) u_dispatch (
@@ -275,7 +275,7 @@ module PT_V2 #(
 		.m_buf0_single_output(m_buf0_single_output),
 		.m_buf1_single_output(m_buf1_single_output),
 		.ce_resp_valid  (ce_resp_valid),
-		.ce_resp        (ce_resp),
+		.ce_resp        (32'd0),
 		.malloc_resp_valid(malloc_resp_valid),
 		.malloc_resp    (malloc_resp),
 		.malloc_irq     (malloc_irq),
@@ -283,7 +283,7 @@ module PT_V2 #(
 		.serial_exec_busy(malloc_serial_busy)
 	);
 
-	PT_MD #(
+	PT_MD_V2 #(
 		.DATA_WIDTH   (DATA_WIDTH),
 		.GEMM_X_DIM   (GEMM_X_DIM),
 		.GEMM_Y_DIM   (GEMM_Y_DIM),
@@ -403,7 +403,7 @@ module PT_V2 #(
 		.quant_inv_scale     (quant_inv_scale)
 	);
 
-	PT_CE #(
+	PT_CE_V2 #(
 		.DATA_WIDTH   (DATA_WIDTH),
 		.GEMM_X_DIM   (GEMM_X_DIM),
 		.GEMM_Y_DIM   (GEMM_Y_DIM),
@@ -632,7 +632,5 @@ module PT_V2 #(
 			end
 		end
 	end
-
-	wire _unused_ok = &{1'b0, pcsr_a_base[0], pcsr_b_base[0], dma_done, s_axis_tstrb[0], s_axis_tlast, s_axis_tkeep, s_axis_tid, s_axis_tdest};
 
 endmodule

@@ -59,6 +59,9 @@ module PT #(
 	output wire                       irq
 );
 
+	localparam integer LOAD_STREAM_LANES = (A_LOAD_LANES >= B_LOAD_LANES) ? A_LOAD_LANES : B_LOAD_LANES;
+	localparam integer LOAD_STREAM_STRB_W = LOAD_STREAM_LANES * DATA_WIDTH / 8;
+
 	PT_V2 #(
 		.DATA_WIDTH  (DATA_WIDTH),
 		.GEMM_X_DIM  (GEMM_X_DIM),
@@ -81,11 +84,11 @@ module PT #(
 		.s_axis_tvalid  (s_axis_tvalid),
 		.s_axis_tready  (s_axis_tready),
 		.s_axis_tdata   (s_axis_tdata),
-		.s_axis_tstrb   (s_axis_tstrb),
-		.s_axis_tlast   (s_axis_tlast),
-		.s_axis_tkeep   (s_axis_tkeep),
-		.s_axis_tid     (s_axis_tid),
-		.s_axis_tdest   (s_axis_tdest),
+		.s_axis_tstrb   ({LOAD_STREAM_STRB_W{1'b0}}),
+		.s_axis_tlast   (1'b0),
+		.s_axis_tkeep   (1'b0),
+		.s_axis_tid     (1'b0),
+		.s_axis_tdest   (1'b0),
 		.s_axis_tuser   (s_axis_tuser),
 		.m_axis_tvalid  (m_axis_tvalid),
 		.m_axis_tready  (m_axis_tready),
@@ -106,7 +109,7 @@ module PT #(
 		.dma_req_ready  (dma_req_ready),
 		.dma_req_kind   (dma_req_kind),
 		.dma_req_id     (dma_req_id),
-		.dma_done       (dma_done),
+		.dma_done       (1'b0),
 		.dma_error      (dma_error),
 		.m_dma_req_valid(m_dma_req_valid),
 		.m_dma_req_ready(m_dma_req_ready),

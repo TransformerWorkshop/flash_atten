@@ -76,6 +76,7 @@ module PT_DMA_TOP #(
 
 	localparam integer DESC_AW = (LUT_DEPTH <= 1) ? 1 : $clog2(LUT_DEPTH);
 	localparam integer LOAD_STREAM_LANES = (A_LOAD_LANES >= B_LOAD_LANES) ? A_LOAD_LANES : B_LOAD_LANES;
+	localparam integer LOAD_STREAM_STRB_W = LOAD_STREAM_LANES * DATA_WIDTH / 8;
 	localparam integer A_TILE_LEN = GEMM_X_DIM * GEMM_X_DIM;
 	localparam integer B_TILE_LEN = GEMM_Y_DIM * GEMM_Y_DIM;
 
@@ -309,11 +310,11 @@ module PT_DMA_TOP #(
 		.s_axis_tvalid  (s_axis_tvalid),
 		.s_axis_tready  (s_axis_tready),
 		.s_axis_tdata   (s_axis_tdata),
-		.s_axis_tstrb   (s_axis_tstrb),
-		.s_axis_tlast   (s_axis_tlast),
-		.s_axis_tkeep   (s_axis_tkeep),
-		.s_axis_tid     (s_axis_tid),
-		.s_axis_tdest   (s_axis_tdest),
+		.s_axis_tstrb   ({LOAD_STREAM_STRB_W{1'b0}}),
+		.s_axis_tlast   (1'b0),
+		.s_axis_tkeep   (1'b0),
+		.s_axis_tid     (1'b0),
+		.s_axis_tdest   (1'b0),
 		.s_axis_tuser   (s_axis_tuser),
 		.m_axis_tvalid  (m_axis_tvalid),
 		.m_axis_tready  (m_axis_tready),
@@ -446,7 +447,5 @@ module PT_DMA_TOP #(
 			end
 		end
 	end
-
-	wire _unused_ok = &{1'b0, pt_irq_unused};
 
 endmodule
