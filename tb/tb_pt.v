@@ -40,10 +40,9 @@ module tb_pt;
 
 	wire                   dma_req_valid;
 	reg                    dma_req_ready;
+	wire [`PT_DMA_KIND_W-1:0] dma_req_kind;
 	wire [1:0]             dma_req_tuser;
 	wire [31:0]            dma_req_id;
-	wire [31:0]            dma_req_ext_addr;
-	wire [9:0]             dma_req_local_addr;
 	wire [15:0]            dma_req_beats;
 	reg                    dma_done;
 	reg                    dma_error;
@@ -66,7 +65,12 @@ module tb_pt;
 		.DMA_BEATS_W (16),
 		.LUT_DEPTH   (8),
 		.A_BANK_DEPTH(8),
-		.B_BANK_DEPTH(8)
+		.B_BANK_DEPTH(8),
+		.M_BANK_DEPTH(8),
+		.A_LOAD_LANES(1),
+		.B_LOAD_LANES(1),
+		.M_WRITE_LANES(1),
+		.M_EXPORT_LANES(1)
 	) dut (
 		.clk(clk),
 		.rstn(rstn),
@@ -97,11 +101,8 @@ module tb_pt;
 		.ctrl_resp_valid(ctrl_resp_valid),
 		.dma_req_valid(dma_req_valid),
 		.dma_req_ready(dma_req_ready),
-		.dma_req_tuser(dma_req_tuser),
+		.dma_req_kind(dma_req_kind),
 		.dma_req_id(dma_req_id),
-		.dma_req_ext_addr(dma_req_ext_addr),
-		.dma_req_local_addr(dma_req_local_addr),
-		.dma_req_beats(dma_req_beats),
 		.dma_done(dma_done),
 		.dma_error(dma_error),
 		.m_dma_req_valid(m_dma_req_valid),
@@ -113,6 +114,15 @@ module tb_pt;
 		.m_dma_error(m_dma_error),
 		.irq(irq)
 	);
+
+	assign dma_req_tuser = (dma_req_kind == `PT_DMA_KIND_A) ? `PT_STREAM_KIND_A :
+	                       (dma_req_kind == `PT_DMA_KIND_B) ? `PT_STREAM_KIND_B :
+	                       (dma_req_kind == `PT_DMA_KIND_C) ? `PT_STREAM_KIND_C :
+	                       2'b00;
+	assign dma_req_beats = (dma_req_kind == `PT_DMA_KIND_A) ? (X_DIM * X_DIM) :
+	                       (dma_req_kind == `PT_DMA_KIND_B) ? (Y_DIM * Y_DIM) :
+	                       (dma_req_kind == `PT_DMA_KIND_C) ? (Y_DIM * Y_DIM) :
+	                       16'd0;
 
 	always #5 clk = ~clk;
 
@@ -366,7 +376,7 @@ module tb_pt;
 			gemm_start_count <= 0;
 			irq_count        <= 0;
 		end else begin
-			if (dut.gemm_start)
+			if (dut.u_pt_v2.gemm_start)
 				gemm_start_count <= gemm_start_count + 1;
 			if (irq)
 				irq_count <= irq_count + 1;

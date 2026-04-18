@@ -33,6 +33,7 @@ module PT_MEM_BANK #(
 			wire this_rd_hit = rd_en &&
 			                   (rd_buf ? (gi >= LANES) : (gi < LANES));
 
+			wire [DATA_WIDTH-1:0] dout_a_i;
 			wire [DATA_WIDTH-1:0] dout_b_i;
 
 			sram #(
@@ -45,7 +46,7 @@ module PT_MEM_BANK #(
 				.we_a  (this_wr_hit     ),
 				.addr_a(wr_addr         ),
 				.din_a (wr_data[LANE_IDX*DATA_WIDTH +: DATA_WIDTH]),
-				.dout_a(               ),
+				.dout_a(dout_a_i        ),
 				.en_b  (this_rd_hit     ),
 				.we_b  (1'b0            ),
 				.addr_b(rd_addr         ),
@@ -95,13 +96,15 @@ module PT_M_MEM #(
 	output reg  [B_LANES*DATA_WIDTH-1:0]   rd_exp_data
 );
 
+// synthesis translate_off
+`ifndef SYNTHESIS
 	initial begin
 		if ((M_PHYSICAL_COPIES != 2) && (M_PHYSICAL_COPIES != 3)) begin
 			$fatal(1, "PT_M_MEM requires M_PHYSICAL_COPIES to be 2 or 3, got %0d", M_PHYSICAL_COPIES);
 		end
-		rd_b_data = {B_LANES*DATA_WIDTH{1'b0}};
-		rd_exp_data = {B_LANES*DATA_WIDTH{1'b0}};
 	end
+`endif
+// synthesis translate_on
 
 	wire [B_LANES*DATA_WIDTH-1:0] row_rd_data_w;
 	wire [B_LANES*DATA_WIDTH-1:0] exp_rd_data_w;

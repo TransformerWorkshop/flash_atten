@@ -76,7 +76,8 @@ module PT_CE_V2 #(
 	localparam integer A_DIM_SHIFT = $clog2((GEMM_X_DIM <= 0) ? 1 : GEMM_X_DIM);
 	localparam integer B_DIM_SHIFT = $clog2((GEMM_Y_DIM <= 0) ? 1 : GEMM_Y_DIM);
 	localparam integer STORE_BASE_W = (GEMM_Y_DIM <= 1) ? 1 : $clog2(GEMM_Y_DIM + 1);
-	localparam integer DRAIN_FULL_WIDTH = (M_WRITE_LANES >= GEMM_Y_DIM) ? 1 : 0;
+	localparam [0:0] DRAIN_FULL_WIDTH = (M_WRITE_LANES >= GEMM_Y_DIM) ? 1'b1 : 1'b0;
+	localparam [STORE_BASE_W:0] M_WRITE_LANES_W = M_WRITE_LANES;
 	localparam integer MATMUL_ACC_W = 16;
 	localparam integer TILE_IDX_W = 3;
 
@@ -149,6 +150,8 @@ module PT_CE_V2 #(
 	reg [M_AW-1:0] store_row_addr_r;
 	reg store_row_last_r;
 	reg [STORE_BASE_W-1:0] store_chunk_base_r;
+	wire [`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] ce_a_local_elem = ce_a_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L];
+	wire [`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] ce_b_local_elem = ce_b_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L];
 
 	wire incoming_is_matmul = (ce_cmd_ctrl[`PT_INST_OPCODE_H:`PT_INST_OPCODE_L] == `PT_OP_MATMUL);
 	wire incoming_is_matadd = (ce_cmd_ctrl[`PT_INST_OPCODE_H:`PT_INST_OPCODE_L] == `PT_OP_MATADD);
@@ -156,8 +159,10 @@ module PT_CE_V2 #(
 	wire [3:0] cmd_matmul_n_tiles = ce_cmd_ctrl[`PT_MATMUL_N_TILES_H:`PT_MATMUL_N_TILES_L];
 	wire [3:0] cmd_matmul_k_tiles = ce_cmd_ctrl[`PT_MATMUL_K_TILES_H:`PT_MATMUL_K_TILES_L];
 	wire cmd_matadd_m_src_buf = ce_cmd_ctrl[`PT_MATADD_M_OFF_L+8];
-	wire [A_AW-1:0] cmd_a_row_base = ce_a_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] >> A_DIM_SHIFT;
-	wire [B_AW-1:0] cmd_b_row_base = ce_b_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] >> B_DIM_SHIFT;
+	wire [`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] cmd_a_row_base_full = ce_a_local_elem >> A_DIM_SHIFT;
+	wire [`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] cmd_b_row_base_full = ce_b_local_elem >> B_DIM_SHIFT;
+	wire [A_AW-1:0] cmd_a_row_base = cmd_a_row_base_full[A_AW-1:0];
+	wire [B_AW-1:0] cmd_b_row_base = cmd_b_row_base_full[B_AW-1:0];
 	wire incoming_multitile_matmul = incoming_is_matmul &&
 	                                ((cmd_matmul_m_tiles != `PT_TILES_1) || (cmd_matmul_n_tiles != `PT_TILES_1));
 	wire cmd_single_output_tile = (cmd_matmul_m_tiles == `PT_TILES_1) && (cmd_matmul_n_tiles == `PT_TILES_1);
@@ -165,9 +170,10 @@ module PT_CE_V2 #(
 	// In DRAIN_FULL_WIDTH mode, drain activates at exec launch and runs
 	// concurrently with exec.  Count exec+drain as a single pipeline slot
 	// so that the outstanding limit still works correctly.
-	wire [1:0] matmul_outstanding_count = (DRAIN_FULL_WIDTH ?
-	                                       (exec_valid_r | drain_valid_r) :
-	                                       (drain_valid_r + exec_valid_r)) + shadow_valid_r;
+	wire [1:0] drain_exec_count = DRAIN_FULL_WIDTH ?
+	                              {1'b0, (exec_valid_r | drain_valid_r)} :
+	                              ({1'b0, drain_valid_r} + {1'b0, exec_valid_r});
+	wire [1:0] matmul_outstanding_count = drain_exec_count + {1'b0, shadow_valid_r};
 	wire matmul_busy = (matmul_outstanding_count != 0);
 	wire matadd_busy = (add_state_r != ADD_IDLE);
 	wire shadow_launch_fire = !exec_valid_r &&
@@ -201,7 +207,10 @@ module PT_CE_V2 #(
 
 	wire drain_accept_ready = drain_valid_r && (DRAIN_FULL_WIDTH ? 1'b1 : !drain_chunking_r);
 	wire drain_accept_fire  = drain_accept_ready && quant_m_valid;
-	wire [STORE_BASE_W:0] store_chunk_limit = store_chunk_base_r + M_WRITE_LANES;
+	wire [STORE_BASE_W:0] store_chunk_base_ext = {1'b0, store_chunk_base_r};
+	wire [STORE_BASE_W:0] store_chunk_limit = store_chunk_base_ext + M_WRITE_LANES_W;
+	wire [31:0] store_chunk_base_u32 = {{(32-STORE_BASE_W){1'b0}}, store_chunk_base_r};
+	wire [31:0] store_chunk_limit_u32 = {{(32-(STORE_BASE_W+1)){1'b0}}, store_chunk_limit};
 	wire store_chunk_last = (store_chunk_limit >= GEMM_Y_DIM);
 	wire drain_write_chunk_fire = drain_valid_r && !DRAIN_FULL_WIDTH && drain_chunking_r;
 	wire drain_complete_fire = DRAIN_FULL_WIDTH ?
@@ -224,14 +233,24 @@ module PT_CE_V2 #(
 	wire add_res_fire = (add_state_r == ADD_WAIT_RESULT) && add_m_valid;
 	wire selected_m_buf_single_output = cmd_matadd_m_src_buf ? m_buf1_single_output : m_buf0_single_output;
 	wire matadd_mwindow_multitile = incoming_is_matadd && !selected_m_buf_single_output;
+	wire [31:0] drain_m_tile_idx_u32 = {{(32-TILE_IDX_W){1'b0}}, drain_m_tile_idx_r};
+	wire [31:0] drain_n_tile_idx_u32 = {{(32-TILE_IDX_W){1'b0}}, drain_n_tile_idx_r};
+	wire [31:0] drain_total_n_tiles_u32 = {{28{1'b0}}, drain_total_n_tiles_r};
+	wire [31:0] macro_a_row_base_u32 = {{(32-A_AW){1'b0}}, macro_a_row_base_r};
+	wire [31:0] macro_b_row_base_u32 = {{(32-B_AW){1'b0}}, macro_b_row_base_r};
+	wire [31:0] macro_next_m_tile_u32 = {{(32-TILE_IDX_W){1'b0}}, macro_next_m_tile_r};
+	wire [31:0] macro_next_n_tile_u32 = {{(32-TILE_IDX_W){1'b0}}, macro_next_n_tile_r};
+	wire [31:0] macro_k_tiles_u32 = {{28{1'b0}}, macro_k_tiles_r};
 	wire [31:0] drain_row_chunk_base =
-		(drain_m_tile_idx_r * GEMM_X_DIM * drain_total_n_tiles_r) + drain_n_tile_idx_r;
-	wire [31:0] drain_quant_store_addr = drain_row_chunk_base + (quant_m_idx * drain_total_n_tiles_r);
+		(drain_m_tile_idx_u32 * GEMM_X_DIM * drain_total_n_tiles_u32) + drain_n_tile_idx_u32;
+	wire [31:0] drain_quant_store_addr = drain_row_chunk_base + (quant_m_idx * drain_total_n_tiles_u32);
 	wire schedule_macro_shadow_fire = drain_complete_fire && !drain_final_tile_r;
 	wire [31:0] macro_next_a_row_base_calc =
-		macro_a_row_base_r + (macro_next_m_tile_r * (macro_k_tiles_r * GEMM_X_DIM));
+		macro_a_row_base_u32 + (macro_next_m_tile_u32 * (macro_k_tiles_u32 * GEMM_X_DIM));
 	wire [31:0] macro_next_b_row_base_calc =
-		macro_b_row_base_r + (macro_next_n_tile_r * (macro_k_tiles_r * GEMM_Y_DIM));
+		macro_b_row_base_u32 + (macro_next_n_tile_u32 * (macro_k_tiles_u32 * GEMM_Y_DIM));
+	wire [31:0] macro_total_row_chunks_u32 = ({28'd0, macro_m_tiles_r} * {28'd0, macro_n_tiles_r}) * GEMM_X_DIM;
+	wire [`PT_SIZE_W-1:0] macro_total_row_chunks = macro_total_row_chunks_u32[`PT_SIZE_W-1:0];
 	wire macro_queued_final_tile =
 		(macro_next_m_tile_r == (macro_m_tiles_r[TILE_IDX_W-1:0] - 1'b1)) &&
 		(macro_next_n_tile_r == (macro_n_tiles_r[TILE_IDX_W-1:0] - 1'b1));
@@ -257,6 +276,8 @@ module PT_CE_V2 #(
 		end
 	endfunction
 
+// synthesis translate_off
+`ifndef SYNTHESIS
 	initial begin
 		if (!is_pow2(GEMM_X_DIM) || !is_pow2(GEMM_Y_DIM)) begin
 			$fatal(1, "PT_CE_V2 requires power-of-two GEMM_X_DIM/GEMM_Y_DIM, got %0d x %0d", GEMM_X_DIM, GEMM_Y_DIM);
@@ -265,6 +286,8 @@ module PT_CE_V2 #(
 			$fatal(1, "PT_CE_V2 requires 0 < M_WRITE_LANES <= GEMM_Y_DIM, got %0d for Y=%0d", M_WRITE_LANES, GEMM_Y_DIM);
 		end
 	end
+`endif
+// synthesis translate_on
 
 	integer wi;
 
@@ -638,7 +661,7 @@ module PT_CE_V2 #(
 								ce_resp_valid <= 1'b1;
 								ce_resp_row_chunk_count <= drain_single_output_r ?
 								                           GEMM_X_DIM[`PT_SIZE_W-1:0] :
-								                           (macro_m_tiles_r * macro_n_tiles_r * GEMM_X_DIM);
+								                           macro_total_row_chunks;
 								ce_resp_single_output <= drain_single_output_r;
 								ce_irq        <= 1'b1;
 							end
@@ -659,7 +682,7 @@ module PT_CE_V2 #(
 					m_mem_wr_addr <= store_row_addr_r;
 					m_mem_wr_data <= store_result_row_r;
 					for (wi = 0; wi < GEMM_Y_DIM; wi = wi + 1) begin
-						if ((wi >= store_chunk_base_r) && (wi < (store_chunk_base_r + M_WRITE_LANES))) begin
+						if ((wi >= store_chunk_base_u32) && (wi < store_chunk_limit_u32)) begin
 							m_mem_wr_mask[wi] <= 1'b1;
 						end
 					end
@@ -671,7 +694,7 @@ module PT_CE_V2 #(
 								ce_resp_valid <= 1'b1;
 								ce_resp_row_chunk_count <= drain_single_output_r ?
 								                           GEMM_X_DIM[`PT_SIZE_W-1:0] :
-								                           (macro_m_tiles_r * macro_n_tiles_r * GEMM_X_DIM);
+								                           macro_total_row_chunks;
 								ce_resp_single_output <= drain_single_output_r;
 								ce_irq        <= 1'b1;
 							end
@@ -741,7 +764,7 @@ module PT_CE_V2 #(
 						m_mem_wr_addr <= store_row_addr_r;
 						m_mem_wr_data <= store_result_row_r;
 						for (wi = 0; wi < GEMM_Y_DIM; wi = wi + 1) begin
-							if ((wi >= store_chunk_base_r) && (wi < (store_chunk_base_r + M_WRITE_LANES))) begin
+							if ((wi >= store_chunk_base_u32) && (wi < store_chunk_limit_u32)) begin
 								m_mem_wr_mask[wi] <= 1'b1;
 							end
 						end

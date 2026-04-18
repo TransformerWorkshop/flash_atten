@@ -31,10 +31,10 @@ module PT_DISPATCH_V2 #(
 	localparam integer QCFG_CNT_W = (MAX_DIM <= 1) ? 1 : $clog2(MAX_DIM + 1);
 	localparam integer CMD_KIND_W = 1 + `PT_MEM_KIND_W + `PT_MALLOC_KIND_W;
 	localparam integer CMDQ_W = CMD_KIND_W + `INST_WIDTH + 32;
-	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_CFG          = `PT_MEM_KIND_CFG;
-	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_QCFG_HDR     = `PT_MEM_KIND_QCFG_HDR;
-	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_QCFG_PAYLOAD = `PT_MEM_KIND_QCFG_PAYLOAD;
-	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_REJECT       = `PT_MEM_KIND_REJECT;
+	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_CFG          = 2'd0;
+	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_QCFG_HDR     = 2'd1;
+	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_QCFG_PAYLOAD = 2'd2;
+	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_REJECT       = 2'd3;
 	localparam [1:0] ACTIVE_NONE = 2'd0;
 	localparam [1:0] ACTIVE_MD   = 2'd1;
 

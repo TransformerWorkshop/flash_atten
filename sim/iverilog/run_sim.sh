@@ -5,6 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(CDPATH= cd -- "${SCRIPT_DIR}/../.." && pwd)"
 RTL_DIR="${REPO_ROOT}/rtl"
+RTL_NOD_DIR="${RTL_DIR}/nod"
 TB_DIR="${REPO_ROOT}/tb"
 BUILD_DIR="${SCRIPT_DIR}/build"
 
@@ -48,7 +49,8 @@ ensure_layout() {
 }
 
 generate_filelist() {
-    find "${RTL_DIR}" "${TB_DIR}" -type f -name '*.v' | sort > "${FILELIST}"
+    find "${RTL_DIR}" -path "${RTL_NOD_DIR}" -prune -o -type f -name '*.v' -print | sort > "${FILELIST}"
+    find "${TB_DIR}" -type f -name '*.v' | sort >> "${FILELIST}"
 
     if [[ ! -s "${FILELIST}" ]]; then
         echo "Error: no Verilog sources found under ${RTL_DIR} or ${TB_DIR}" >&2
@@ -76,7 +78,7 @@ compile_design() {
     # The current RTL/testbenches are written in Verilog-2001.
     # Using a newer SystemVerilog mode makes identifiers like "expect"
     # parse as reserved keywords in existing benches.
-    iverilog -g2001 -Wall -I "${RTL_DIR}" -s "${WRAPPER_TOP}" -o "${VVP_OUT}" -c "${FILELIST}" "${WRAPPER}"
+    iverilog -g2001 -Wall -I "${RTL_DIR}" -I "${RTL_NOD_DIR}" -s "${WRAPPER_TOP}" -o "${VVP_OUT}" -c "${FILELIST}" "${WRAPPER}"
     echo "Compile output: ${VVP_OUT}"
 }
 

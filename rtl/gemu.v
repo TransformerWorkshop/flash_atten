@@ -55,7 +55,7 @@ module GEMU #(parameter WIDTH = 32) (
 	assign fifo_m_valid = in_accm && acc_done;
 	assign fifo_a_ready = in_accm && !acc_done;
 	assign fifo_b_ready = in_accm && !acc_done;
-	assign m            = m_valid ? fifo_m_out : 0;
+	assign m            = m_valid ? fifo_m_out : {4*WIDTH{1'b0}};
 	assign start_ready  = (current_state == STATE_IDLE);
 	assign tile_done    = fifo_m_valid && fifo_m_ready;
 
@@ -107,12 +107,16 @@ module GEMU #(parameter WIDTH = 32) (
 	end
 
 	always@(*) begin
+		next_state = current_state;
 		case(current_state)
 			STATE_IDLE : begin
 				next_state = start ? STATE_ACCM : STATE_IDLE;
 			end
 			STATE_ACCM : begin
 				next_state = (clear || (acc_done && fifo_m_ready)) ? STATE_IDLE : STATE_ACCM;
+			end
+			default : begin
+				next_state = STATE_IDLE;
 			end
 		endcase
 	end
@@ -140,6 +144,10 @@ module GEMU #(parameter WIDTH = 32) (
 						accm    <= accm + mult_signed_ext;
 						acc_cnt <= acc_cnt + 1;
 					end
+				end
+				default : begin
+					accm    <= 0;
+					acc_cnt <= 0;
 				end
 			endcase
 		end

@@ -176,41 +176,36 @@ module PT_DMA_TOP #(
 		reg [3:0] m_tiles;
 		reg [3:0] n_tiles;
 		reg [3:0] k_tiles;
+		reg [31:0] elems32;
 		begin
 			opcode = cmd_inst[`PT_INST_OPCODE_H:`PT_INST_OPCODE_L];
 			m_tiles = cmd_inst[`PT_MATMUL_M_TILES_H:`PT_MATMUL_M_TILES_L];
 			n_tiles = cmd_inst[`PT_MATMUL_N_TILES_H:`PT_MATMUL_N_TILES_L];
 			k_tiles = cmd_inst[`PT_MATMUL_K_TILES_H:`PT_MATMUL_K_TILES_L];
+			elems32 = 32'd0;
 			case (opcode)
 				`PT_OP_LOAD: begin
 					if (req_kind == `PT_DMA_KIND_A) begin
-						calc_rd_dma_elems = cmd_inst[`PT_LOAD_A_SIZE_H:`PT_LOAD_A_SIZE_L];
+						elems32 = {{(32-`PT_SIZE_W){1'b0}}, cmd_inst[`PT_LOAD_A_SIZE_H:`PT_LOAD_A_SIZE_L]};
 					end else if (req_kind == `PT_DMA_KIND_B) begin
-						calc_rd_dma_elems = cmd_inst[`PT_LOAD_B_SIZE_H:`PT_LOAD_B_SIZE_L];
-					end else begin
-						calc_rd_dma_elems = {`PT_SIZE_W{1'b0}};
+						elems32 = {{(32-`PT_SIZE_W){1'b0}}, cmd_inst[`PT_LOAD_B_SIZE_H:`PT_LOAD_B_SIZE_L]};
 					end
 				end
 				`PT_OP_MATMUL: begin
 					if (req_kind == `PT_DMA_KIND_A) begin
-						calc_rd_dma_elems = m_tiles * k_tiles * A_TILE_LEN;
+						elems32 = m_tiles * k_tiles * A_TILE_LEN;
 					end else if (req_kind == `PT_DMA_KIND_B) begin
-						calc_rd_dma_elems = k_tiles * n_tiles * B_TILE_LEN;
-					end else begin
-						calc_rd_dma_elems = {`PT_SIZE_W{1'b0}};
+						elems32 = k_tiles * n_tiles * B_TILE_LEN;
 					end
 				end
 				`PT_OP_MATADD: begin
 					if (req_kind == `PT_DMA_KIND_C) begin
-						calc_rd_dma_elems = B_TILE_LEN[`PT_SIZE_W-1:0];
-					end else begin
-						calc_rd_dma_elems = {`PT_SIZE_W{1'b0}};
+						elems32 = B_TILE_LEN;
 					end
 				end
-				default: begin
-					calc_rd_dma_elems = {`PT_SIZE_W{1'b0}};
-				end
+				default: begin end
 			endcase
+			calc_rd_dma_elems = elems32[`PT_SIZE_W-1:0];
 		end
 	endfunction
 

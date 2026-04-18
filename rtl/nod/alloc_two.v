@@ -53,31 +53,38 @@ wire [`RTID_H - `RTID_L : 0] data_rt_id;
 assign data_rt_id = fifo_dout[`RTID_H:`RTID_L];
 wire dst_A,dst_B;
 
+localparam ROUTER_ID_W = (`RTID_H-`RTID_L+1)/2;
 wire [(`RTID_H-`RTID_L+1)/2-1:0] rt_id_x,rt_id_y;
+wire [ROUTER_ID_W-1:0] router_id_x_w = ROUTER_ID_X;
+wire [ROUTER_ID_W-1:0] router_id_y_w = ROUTER_ID_Y;
 assign rt_id_x = data_rt_id[`RTID_H-`RTID_L:(`RTID_H-`RTID_L+1)/2];
 assign rt_id_y = data_rt_id[(`RTID_H-`RTID_L+1)/2-1:0];
 
+/* verilator lint_off UNSIGNED */
+// Route coordinates are non-negative fixed-width IDs, so these comparisons
+// are intentional unsigned ordering checks rather than arithmetic bugs.
 generate if(CHANNEL_ID == `LEFT) begin:LEFT
 
-    assign dst_A = rt_id_y > ROUTER_ID_Y;
-    assign dst_B = rt_id_y == ROUTER_ID_Y;
+    assign dst_A = rt_id_y > router_id_y_w;
+    assign dst_B = rt_id_y == router_id_y_w;
 
 end else if(CHANNEL_ID == `RIGHT) begin:RIGHT
 
-    assign dst_A = rt_id_y < ROUTER_ID_Y;
-    assign dst_B = rt_id_y == ROUTER_ID_Y;
+    assign dst_A = rt_id_y < router_id_y_w;
+    assign dst_B = rt_id_y == router_id_y_w;
 
 end else if(CHANNEL_ID == `UP) begin:UP
 
-    assign dst_A = rt_id_x > ROUTER_ID_X;
-    assign dst_B = rt_id_x == ROUTER_ID_X;
+    assign dst_A = rt_id_x > router_id_x_w;
+    assign dst_B = rt_id_x == router_id_x_w;
 
 end else begin:DOWN
 
-    assign dst_A = rt_id_x < ROUTER_ID_X;
-    assign dst_B = rt_id_x == ROUTER_ID_X;
+    assign dst_A = rt_id_x < router_id_x_w;
+    assign dst_B = rt_id_x == router_id_x_w;
 
 end endgenerate
+/* verilator lint_on UNSIGNED */
 
 //state == 1 indicates there is a packet in flight
 reg state;

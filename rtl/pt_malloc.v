@@ -230,6 +230,13 @@ module PT_MALLOC #(
 		end
 	endfunction
 
+	function [`PT_SIZE_W-1:0] size_trunc;
+		input integer value;
+		begin
+			size_trunc = value[`PT_SIZE_W-1:0];
+		end
+	endfunction
+
 	function [`PT_LOCAL_ADDR_W-1:0] make_local_base;
 		input integer capacity;
 		input integer virt_base;
@@ -267,37 +274,47 @@ module PT_MALLOC #(
 
 	integer a_base_int;
 	integer a_buf_start;
+	integer a_len_int;
+	integer a_next_int;
 	always @(*) begin
 		a_alloc_ok = 1'b0;
 		a_alloc_base = {`PT_LOCAL_ADDR_W{1'b0}};
 		a_alloc_next_after = a_alloc_next_r;
-		a_base_int = align_up(a_alloc_next_r, GEMM_X_DIM);
+		a_len_int = {{(32-`PT_SIZE_W){1'b0}}, dec_a_len};
+		a_next_int = {{(32-A_PTR_W){1'b0}}, a_alloc_next_r};
+		a_base_int = align_up({{(32-A_PTR_W){1'b0}}, a_alloc_next_r}, GEMM_X_DIM);
 		a_buf_start = (a_base_int >= A_CAPACITY) ? A_CAPACITY : 0;
-		if (((a_base_int - a_buf_start) + dec_a_len) > A_CAPACITY) begin
+		if (((a_base_int - a_buf_start) + a_len_int) > A_CAPACITY) begin
 			a_base_int = align_up(a_buf_start + A_CAPACITY, GEMM_X_DIM);
 		end
-		if ((dec_a_len != {`PT_SIZE_W{1'b0}}) && ((a_base_int + dec_a_len) <= (2 * A_CAPACITY))) begin
+		if ((dec_a_len != {`PT_SIZE_W{1'b0}}) && ((a_base_int + a_len_int) <= (2 * A_CAPACITY))) begin
 			a_alloc_ok = 1'b1;
 			a_alloc_base = make_local_base(A_CAPACITY, a_base_int);
-			a_alloc_next_after = a_base_int + dec_a_len;
+			a_next_int = a_base_int + a_len_int;
+			a_alloc_next_after = a_next_int[A_PTR_W-1:0];
 		end
 	end
 
 	integer b_base_int;
 	integer b_buf_start;
+	integer b_len_int;
+	integer b_next_int;
 	always @(*) begin
 		b_alloc_ok = 1'b0;
 		b_alloc_base = {`PT_LOCAL_ADDR_W{1'b0}};
 		b_alloc_next_after = b_alloc_next_r;
-		b_base_int = align_up(b_alloc_next_r, GEMM_Y_DIM);
+		b_len_int = {{(32-`PT_SIZE_W){1'b0}}, dec_b_len};
+		b_next_int = {{(32-B_PTR_W){1'b0}}, b_alloc_next_r};
+		b_base_int = align_up({{(32-B_PTR_W){1'b0}}, b_alloc_next_r}, GEMM_Y_DIM);
 		b_buf_start = (b_base_int >= B_CAPACITY) ? B_CAPACITY : 0;
-		if (((b_base_int - b_buf_start) + dec_b_len) > B_CAPACITY) begin
+		if (((b_base_int - b_buf_start) + b_len_int) > B_CAPACITY) begin
 			b_base_int = align_up(b_buf_start + B_CAPACITY, GEMM_Y_DIM);
 		end
-		if ((dec_b_len != {`PT_SIZE_W{1'b0}}) && ((b_base_int + dec_b_len) <= (2 * B_CAPACITY))) begin
+		if ((dec_b_len != {`PT_SIZE_W{1'b0}}) && ((b_base_int + b_len_int) <= (2 * B_CAPACITY))) begin
 			b_alloc_ok = 1'b1;
 			b_alloc_base = make_local_base(B_CAPACITY, b_base_int);
-			b_alloc_next_after = b_base_int + dec_b_len;
+			b_next_int = b_base_int + b_len_int;
+			b_alloc_next_after = b_next_int[B_PTR_W-1:0];
 		end
 	end
 
@@ -313,12 +330,12 @@ module PT_MALLOC #(
 				dec_a_len  = cmd_load_need_a ? cmd_load_a_size : {`PT_SIZE_W{1'b0}};
 				dec_b_len  = cmd_load_need_b ? cmd_load_b_size : {`PT_SIZE_W{1'b0}};
 				dec_error  = !cmd_load_legal;
-				if (cmd_load_need_a && (cmd_load_a_size != (cmd_load_m_tiles * cmd_load_k_tiles * A_TILE_LEN))) begin
-					dec_error = 1'b1;
-				end
-				if (cmd_load_need_b && (cmd_load_b_size != (cmd_load_k_tiles * cmd_load_n_tiles * B_TILE_LEN))) begin
-					dec_error = 1'b1;
-				end
+					if (cmd_load_need_a && ({{(32-`PT_SIZE_W){1'b0}}, cmd_load_a_size} != (cmd_load_m_tiles * cmd_load_k_tiles * A_TILE_LEN))) begin
+						dec_error = 1'b1;
+					end
+					if (cmd_load_need_b && ({{(32-`PT_SIZE_W){1'b0}}, cmd_load_b_size} != (cmd_load_k_tiles * cmd_load_n_tiles * B_TILE_LEN))) begin
+						dec_error = 1'b1;
+					end
 			end
 
 			`PT_MALLOC_KIND_MATMUL: begin
@@ -328,8 +345,8 @@ module PT_MALLOC #(
 				dec_m_tiles = cmd_matmul_m_tiles;
 				dec_n_tiles = cmd_matmul_n_tiles;
 				dec_k_tiles = cmd_matmul_k_tiles;
-				dec_a_len  = cmd_matmul_m_tiles * cmd_matmul_k_tiles * A_TILE_LEN;
-				dec_b_len  = cmd_matmul_k_tiles * cmd_matmul_n_tiles * B_TILE_LEN;
+					dec_a_len  = size_trunc(cmd_matmul_m_tiles * cmd_matmul_k_tiles * A_TILE_LEN);
+					dec_b_len  = size_trunc(cmd_matmul_k_tiles * cmd_matmul_n_tiles * B_TILE_LEN);
 				dec_error  = !cmd_matmul_legal;
 			end
 
@@ -675,11 +692,11 @@ module PT_MALLOC #(
 				lut_b_n_tiles[li] <= `PT_TILES_1;
 			end
 		end else begin
-			malloc_resp_valid <= 1'b0;
-			malloc_irq        <= 1'b0;
-			matmul_inflight_count_r <= matmul_inflight_count_r
-				+ (matmul_enqueue_fire ? 1'b1 : 1'b0)
-				- (matmul_resp_fire ? 1'b1 : 1'b0);
+				malloc_resp_valid <= 1'b0;
+				malloc_irq        <= 1'b0;
+				matmul_inflight_count_r <= matmul_inflight_count_r
+					+ (matmul_enqueue_fire ? 2'b01 : 2'b00)
+					- (matmul_resp_fire ? 2'b01 : 2'b00);
 			if (matadd_enqueue_fire) begin
 				serial_exec_busy_r <= 1'b1;
 			end

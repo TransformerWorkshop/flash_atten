@@ -20,15 +20,6 @@ module sram #(
 
 	reg [DATA_WIDTH-1:0] mem [0:DEPTH-1];
 
-	integer mi;
-	initial begin
-		for (mi = 0; mi < DEPTH; mi = mi + 1) begin
-			mem[mi] = {DATA_WIDTH{1'b0}};
-		end
-		dout_a = {DATA_WIDTH{1'b0}};
-		dout_b = {DATA_WIDTH{1'b0}};
-	end
-
 	always @(posedge clk) begin
 		if (en_a && we_a) begin
 			mem[addr_a] <= din_a;

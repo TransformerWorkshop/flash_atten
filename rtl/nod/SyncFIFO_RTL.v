@@ -27,6 +27,15 @@ reg [width-1 : 0] mem [depth-1 : 0];
 reg [depth_LOG-1 : 0] wp, rp;
 reg w_flag, r_flag;
 
+function [depth_LOG-1:0] ptr_trunc;
+    input integer value;
+    begin
+        ptr_trunc = value[depth_LOG-1:0];
+    end
+endfunction
+
+localparam [depth_LOG-1:0] LAST_PTR = ptr_trunc(depth - 1);
+
 always@(posedge clk_i or posedge rst_i)
 begin
     if(rst_i)
@@ -36,8 +45,8 @@ begin
     end
     else if(~full_o & write_i)
     begin
-        wp <= (wp==depth-1) ? 'b0 : wp+1;
-        w_flag <= (wp==depth-1) ? ~w_flag : w_flag;
+        wp <= (wp==LAST_PTR) ? {depth_LOG{1'b0}} : (wp + 1'b1);
+        w_flag <= (wp==LAST_PTR) ? ~w_flag : w_flag;
     end
 end
 
@@ -58,8 +67,8 @@ begin
     end
     else if(~empty_o & read_i)
     begin
-        rp <= (rp==depth-1) ? 'b0 : rp+1;
-        r_flag <= (rp==depth-1) ? ~r_flag : r_flag;
+        rp <= (rp==LAST_PTR) ? {depth_LOG{1'b0}} : (rp + 1'b1);
+        r_flag <= (rp==LAST_PTR) ? ~r_flag : r_flag;
     end
 end
 

@@ -179,6 +179,8 @@ module PT_DMA_AXIL_CSR #(
 		endcase
 	end
 
+// synthesis translate_off
+`ifndef SYNTHESIS
 	initial begin
 		if (AXIL_DATA_W != 32) begin
 			$fatal(1, "PT_DMA_AXIL_CSR requires AXIL_DATA_W=32, got %0d", AXIL_DATA_W);
@@ -187,6 +189,8 @@ module PT_DMA_AXIL_CSR #(
 			$fatal(1, "PT_DMA_AXIL_CSR supports EXT_ADDR_W <= 64, got %0d", EXT_ADDR_W);
 		end
 	end
+`endif
+// synthesis translate_on
 
 	always @(posedge clk or negedge rstn) begin
 		if (!rstn) begin

@@ -13,36 +13,46 @@ module sync_fifo #(
 	input  wire             ready_out
 );
 
+	localparam integer PTR_W = (DEPTH <= 1) ? 1 : $clog2(DEPTH);
+	localparam integer CNT_W = (DEPTH <= 1) ? 1 : $clog2(DEPTH+1);
+
+	function [PTR_W-1:0] ptr_trunc;
+		input integer value;
+		begin
+			ptr_trunc = value[PTR_W-1:0];
+		end
+	endfunction
+
+	localparam [PTR_W-1:0] LAST_PTR = ptr_trunc(DEPTH - 1);
+
 	reg [          WIDTH-1:0] fifo [0:DEPTH-1];
-	reg [  $clog2(DEPTH)-1:0] head            ;
-	reg [  $clog2(DEPTH)-1:0] tail            ;
-	reg [$clog2(DEPTH+1)-1:0] count           ;
+	reg [          PTR_W-1:0] head            ;
+	reg [          PTR_W-1:0] tail            ;
+	reg [          CNT_W-1:0] count           ;
 
 	wire                     do_write ;
 	wire                     do_read  ;
-	wire [$clog2(DEPTH)-1:0] head_next;
-	wire [$clog2(DEPTH)-1:0] tail_next;
+	wire [PTR_W-1:0]         head_next;
+	wire [PTR_W-1:0]         tail_next;
 
 	assign ready_in  = (count < DEPTH);
 	assign valid_out = (count > 0);
-	assign data_out  = fifo[head];
+	assign data_out  = valid_out ? fifo[head] : {WIDTH{1'b0}};
 
 	assign do_write  = valid_in && ready_in;
 	assign do_read   = valid_out && ready_out;
-	assign head_next = (head == DEPTH-1) ? {($clog2(DEPTH)){1'b0}} : (head + 1'b1);
-	assign tail_next = (tail == DEPTH-1) ? {($clog2(DEPTH)){1'b0}} : (tail + 1'b1);
+	assign head_next = (head == LAST_PTR) ? {PTR_W{1'b0}} : (head + 1'b1);
+	assign tail_next = (tail == LAST_PTR) ? {PTR_W{1'b0}} : (tail + 1'b1);
 
 	always @(posedge clk or negedge resetn) begin
 		if (!resetn) begin
-			head       <= {($clog2(DEPTH)){1'b0}};
-			tail       <= {($clog2(DEPTH)){1'b0}};
-			count      <= {($clog2(DEPTH+1)){1'b0}};
-			fifo[head] <= {WIDTH{1'b0}};
+			head       <= {PTR_W{1'b0}};
+			tail       <= {PTR_W{1'b0}};
+			count      <= {CNT_W{1'b0}};
 		end else if (clear) begin
-			head       <= {($clog2(DEPTH)){1'b0}};
-			tail       <= {($clog2(DEPTH)){1'b0}};
-			count      <= {($clog2(DEPTH+1)){1'b0}};
-			fifo[head] <= {WIDTH{1'b0}};
+			head       <= {PTR_W{1'b0}};
+			tail       <= {PTR_W{1'b0}};
+			count      <= {CNT_W{1'b0}};
 		end else begin
 			if (do_write) begin
 				fifo[tail] <= data_in;
