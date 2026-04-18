@@ -67,7 +67,9 @@ def _expected_native_matmul_ctrl_resp_cycles(env, cold_miss: bool) -> int:
 def _expected_native_matadd_ctrl_resp_cycles(env) -> int:
 	c_load_cycles = math.ceil((env.y_dim * env.y_dim) / env.b_load_lanes) + DMA_REQ_DONE_OVERHEAD_CYCLES
 	add_store_cycles = math.ceil(env.y_dim / env.m_write_lanes)
-	add_compute_cycles = (env.x_dim * (4 + add_store_cycles)) - 1
+	# Single-port SRAM inserts a one-cycle bubble between each row store and the
+	# next row fetch, so MATADD pays an extra (x_dim - 1) cycles.
+	add_compute_cycles = (env.x_dim * (4 + add_store_cycles)) - 1 + max(env.x_dim - 1, 0)
 	return PT_FRONTEND_OVERHEAD_CYCLES + c_load_cycles + add_compute_cycles
 
 

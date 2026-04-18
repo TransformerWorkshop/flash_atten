@@ -168,16 +168,24 @@ async def test_pt_randomized_profile(dut) -> None:
 				continue
 
 			if choice == "wrong_tuser":
-				env.queue_ab_injection(AbInjection(wrong_tuser=True))
-				await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL), ctrl_id)
-				await env.wait_ctrl_resp(pack_resp(True, 0, ctrl_id), 4000)
-				if dma_top_mode:
-					await env.soft_clear()
-					await setup_bases_and_passthrough_qcfg(env)
-					next_ctrl_id = 0x400
-					cached_ab_ids.clear()
-					mwindow_candidates.clear()
-					export_target = env.export_done_count
+				if plan.expected_dma_loads:
+					env.queue_ab_injection(AbInjection(wrong_tuser=True))
+					await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL), ctrl_id)
+					await env.wait_ctrl_resp(pack_resp(True, 0, ctrl_id), 4000)
+					if dma_top_mode:
+						await env.soft_clear()
+						await setup_bases_and_passthrough_qcfg(env)
+						next_ctrl_id = 0x400
+						cached_ab_ids.clear()
+						mwindow_candidates.clear()
+						export_target = env.export_done_count
+				else:
+					await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL), ctrl_id)
+					resp = await _wait_ctrl_resp_success(env, plan.response_word, ctrl_id, 4000)
+					export_target += 1
+					await env.wait_export_done(export_target, 12000)
+					cached_ab_ids.add(ctrl_id)
+					mwindow_candidates.append((ctrl_id, (resp >> 30) & 0x1))
 				continue
 
 			if choice == "export_error":

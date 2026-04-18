@@ -93,11 +93,5 @@
 
 ## 2 Verification Notes
 
-- `tb/tb_gemu.v` 覆盖场景：
-  - 基本点积
-  - 符号宽位累加
-  - 正负混合输入与负结果
-  - A/B 任一侧延迟或双侧延迟
-- 关键检查点：
-  - 仅在累加完成后输出一次有效结果
-  - 输出可被 `m_ready` 正确回压
+- 旧的独立 Verilog testbench `tb/tb_gemu.v` 已移除。
+- 当前验证入口统一为 `sim/cocotb/` 下的 cocotb 回归；GEMU 作为 PT 数据通路内部模块，随 PT 黑盒回归一并覆盖。

@@ -36,7 +36,7 @@ async def _wait_ce_overlap(env, timeout_cycles: int = 4000) -> None:
 	root = env._pt_root_prefix()
 	for _ in range(timeout_cycles):
 		await RisingEdge(env.dut.clk)
-		if env._signal_value(f"{root}.u_ce.u_ce_v2.exec_valid_r") and env._signal_value(f"{root}.u_ce.u_ce_v2.drain_valid_r"):
+		if env._signal_value(f"{root}.u_ce.exec_valid_r") and env._signal_value(f"{root}.u_ce.drain_valid_r"):
 			return
 	raise AssertionError("timeout waiting CE exec/drain overlap")
 

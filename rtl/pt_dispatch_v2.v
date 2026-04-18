@@ -224,7 +224,7 @@ module PT_DISPATCH_V2 #(
 	wire allow_md_issue = malloc_cmd_ready && !malloc_exec_busy;
 	wire allow_malloc_issue = (active_dst_r == ACTIVE_NONE) &&
 	                         malloc_cmd_ready &&
-	                         ((q_out_malloc_kind == `PT_MALLOC_KIND_LOAD)   ? !malloc_serial_busy :
+	                         ((q_out_malloc_kind == `PT_MALLOC_KIND_LOAD)   ? !malloc_exec_busy :
 	                          (q_out_malloc_kind == `PT_MALLOC_KIND_MATMUL) ? !malloc_serial_busy :
 	                                                                          !malloc_exec_busy);
 	wire issue_md = cmd_q_out_valid && q_out_is_md && allow_md_issue && md_cmd_ready;

@@ -231,6 +231,7 @@ module PT_CE_V2 #(
 
 	wire add_send_fire = (add_state_r == ADD_SEND) && gema_in_ready;
 	wire add_res_fire = (add_state_r == ADD_WAIT_RESULT) && add_m_valid;
+	wire add_req_fire = (add_state_r == ADD_REQ) && !m_mem_wr_en;
 	wire selected_m_buf_single_output = cmd_matadd_m_src_buf ? m_buf1_single_output : m_buf0_single_output;
 	wire matadd_mwindow_multitile = incoming_is_matadd && !selected_m_buf_single_output;
 	wire [31:0] drain_m_tile_idx_u32 = {{(32-TILE_IDX_W){1'b0}}, drain_m_tile_idx_r};
@@ -301,8 +302,8 @@ module PT_CE_V2 #(
 	assign gemm_a_valid = mm_exec_rsp_valid;
 	assign gemm_b_valid = mm_exec_rsp_valid;
 	assign a_mem_rd_en  = mm_exec_req_fire;
-	assign b_mem_rd_en  = mm_exec_req_fire || (add_state_r == ADD_REQ);
-	assign exec_m_b_rd_en = (add_state_r == ADD_REQ);
+	assign b_mem_rd_en  = mm_exec_req_fire || add_req_fire;
+	assign exec_m_b_rd_en = add_req_fire;
 	assign quant_m_ready = drain_accept_ready;
 	assign add_m_ready   = (add_state_r == ADD_WAIT_RESULT);
 	assign gema_lhs_data = add_lhs_row_r;
@@ -732,7 +733,9 @@ module PT_CE_V2 #(
 					end
 
 					ADD_REQ: begin
-						add_state_r <= ADD_CAPTURE;
+						if (add_req_fire) begin
+							add_state_r <= ADD_CAPTURE;
+						end
 					end
 
 					ADD_CAPTURE: begin
