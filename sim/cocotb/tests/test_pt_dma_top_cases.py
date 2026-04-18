@@ -7,6 +7,7 @@ from tests.pt_dma_top_env import (
 	ADDR_A_ADDR_LO,
 	ADDR_CMD_INST,
 	ADDR_STATUS,
+	ConstantPattern,
 	STATUS_CMD_OVERFLOW,
 	STATUS_DESC_MISS,
 	STATUS_DESC_OVERFLOW,
@@ -361,7 +362,7 @@ async def test_pt_dma_top_cmd_fifo_overflow_under_dma_backpressure(dut) -> None:
 		env.register_external_matrix("A", ctrl_id, identity_matrix(env.x_dim, env.data_width))
 		env.register_external_matrix("B", ctrl_id, repeating_matrix(env.x_dim, [1, 2, 3, 4][: env.y_dim]))
 
-		env.dut.rd_dma_desc_ready.value = 0
+		env.configure_patterns(dma_req_ready=ConstantPattern(0))
 		for _ in range(12):
 			await env.send_desc_command(
 				build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL),
@@ -376,7 +377,7 @@ async def test_pt_dma_top_cmd_fifo_overflow_under_dma_backpressure(dut) -> None:
 		assert ((await env.axil_read(ADDR_STATUS)) & STATUS_CMD_OVERFLOW) == 0
 
 		await env.soft_clear()
-		env.dut.rd_dma_desc_ready.value = 1
+		env.configure_patterns(dma_req_ready=ConstantPattern(1))
 		recover_id = 0x723
 		await env.send_desc_command(build_cfg_inst(0, 0x7788), recover_id)
 		await env.wait_and_pop_resp(pack_resp(False, 0, recover_id))

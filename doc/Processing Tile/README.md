@@ -59,6 +59,14 @@ For software-facing bring-up that prefers an AXI-Lite mailbox over native `ctrl_
 - `rd_dma_desc_*` for A/B/C read descriptors
 - `wr_dma_desc_*` for M export descriptors
 
+Wrapper validation note:
+
+- `PT_DMA_TOP` now has dedicated functional and performance regressions:
+  - `python3 sim/cocotb/run.py axil --sim icarus`
+  - `python3 sim/cocotb/run.py axil_perf --sim icarus`
+- the wrapper-specific performance note lives in:
+  - [`debug/20260417_pt_dma_top_perf_eval.md`](../../debug/20260417_pt_dma_top_perf_eval.md)
+
 ### 4.2 Width And Streaming Semantics
 
 The top-level stream widths are parameterized:
@@ -223,3 +231,6 @@ After `clear`, stale data may still exist in SRAM physically, but PT must treat 
 - Instruction definitions: [`rtl/param.vh`](../../rtl/param.vh)
 - Quantizer: [`rtl/quant.v`](../../rtl/quant.v)
 - Verification entry: [`sim/cocotb/run.py`](../../sim/cocotb/run.py)
+- Repo-level synthesis sanity entry:
+  - [`scripts/synth_sanity.sh`](../../scripts/synth_sanity.sh)
+  - run with `./scripts/synth_sanity.sh`

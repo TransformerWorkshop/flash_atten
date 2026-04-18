@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 
 import cocotb
 from cocotb.triggers import RisingEdge
@@ -13,6 +14,10 @@ async def _prepare_env(dut):
 	env = await create_env(dut)
 	await setup_bases_and_passthrough_qcfg(env)
 	return env
+
+
+def _is_dma_top() -> bool:
+	return os.getenv("PT_TOPLEVEL", "PT") == "PT_DMA_TOP"
 
 
 def _expected_internal_ctrl_resp_cycles(env) -> int:
@@ -48,7 +53,10 @@ async def _measure_export_req_to_last(env, timeout_cycles: int = 4000) -> int:
 	cycles_since_req = 0
 	while cycles_since_req < timeout_cycles:
 		await RisingEdge(env.dut.clk)
-		req_fire = value_to_int(env.dut.m_dma_req_valid.value) and value_to_int(env.dut.m_dma_req_ready.value)
+		if _is_dma_top():
+			req_fire = value_to_int(env.dut.wr_dma_desc_valid.value) and value_to_int(env.dut.wr_dma_desc_ready.value)
+		else:
+			req_fire = value_to_int(env.dut.m_dma_req_valid.value) and value_to_int(env.dut.m_dma_req_ready.value)
 		beat_fire = value_to_int(env.dut.m_axis_tvalid.value) and value_to_int(env.dut.m_axis_tready.value)
 		if not started:
 			if req_fire:
@@ -85,6 +93,8 @@ async def test_pt_perf_cache_hit_ctrl_resp_scales_with_m_write_lanes(dut) -> Non
 		await env.wait_export_done(2, 20000)
 
 		expected_cycles = frontend_overhead_cycles + _expected_internal_ctrl_resp_cycles(env)
+		if _is_dma_top():
+			expected_cycles += 4
 		assert ctrl_resp_cycles == expected_cycles, (
 			f"cache-hit ctrl_resp cycles mismatch x={env.x_dim} y={env.y_dim} "
 			f"m_write_lanes={env.m_write_lanes}: exp={expected_cycles} got={ctrl_resp_cycles}"
@@ -115,6 +125,8 @@ async def test_pt_perf_cold_miss_ctrl_resp_scales_with_ab_load_lanes(dut) -> Non
 		)
 		internal_cycles = _expected_internal_ctrl_resp_cycles(env)
 		expected_cycles = frontend_overhead_cycles + input_cycles + internal_cycles
+		if _is_dma_top():
+			expected_cycles += 2
 		assert ctrl_resp_cycles == expected_cycles, (
 			f"cold-miss ctrl_resp cycles mismatch x={env.x_dim} y={env.y_dim} "
 			f"a_load_lanes={env.a_load_lanes} b_load_lanes={env.b_load_lanes}: "

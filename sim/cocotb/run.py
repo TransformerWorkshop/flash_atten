@@ -132,7 +132,7 @@ class RunConfig:
 
 def parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(description="Run PT cocotb blackbox regressions")
-	parser.add_argument("suite", choices=["smoke", "full", "randomized", "extended", "ci", "stress", "soak", "coverage", "perf", "axil"])
+	parser.add_argument("suite", choices=["smoke", "full", "randomized", "extended", "ci", "stress", "soak", "coverage", "perf", "axil", "axil_perf"])
 	parser.add_argument("--sim", default=os.getenv("SIM", "icarus"))
 	parser.add_argument("--seed", type=int, default=None, help="Override random seed for the selected suite")
 	parser.add_argument("--waves", action="store_true", default=bool(int(os.getenv("WAVES", "0"))))
@@ -398,6 +398,48 @@ def suite_configs(suite: str, seed_override: Optional[int]) -> List[RunConfig]:
 				test_modules=["tests.test_pt_dma_top_cases"],
 				hdl_toplevel="PT_DMA_TOP",
 				seeds=[default_seed],
+			),
+		]
+
+	if suite == "axil_perf":
+		return [
+			RunConfig(
+				name="axil_perf_legacy_4x4",
+				build_name="axil_perf_legacy_4x4",
+				x_dim=4,
+				y_dim=4,
+				test_modules=["tests.test_pt_dma_top_perf_cases"],
+				hdl_toplevel="PT_DMA_TOP",
+				seeds=[default_seed],
+			),
+			RunConfig(
+				name="axil_perf_legacy_8x8",
+				build_name="axil_perf_legacy_8x8",
+				x_dim=8,
+				y_dim=8,
+				test_modules=["tests.test_pt_dma_top_perf_cases"],
+				hdl_toplevel="PT_DMA_TOP",
+				seeds=[default_seed],
+			),
+			RunConfig(
+				name="axil_perf_wide_8x8",
+				build_name="axil_perf_wide_8x8",
+				x_dim=8,
+				y_dim=8,
+				test_modules=["tests.test_pt_dma_top_perf_cases"],
+				hdl_toplevel="PT_DMA_TOP",
+				seeds=[default_seed],
+				rtl_params={"A_LOAD_LANES": 8, "B_LOAD_LANES": 8, "M_WRITE_LANES": 8, "M_EXPORT_LANES": 8, "M_PHYSICAL_COPIES": 2},
+			),
+			RunConfig(
+				name="axil_perf_current_16x16",
+				build_name="axil_perf_current_16x16",
+				x_dim=16,
+				y_dim=16,
+				test_modules=["tests.test_pt_dma_top_perf_cases"],
+				hdl_toplevel="PT_DMA_TOP",
+				seeds=[default_seed],
+				rtl_params={"A_LOAD_LANES": 16, "B_LOAD_LANES": 16, "M_WRITE_LANES": 16, "M_EXPORT_LANES": 16, "M_PHYSICAL_COPIES": 2},
 			),
 		]
 
@@ -674,6 +716,7 @@ def run_case(sim_name: str, suite_name: str, waves: bool, verbose: bool, config:
 			"PT_X_DIM": str(config.x_dim),
 			"PT_Y_DIM": str(config.y_dim),
 			"PT_DATA_WIDTH": "32",
+			"PT_EXT_ADDR_W": str(params["EXT_ADDR_W"]),
 			"PT_A_BASE": str(0x0000_1000),
 			"PT_B_BASE": str(0x0000_2000),
 			"PT_LUT_DEPTH": str(params["LUT_DEPTH"]),

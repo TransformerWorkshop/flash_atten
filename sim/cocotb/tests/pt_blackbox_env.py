@@ -922,6 +922,9 @@ class PTBlackBoxEnv:
 
 
 async def create_env(dut) -> PTBlackBoxEnv:
+	if os.getenv("PT_TOPLEVEL", "PT") == "PT_DMA_TOP":
+		from tests.pt_dma_top_env import create_env as create_dma_top_env
+		return await create_dma_top_env(dut)
 	seed = env_int("PT_TEST_SEED", 10)
 	case_name = discover_case_name()
 	env = PTBlackBoxEnv(dut, seed=seed, case_name=case_name)

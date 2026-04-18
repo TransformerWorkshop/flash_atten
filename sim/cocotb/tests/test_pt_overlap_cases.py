@@ -26,10 +26,11 @@ async def _warm_cache(env, ctrl_id: int, inst: int) -> None:
 	await env.wait_export_done(1, 20000)
 
 
-async def _wait_ce_overlap(dut, timeout_cycles: int = 4000) -> None:
+async def _wait_ce_overlap(env, timeout_cycles: int = 4000) -> None:
+	root = env._pt_root_prefix()
 	for _ in range(timeout_cycles):
-		await RisingEdge(dut.clk)
-		if value_to_int(dut.u_pt_v2.u_ce.u_ce_v2.exec_valid_r.value) and value_to_int(dut.u_pt_v2.u_ce.u_ce_v2.drain_valid_r.value):
+		await RisingEdge(env.dut.clk)
+		if env._signal_value(f"{root}.u_ce.u_ce_v2.exec_valid_r") and env._signal_value(f"{root}.u_ce.u_ce_v2.drain_valid_r"):
 			return
 	raise AssertionError("timeout waiting CE exec/drain overlap")
 
@@ -53,7 +54,7 @@ async def test_pt_overlap_second_matmul_accepts_before_first_resp(dut) -> None:
 		assert second_trace.wait_cycles >= 1
 		assert not env.ctrl_resp_queue, "second MATMUL should be accepted before first ctrl_resp is observed"
 
-		await _wait_ce_overlap(dut, 4000)
+		await _wait_ce_overlap(env, 4000)
 		await env.wait_ctrl_resp(first_plan.response_word, 12000)
 		await env.wait_ctrl_resp(second_plan.response_word, 12000)
 		await env.wait_export_done(3, 20000)
@@ -111,8 +112,9 @@ async def test_pt_overlap_third_matmul_backpressured_when_no_m_buffer_free(dut) 
 		await env.wait_ctrl_resp(second_plan.response_word, 12000)
 		for _ in range(4):
 			await RisingEdge(dut.clk)
-		assert value_to_int(dut.u_pt_v2.m_alloc_ready.value) == 0, "allocator should report no free M buffer"
-		assert value_to_int(dut.u_pt_v2.u_malloc.state_r.value) == 5, "third MATMUL should stall in PT_MALLOC ST_CE_REQ while waiting for a free M buffer"
+		root = env._pt_root_prefix()
+		assert env._signal_value(f"{root}.m_alloc_ready") == 0, "allocator should report no free M buffer"
+		assert env._signal_value(f"{root}.u_malloc.state_r") == 5, "third MATMUL should stall in PT_MALLOC ST_CE_REQ while waiting for a free M buffer"
 		await env.expect_no_ctrl_resp(8)
 
 		try:
@@ -184,7 +186,7 @@ async def test_pt_overlap_clear_recovers_from_two_inflight_matmuls(dut) -> None:
 
 		await env.send_ctrl(inst, ctrl_id)
 		await env.send_ctrl(inst, ctrl_id)
-		await _wait_ce_overlap(dut, 4000)
+		await _wait_ce_overlap(env, 4000)
 		await env.pulse_clear(phase="overlap_two_matmul")
 		await env.expect_no_ctrl_resp(8)
 

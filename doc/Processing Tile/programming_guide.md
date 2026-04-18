@@ -239,6 +239,40 @@ Two important profiles are used in practice:
   - single-element M writeback/export beats
   - `M_PHYSICAL_COPIES = 3`
 
+### 7.1 `PT_DMA_TOP` Practical Integration Notes
+
+If software talks to [`PT_DMA_TOP`](../../rtl/pt_dma_top.v) rather than native [`PT`](../../rtl/pt.v), the current wrapper behavior has a few practical implications:
+
+- a full descriptor submission currently uses `11` AXI-Lite writes:
+  - `CMD_INST`, `CMD_ID`
+  - `A/B/C/M` low + high address words
+  - `CTRL_DESC_PUSH`
+- in the current `EXT_ADDR_W=32` build profile, the four `*_ADDR_HI` writes are functionally redundant because the wrapper exposes only 32-bit external addresses
+- same-`ctrl_id` pushes update the existing descriptor entry in place, so software can avoid full rewrites when only a subset of the staged fields changed
+- descriptor entries are not retired automatically in the current RTL; measured wrapper tests show the table holds only `8` live IDs before `STATUS_DESC_OVERFLOW` asserts on the ninth unique ID
+- under sustained DMA-side backpressure, wrapper-side command headroom is finite; current tests observe `STATUS_CMD_OVERFLOW` on the tenth repeated push in the standard configuration
+
+Current measured top-level timing facts for the app-style wide `16x16` profile are:
+
+- cold-miss `MATMUL`
+  - `first AXI-Lite write -> resp visible = 123 cycles`
+  - `CTRL_DESC_PUSH -> resp visible = 83 cycles`
+- cache-hit `MATMUL`
+  - full rewrite = `85 cycles`
+  - same-id delta replay = `45 cycles`
+- retained-M `MATADD`
+  - `first AXI-Lite write -> resp visible = 147 cycles`
+  - `CTRL_DESC_PUSH -> resp visible = 107 cycles`
+- export
+  - `wr_dma_desc -> m_axis_tlast = 33 cycles`
+
+Software guidance from these measurements:
+
+- reuse `ctrl_id` aggressively
+- avoid rewriting unchanged descriptor fields
+- when the build is known to use `EXT_ADDR_W=32`, skip redundant `*_ADDR_HI` writes
+- treat AXI-Lite submission cost as a first-order performance term on cache-hit flows, not just a small control-side detail
+
 ## 8. Integration Rules
 
 ### 8.1 Always Safe Rules

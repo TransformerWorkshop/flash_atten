@@ -2,6 +2,8 @@
 
 This document is the canonical verification overview for the current PT black-box cocotb environment.
 
+It also summarizes the separate `PT_DMA_TOP` wrapper-focused suites that validate AXI-Lite staging, descriptor behavior, and wrapper-visible performance. Those wrapper suites are intentionally not strict black-box at the same level as native `PT`; they are allowed to observe wrapper-local handshake points needed for top-level timing quantification.
+
 ## 1. DUT Boundary
 
 - DUT: [`PT`](../../rtl/pt.v)
@@ -27,6 +29,7 @@ Core entry points:
 - Runner: [`sim/cocotb/run.py`](../../sim/cocotb/run.py)
 - Make entry: [`sim/cocotb/Makefile`](../../sim/cocotb/Makefile)
 - Shared environment: [`sim/cocotb/tests/pt_blackbox_env.py`](../../sim/cocotb/tests/pt_blackbox_env.py)
+- Wrapper environment: [`sim/cocotb/tests/pt_dma_top_env.py`](../../sim/cocotb/tests/pt_dma_top_env.py)
 - Reference model: [`sim/cocotb/tests/pt_model.py`](../../sim/cocotb/tests/pt_model.py)
 - Case catalog: [`sim/cocotb/tests/pt_case_catalog.py`](../../sim/cocotb/tests/pt_case_catalog.py)
 
@@ -40,6 +43,7 @@ Compatibility note:
 Environment responsibilities:
 
 - `PTBlackBoxEnv` drives `ctrl_*`, widened A/B stream traffic, DMA ready/error behavior, and M export backpressure
+- `PTDmaTopEnv` drives `s_axil_*`, descriptor-side DMA handshakes, wrapper response pop/flag clear sequences, and wrapper-specific perf timestamps
 - `PTBlackBoxModel` predicts cache behavior, `LOAD` outcomes, `MATMUL`, `MATADD`, export contents, and expected responses from current RTL semantics
 - Monitors validate:
   - `dma_req_kind/id`
@@ -147,6 +151,23 @@ The environment is protocol-aware and validates transport metadata as well as pa
 - Primary file:
   - [`test_pt_coverage_cases.py`](../../sim/cocotb/tests/test_pt_coverage_cases.py)
 
+### 3.11 `PT_DMA_TOP` Wrapper
+
+- AXI-Lite staging register behavior and response-pop flow
+- Descriptor overwrite, miss, overflow, and sticky-flag behavior
+- Wrapper-level queue headroom under DMA-side backpressure
+- Top-level timing measurements for:
+  - `first AXI-Lite write -> resp visible`
+  - `CTRL_DESC_PUSH -> PT accept`
+  - `CTRL_DESC_PUSH -> resp visible`
+  - `rd_dma_desc -> last A/B/C beat accepted`
+  - `wr_dma_desc -> m_axis_tlast`
+  - `wr_dma_desc -> wr_dma_done`
+- Includes legacy `4x4`, legacy `8x8`, wide `8x8`, and current app-style wide `16x16`
+- Primary files:
+  - [`test_pt_dma_top_cases.py`](../../sim/cocotb/tests/test_pt_dma_top_cases.py)
+  - [`test_pt_dma_top_perf_cases.py`](../../sim/cocotb/tests/test_pt_dma_top_perf_cases.py)
+
 The suites are organized by proof objective rather than by RTL file ownership.
 
 ## 4. Behavior-To-Suite Mapping
@@ -161,6 +182,7 @@ The suites are organized by proof objective rather than by RTL file ownership.
 | `MATMUL` numeric correctness | numeric, smoke |
 | `MATADD` chaining and B/C residency interactions | smoke, protocol, backpressure, coverage, ci |
 | Export sideband, ordering, and export error response | smoke, protocol, backpressure, coverage, perf |
+| AXI-Lite wrapper staging, descriptor lifetime, and wrapper-visible timing | axil, axil_perf |
 | No deadlock under backpressure | backpressure, randomized |
 | Recovery after `clear` | state, ci |
 | Illegal top-level parameter configurations | full negative profiles, ci negative profiles |
@@ -216,6 +238,8 @@ The currently revalidated suite matrix is:
 | `smoke` | `2` | `18` | `0` |
 | `stress` | `3` | `33` | `0` |
 | `perf` | `5` | `15` | `0` |
+| `axil` | `2` | `18` | `0` |
+| `axil_perf` | `4` | `16` | `0` |
 | `full` | `23` | `56` | `0` |
 | `randomized` | `20` | `20` | `0` |
 | `ci` | `23` | `63` | `0` |
@@ -262,8 +286,12 @@ python3 sim/cocotb/run.py ci --sim icarus
 python3 sim/cocotb/run.py stress --sim icarus
 python3 sim/cocotb/run.py randomized --sim icarus
 python3 sim/cocotb/run.py perf --sim icarus
+python3 sim/cocotb/run.py axil --sim icarus
+python3 sim/cocotb/run.py axil_perf --sim icarus
 python3 sim/cocotb/run.py coverage --sim verilator
 ```
+
+Wrapper suites are runner-only today; there is no dedicated `make` shortcut for `axil` / `axil_perf` yet.
 
 Expected-fail invalid-config coverage is included in `full` and `ci` through runner-managed profiles. These cover:
 
@@ -287,7 +315,11 @@ Residual risk is concentrated in long-duration randomized behavior and the remai
 ## 9. Related Files
 
 - cocotb environment: [`sim/cocotb/tests/pt_blackbox_env.py`](../../sim/cocotb/tests/pt_blackbox_env.py)
+- wrapper environment: [`sim/cocotb/tests/pt_dma_top_env.py`](../../sim/cocotb/tests/pt_dma_top_env.py)
 - reference model: [`sim/cocotb/tests/pt_model.py`](../../sim/cocotb/tests/pt_model.py)
 - case catalog: [`sim/cocotb/tests/pt_case_catalog.py`](../../sim/cocotb/tests/pt_case_catalog.py)
+- wrapper functional tests: [`sim/cocotb/tests/test_pt_dma_top_cases.py`](../../sim/cocotb/tests/test_pt_dma_top_cases.py)
+- wrapper perf tests: [`sim/cocotb/tests/test_pt_dma_top_perf_cases.py`](../../sim/cocotb/tests/test_pt_dma_top_perf_cases.py)
 - latest coverage report: [`debug/cocotb/PT/coverage_PASS_20260415.md`](../../debug/cocotb/PT/coverage_PASS_20260415.md)
 - performance iteration note: [`debug/20260414_pt_perf_upgrade_eval.md`](../../debug/20260414_pt_perf_upgrade_eval.md)
+- wrapper perf note: [`debug/20260417_pt_dma_top_perf_eval.md`](../../debug/20260417_pt_dma_top_perf_eval.md)
