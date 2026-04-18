@@ -167,22 +167,31 @@ module PT_MD_V2 #(
 	endfunction
 
 // synthesis translate_off
-`ifndef SYNTHESIS
-	initial begin
-		if (!is_pow2(GEMM_X_DIM) || !is_pow2(GEMM_Y_DIM)) begin
-			$fatal(1, "PT_MD_V2 requires power-of-two GEMM_X_DIM/GEMM_Y_DIM, got %0d x %0d", GEMM_X_DIM, GEMM_Y_DIM);
+	`ifndef SYNTHESIS
+		initial begin
+			if (!is_pow2(GEMM_X_DIM) || !is_pow2(GEMM_Y_DIM)) begin
+				$fatal(1, "PT_MD_V2 requires power-of-two GEMM_X_DIM/GEMM_Y_DIM, got %0d x %0d", GEMM_X_DIM, GEMM_Y_DIM);
+			end
+			if ((A_LOAD_LANES <= 0) || (A_LOAD_LANES > GEMM_X_DIM)) begin
+				$fatal(1, "PT_MD_V2 requires 0 < A_LOAD_LANES <= GEMM_X_DIM, got %0d for X=%0d", A_LOAD_LANES, GEMM_X_DIM);
+			end
+			if ((GEMM_X_DIM % A_LOAD_LANES) != 0) begin
+				$fatal(1, "PT_MD_V2 currently requires GEMM_X_DIM %% A_LOAD_LANES == 0, got X=%0d lanes=%0d", GEMM_X_DIM, A_LOAD_LANES);
+			end
+			if ((B_LOAD_LANES <= 0) || (B_LOAD_LANES > GEMM_Y_DIM)) begin
+				$fatal(1, "PT_MD_V2 requires 0 < B_LOAD_LANES <= GEMM_Y_DIM, got %0d for Y=%0d", B_LOAD_LANES, GEMM_Y_DIM);
+			end
+			if ((GEMM_Y_DIM % B_LOAD_LANES) != 0) begin
+				$fatal(1, "PT_MD_V2 currently requires GEMM_Y_DIM %% B_LOAD_LANES == 0, got Y=%0d lanes=%0d", GEMM_Y_DIM, B_LOAD_LANES);
+			end
+			if ((M_EXPORT_LANES <= 0) || (M_EXPORT_LANES > GEMM_Y_DIM)) begin
+				$fatal(1, "PT_MD_V2 requires 0 < M_EXPORT_LANES <= GEMM_Y_DIM, got %0d for Y=%0d", M_EXPORT_LANES, GEMM_Y_DIM);
+			end
+			if ((GEMM_Y_DIM % M_EXPORT_LANES) != 0) begin
+				$fatal(1, "PT_MD_V2 currently requires GEMM_Y_DIM %% M_EXPORT_LANES == 0, got Y=%0d lanes=%0d", GEMM_Y_DIM, M_EXPORT_LANES);
+			end
 		end
-		if ((A_LOAD_LANES <= 0) || (A_LOAD_LANES > GEMM_X_DIM)) begin
-			$fatal(1, "PT_MD_V2 requires 0 < A_LOAD_LANES <= GEMM_X_DIM, got %0d for X=%0d", A_LOAD_LANES, GEMM_X_DIM);
-		end
-		if ((B_LOAD_LANES <= 0) || (B_LOAD_LANES > GEMM_Y_DIM)) begin
-			$fatal(1, "PT_MD_V2 requires 0 < B_LOAD_LANES <= GEMM_Y_DIM, got %0d for Y=%0d", B_LOAD_LANES, GEMM_Y_DIM);
-		end
-		if ((M_EXPORT_LANES <= 0) || (M_EXPORT_LANES > GEMM_Y_DIM)) begin
-			$fatal(1, "PT_MD_V2 requires 0 < M_EXPORT_LANES <= GEMM_Y_DIM, got %0d for Y=%0d", M_EXPORT_LANES, GEMM_Y_DIM);
-		end
-	end
-`endif
+	`endif
 // synthesis translate_on
 
 	assign md_cmd_ready = 1'b1;

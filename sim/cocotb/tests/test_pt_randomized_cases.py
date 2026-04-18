@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 
 import cocotb
+from cocotb.triggers import RisingEdge
 
 from tests.pt_blackbox_env import (
 	AbInjection,
@@ -36,11 +37,30 @@ def _profile_for_env(env):
 	return RANDOMIZED_PROFILE_BY_NAME[profile_name]
 
 
+def _is_dma_top() -> bool:
+	return os.getenv("PT_TOPLEVEL", "PT") == "PT_DMA_TOP"
+
+
 def _make_scales(env, granularity: int, salt: int):
 	payload_count = qcfg_payload_count(granularity, env.x_dim, env.y_dim)
 	assert payload_count is not None
 	base_words = [0x0001_0000, 0x0000_8000, 0xFFFF_0000, 0x0002_0000, 0xFFFF_8000]
 	return [base_words[(salt + idx) % len(base_words)] for idx in range(payload_count)]
+
+
+async def _wait_ctrl_resp_success(env, expected_word: int, ctrl_id: int, timeout_cycles: int = 4000) -> int:
+	if not _is_dma_top():
+		return await env.wait_ctrl_resp(expected_word, timeout_cycles)
+	for _ in range(timeout_cycles):
+		if env.ctrl_resp_queue:
+			actual = env.ctrl_resp_queue.popleft()
+			assert (actual & 0xBFFF_FFFF) == (ctrl_id & 0xFFFF_FFFF), (
+				f"ctrl_resp mismatch exp_id=0x{ctrl_id:08x} got=0x{actual:08x}"
+			)
+			await env.pop_resp()
+			return actual
+		await RisingEdge(env.dut.clk)
+	raise AssertionError(f"ctrl_resp timeout waiting for ctrl_id=0x{ctrl_id:08x}")
 
 
 @cocotb.test()
@@ -52,6 +72,9 @@ async def test_pt_randomized_profile(dut) -> None:
 		soak_mode = bool(int(os.getenv("PT_SOAK_MODE", "0")))
 		clear_interval = int(os.getenv("PT_RANDOM_CLEAR_INTERVAL", "0"))
 		clear_cycles = int(os.getenv("PT_RANDOM_CLEAR_CYCLES", "1"))
+		dma_top_mode = _is_dma_top()
+		if dma_top_mode and clear_interval == 0:
+			clear_interval = 4
 
 		ready_probs = dict(profile.data["ready_probs"])
 		if soak_mode:
@@ -72,6 +95,8 @@ async def test_pt_randomized_profile(dut) -> None:
 			repeating_matrix(env.x_dim, [1, 0, 2, 0, 3, 0, 4, 0][: env.x_dim], env.data_width),
 		]
 		next_ctrl_id = 0x400
+		max_fresh_ctrl_id = 0x403 if dma_top_mode else 0x7FFF_FFFF
+		qcfg_ctrl_id = 0x200
 		export_target = 0
 		cached_ab_ids = set()
 		mwindow_candidates = []
@@ -80,8 +105,10 @@ async def test_pt_randomized_profile(dut) -> None:
 			if clear_interval and case_idx and (case_idx % clear_interval) == 0:
 				await env.pulse_clear(cycles=clear_cycles, phase="post_export")
 				await setup_bases_and_passthrough_qcfg(env)
+				next_ctrl_id = 0x400
 				cached_ab_ids.clear()
 				mwindow_candidates.clear()
+				export_target = env.export_done_count
 
 			choice = _weighted_choice(env.rng, profile.data["weights"])
 			if choice == "hit" and not cached_ab_ids:
@@ -92,12 +119,14 @@ async def test_pt_randomized_profile(dut) -> None:
 			if choice == "qcfg":
 				legal_modes = [mode for mode in range(5) if qcfg_payload_count(mode, env.x_dim, env.y_dim) is not None]
 				granularity = legal_modes[case_idx % len(legal_modes)]
-				await env.qcfg_success(granularity, _make_scales(env, granularity, case_idx), 0x200 + case_idx)
+				await env.qcfg_success(granularity, _make_scales(env, granularity, case_idx), qcfg_ctrl_id if dma_top_mode else (0x200 + case_idx))
 				continue
 
 			if choice in {"legal", "invalid", "wrong_tuser", "export_error"}:
 				ctrl_id = next_ctrl_id
 				next_ctrl_id += 1
+				if next_ctrl_id > max_fresh_ctrl_id:
+					next_ctrl_id = 0x400
 				env.register_external_matrix("A", ctrl_id, identity_matrix(env.x_dim, env.data_width))
 				env.register_external_matrix("B", ctrl_id, patterns[env.rng.randrange(len(patterns))])
 				env.register_external_matrix("C", ctrl_id, patterns[(env.rng.randrange(len(patterns)) + 1) % len(patterns)])
@@ -123,7 +152,7 @@ async def test_pt_randomized_profile(dut) -> None:
 					continue
 				resp = await env.send_ctrl(build_matadd_inst(m_off), ctrl_id)
 				_ = resp
-				actual = await env.wait_ctrl_resp(plan.response_word, 4000)
+				actual = await _wait_ctrl_resp_success(env, plan.response_word, ctrl_id, 4000)
 				export_target += 1
 				await env.wait_export_done(export_target, 12000)
 				new_buffer = (actual >> 30) & 0x1
@@ -142,18 +171,32 @@ async def test_pt_randomized_profile(dut) -> None:
 				env.queue_ab_injection(AbInjection(wrong_tuser=True))
 				await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL), ctrl_id)
 				await env.wait_ctrl_resp(pack_resp(True, 0, ctrl_id), 4000)
+				if dma_top_mode:
+					await env.soft_clear()
+					await setup_bases_and_passthrough_qcfg(env)
+					next_ctrl_id = 0x400
+					cached_ab_ids.clear()
+					mwindow_candidates.clear()
+					export_target = env.export_done_count
 				continue
 
 			if choice == "export_error":
 				env.queue_export_injection(ExportInjection(error=True, done_delay=1))
 				await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL), ctrl_id)
-				await env.wait_ctrl_resp(plan.response_word, 4000)
+				await _wait_ctrl_resp_success(env, plan.response_word, ctrl_id, 4000)
 				await env.wait_export_error(env.export_error_count + 1, 12000)
 				await env.wait_ctrl_resp(pack_resp(True, plan.success_buffer or 0, ctrl_id), 4000)
+				if dma_top_mode:
+					await env.soft_clear()
+					await setup_bases_and_passthrough_qcfg(env)
+					next_ctrl_id = 0x400
+					cached_ab_ids.clear()
+					mwindow_candidates.clear()
+					export_target = env.export_done_count
 				continue
 
 			await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL), ctrl_id)
-			resp = await env.wait_ctrl_resp(plan.response_word, 4000)
+			resp = await _wait_ctrl_resp_success(env, plan.response_word, ctrl_id, 4000)
 			export_target += 1
 			await env.wait_export_done(export_target, 12000)
 			cached_ab_ids.add(ctrl_id)

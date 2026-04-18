@@ -6,7 +6,17 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from . import INV_SCALE_WORD, PT_PARAMS, ProblemSpec, TILE_DIM, default_metrics_path
+from . import (
+	APP_TARGET_PT_DMA_TOP,
+	DEFAULT_APP_TARGET,
+	INV_SCALE_WORD,
+	PT_PARAMS,
+	ProblemSpec,
+	TILE_DIM,
+	app_target_label,
+	default_metrics_path,
+	normalize_app_target,
+)
 from .perf_adapter import load_perf_baselines
 
 
@@ -117,6 +127,8 @@ class UnsupportedPath:
 
 @dataclass
 class Recommendation:
+	target: str
+	target_label: str
 	problem_definition: Dict[str, Any]
 	notation: str
 	pt_tile_shape: str
@@ -134,6 +146,8 @@ class Recommendation:
 
 	def to_dict(self) -> Dict[str, Any]:
 		return {
+			"target": self.target,
+			"target_label": self.target_label,
 			"problem_definition": self.problem_definition,
 			"notation": self.notation,
 			"pt_tile_shape": self.pt_tile_shape,
@@ -341,9 +355,16 @@ def _lookup_metric(payloads: Dict[str, Any], keys: Sequence[str]) -> Optional[Di
 	return None
 
 
-def build_recommendation(problem: ProblemSpec, metrics_path: Optional[Path] = None, verify_metrics: Optional[Dict[str, Any]] = None) -> Recommendation:
+def build_recommendation(
+	problem: ProblemSpec,
+	metrics_path: Optional[Path] = None,
+	verify_metrics: Optional[Dict[str, Any]] = None,
+	target: str = DEFAULT_APP_TARGET,
+) -> Recommendation:
 	problem.validate()
-	active_metrics_path = metrics_path or default_metrics_path(problem)
+	normalized_target = normalize_app_target(target)
+	target_label = app_target_label(normalized_target)
+	active_metrics_path = metrics_path or default_metrics_path(problem, normalized_target)
 	metrics = verify_metrics or load_verify_metrics(active_metrics_path)
 
 	candidates = _build_candidates(problem)
@@ -383,18 +404,25 @@ def build_recommendation(problem: ProblemSpec, metrics_path: Optional[Path] = No
 	}
 	notes = [
 		f"问题定义：A={problem.m_dim}x{problem.k_dim}，B={problem.k_dim}x{problem.n_dim}，C={problem.m_dim}x{problem.n_dim}。",
+		f"当前 app target = {target_label}。",
 		f"当前 PT primitive 固定为 {TILE_DIM}x{TILE_DIM}x{TILE_DIM} full-tile MATMUL。",
 		f"因此完整问题会被分解成 M_tiles * K_tiles * N_tiles = {problem.partial_matmuls} 次 partial GEMM。",
 		f"默认 per_tensor inverse scale 固定为 0x{INV_SCALE_WORD:08x}。",
 	]
+	if normalized_target == APP_TARGET_PT_DMA_TOP:
+		notes.append("该 target 会经过 AXI-Lite CSR + DMA descriptor wrapper，再驱动内部 PT datapath。")
 	if ranking_source == "measured":
 		notes.append(f"当前 winner 基于 `{active_metrics_path}` 中的实测结果排序。")
 	elif ranking_source == "mixed":
 		notes.append(f"当前 winner 基于 `{active_metrics_path}` 中的部分实测结果与 fallback estimate 混合排序。")
 	else:
 		notes.append("当前 winner 基于 app 内的 fallback estimate 排序。")
+	if normalized_target == APP_TARGET_PT_DMA_TOP and ranking_source != "measured":
+		notes.append("当前 fallback estimate 仍主要基于 native PT datapath，不显式计入 wrapper AXI-Lite / descriptor 开销。")
 
 	return Recommendation(
+		target=normalized_target,
+		target_label=target_label,
 		problem_definition=problem.shape,
 		notation=problem.notation,
 		pt_tile_shape=f"{PT_PARAMS['GEMM_X_DIM']}x{PT_PARAMS['GEMM_Y_DIM']} full-tile MATMUL",
@@ -444,6 +472,7 @@ def render_text(recommendation: Recommendation) -> str:
 			["A", f"{recommendation.problem_definition['A'][0]}x{recommendation.problem_definition['A'][1]}"],
 			["B", f"{recommendation.problem_definition['B'][0]}x{recommendation.problem_definition['B'][1]}"],
 			["C", f"{recommendation.problem_definition['C'][0]}x{recommendation.problem_definition['C'][1]}"],
+			["App target", recommendation.target_label],
 			["Notation", recommendation.notation],
 			["PT primitive", recommendation.pt_tile_shape],
 			["per_tensor inv_scale", recommendation.per_tensor_inv_scale],
@@ -526,12 +555,13 @@ def render_text(recommendation: Recommendation) -> str:
 
 def build_report_markdown(recommendation: Recommendation, verify_summary: Optional[Dict[str, Any]]) -> str:
 	lines = [
-		f"# PT Application Report ({recommendation.notation})",
+		f"# PT Application Report ({recommendation.notation}, target={recommendation.target_label})",
 		"",
 		"## Corrected Shape / Notation",
 		f"- A = {recommendation.problem_definition['A'][0]}x{recommendation.problem_definition['A'][1]}",
 		f"- B = {recommendation.problem_definition['B'][0]}x{recommendation.problem_definition['B'][1]}",
 		f"- C = {recommendation.problem_definition['C'][0]}x{recommendation.problem_definition['C'][1]}",
+		f"- App target: `{recommendation.target_label}`",
 		f"- Notation: `{recommendation.notation}`",
 		f"- PT primitive: `{recommendation.pt_tile_shape}`",
 		f"- per_tensor inverse scale: `{recommendation.per_tensor_inv_scale}`",
@@ -643,6 +673,9 @@ def build_report_markdown(recommendation: Recommendation, verify_summary: Option
 		lines.append("- 本次 report 未执行 verify，排序使用 fallback estimate。")
 	else:
 		lines.append(f"- success: {verify_summary.get('success')}")
+		target = verify_summary.get("target")
+		if target:
+			lines.append(f"- target: `{app_target_label(str(target))}`")
 		lines.append(f"- simulator: `{verify_summary.get('simulator', 'unknown')}`")
 		lines.append(f"- tests: {verify_summary.get('tests', 0)}")
 		lines.append(f"- failures: {verify_summary.get('failures', 0)}")

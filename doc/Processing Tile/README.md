@@ -21,8 +21,8 @@ PT accepts tile-level control commands, fetches operand tiles A and B on demand,
 
 | Module | Role | Current behavior |
 | --- | --- | --- |
-| [`PT`](../../rtl/pt.v) | Public top-level wrapper | Exposes the native PT control interface plus A/B load and M export DMA/stream ports |
-| [`PT_DMA_TOP`](../../rtl/pt_dma_top.v) | AXI-Lite + DMA descriptor wrapper | Wraps `PT` with AXI-Lite staging registers, command/response FIFOs, and external read/write DMA descriptor ports while keeping the existing PT data streams |
+| [`PT`](../../rtl/pt.v) | Native datapath-facing top | Exposes the native PT control interface plus A/B load and M export DMA/stream ports; now kept primarily as an explicit control/reference path |
+| [`PT_DMA_TOP`](../../rtl/pt_dma_top.v) | Default software-facing wrapper top | Wraps `PT` with AXI-Lite staging registers, command/response FIFOs, and external read/write DMA descriptor ports while keeping the existing PT data streams |
 | [`PT_V2`](../../rtl/pt_top_v2.v) | Canonical assembled implementation | Connects dispatch, allocation, memory/control execution, compute, storage, and response merge |
 | [`PT_DISPATCH`](../../rtl/pt_dispatch.v) | Front-end dispatch | Owns `ctrl_*` ingress, command classification, ordering, and QCFG barrier handling |
 | [`PT_MALLOC`](../../rtl/pt_malloc.v) | Residency and allocation control | Tracks A/B cache entries by `ctrl_id`, allocates local buffer space, and issues fill/compute work |
@@ -64,8 +64,19 @@ Wrapper validation note:
 - `PT_DMA_TOP` now has dedicated functional and performance regressions:
   - `python3 sim/cocotb/run.py axil --sim icarus`
   - `python3 sim/cocotb/run.py axil_perf --sim icarus`
+- The main cocotb entrypoint now defaults to `PT_DMA_TOP` for:
+  - `smoke`
+  - `full`
+  - `ci`
+  - `stress`
+  - `randomized`
+  - `perf`
+- Native `PT` is still available explicitly through:
+  - `python3 sim/cocotb/run.py smoke --sim icarus --target pt`
+  - `python3 sim/cocotb/run.py perf --sim icarus --target pt`
 - the wrapper-specific performance note lives in:
   - [`debug/20260417_pt_dma_top_perf_eval.md`](../../debug/20260417_pt_dma_top_perf_eval.md)
+  - [`debug/20260418_pt_dma_top_mainline_rebase.md`](../../debug/20260418_pt_dma_top_mainline_rebase.md)
 
 ### 4.2 Width And Streaming Semantics
 
@@ -134,7 +145,16 @@ Legal builds must satisfy:
 - `0 < B_LOAD_LANES <= GEMM_Y_DIM`
 - `0 < M_WRITE_LANES <= GEMM_Y_DIM`
 - `0 < M_EXPORT_LANES <= GEMM_Y_DIM`
+- `GEMM_X_DIM % A_LOAD_LANES == 0`
+- `GEMM_Y_DIM % B_LOAD_LANES == 0`
+- `GEMM_Y_DIM % M_WRITE_LANES == 0`
+- `GEMM_Y_DIM % M_EXPORT_LANES == 0`
 - `M_PHYSICAL_COPIES in {2, 3}`
+
+Additional note from the `2026-04-18` coverage/debug refresh:
+
+- non-divisor `A_LOAD_LANES / B_LOAD_LANES / M_WRITE_LANES / M_EXPORT_LANES` are no longer treated as supported build points
+- chunked configurations must use divisor lane counts
 
 ## 6. Current Execution Model
 
@@ -234,3 +254,7 @@ After `clear`, stale data may still exist in SRAM physically, but PT must treat 
 - Repo-level synthesis sanity entry:
   - [`scripts/synth_sanity.sh`](../../scripts/synth_sanity.sh)
   - run with `./scripts/synth_sanity.sh`
+- Latest wrapper-mainline rebase note:
+  - [`debug/20260418_pt_dma_top_mainline_rebase.md`](../../debug/20260418_pt_dma_top_mainline_rebase.md)
+- Latest DC refresh status:
+  - [`debug/20260418_dc_compile_refresh_blocked.md`](../../debug/20260418_dc_compile_refresh_blocked.md)

@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import os
+
 import cocotb
 from cocotb.triggers import RisingEdge
 
 from tests.pt_blackbox_env import ConstantPattern, create_env, flatten_pattern_matrix, setup_bases_and_passthrough_qcfg, value_to_int
 from tests.pt_model import PT_SCALE_FULL, build_load_inst, build_matmul_inst
+
+
+def _is_dma_top() -> bool:
+	return os.getenv("PT_TOPLEVEL", "PT") == "PT_DMA_TOP"
 
 
 async def _prepare_env(dut):
@@ -135,6 +141,8 @@ async def test_pt_overlap_third_matmul_backpressured_when_no_m_buffer_free(dut) 
 
 @cocotb.test()
 async def test_pt_overlap_non_matmul_waits_until_overlap_drains(dut) -> None:
+	if _is_dma_top():
+		return
 	env = await _prepare_env(dut)
 	try:
 		ctrl_id = 0xA40

@@ -17,8 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 if str(COCOTB_ROOT) not in sys.path:
 	sys.path.insert(0, str(COCOTB_ROOT))
 
-from app.pt_tiled_gemm import ProblemSpec, TILE_DIM
-from tests.pt_blackbox_env import create_env, setup_bases_and_passthrough_qcfg
+from app.pt_tiled_gemm import ProblemSpec, TILE_DIM, app_target_label, normalize_app_target
 from tests.pt_model import (
 	PT_SCALE_FULL,
 	build_load_inst,
@@ -28,6 +27,12 @@ from tests.pt_model import (
 	matmul_row_major,
 	to_unsigned,
 )
+
+APP_TARGET = normalize_app_target(os.getenv("PT_APP_TARGET", "pt"))
+if APP_TARGET == "pt_dma_top":
+	from tests.pt_dma_top_env import create_env, setup_bases_and_passthrough_qcfg
+else:
+	from tests.pt_blackbox_env import create_env, setup_bases_and_passthrough_qcfg
 
 
 CLK_PERIOD_NS = 10
@@ -161,6 +166,8 @@ async def prepare_env(env) -> Tuple[List[int], List[int], List[int]]:
 		"metadata",
 		"problem",
 		{
+			"target": APP_TARGET,
+			"target_label": app_target_label(APP_TARGET),
 			"m_dim": PROBLEM.m_dim,
 			"k_dim": PROBLEM.k_dim,
 			"n_dim": PROBLEM.n_dim,

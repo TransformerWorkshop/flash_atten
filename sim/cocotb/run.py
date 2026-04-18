@@ -6,7 +6,7 @@ import os
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import List, Mapping, Optional
 
@@ -36,6 +36,9 @@ DEFAULT_SEED = 10
 DEFAULT_A_BANK_DEPTH = 16
 DEFAULT_B_BANK_DEPTH = 16
 DEFAULT_M_BANK_DEPTH = 16
+APP_TARGET_PT = "pt"
+APP_TARGET_PT_DMA_TOP = "pt_dma_top"
+DEFAULT_RUN_TARGET = APP_TARGET_PT_DMA_TOP
 EXTENDED_SEEDS = [10, 110, 210]
 SOAK_RANDOM_CASES = 100
 DEFAULT_RANDOMIZED_PROFILE_NAMES = [
@@ -110,6 +113,7 @@ COVERAGE_EXTRA_MODULES = [
 LEGACY_COVERAGE_MODULES = [
 	"tests.test_pt_legacy_core_cases",
 ]
+WRAPPER_ONLY_SUITES = {"axil", "axil_perf"}
 
 
 @dataclass(frozen=True)
@@ -134,6 +138,7 @@ def parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(description="Run PT cocotb blackbox regressions")
 	parser.add_argument("suite", choices=["smoke", "full", "randomized", "extended", "ci", "stress", "soak", "coverage", "perf", "axil", "axil_perf"])
 	parser.add_argument("--sim", default=os.getenv("SIM", "icarus"))
+	parser.add_argument("--target", default=os.getenv("TARGET", DEFAULT_RUN_TARGET), help="Regression target: pt or pt_dma_top")
 	parser.add_argument("--seed", type=int, default=None, help="Override random seed for the selected suite")
 	parser.add_argument("--waves", action="store_true", default=bool(int(os.getenv("WAVES", "0"))))
 	parser.add_argument("--verbose", action="store_true", default=False)
@@ -149,6 +154,52 @@ def normalize_sim_name(sim_name: str) -> str:
 	if name == "verilator":
 		return "verilator"
 	return name
+
+
+def normalize_target(target: str) -> str:
+	name = target.strip().lower()
+	alias_map = {
+		"pt": APP_TARGET_PT,
+		"native": APP_TARGET_PT,
+		"pt_dma_top": APP_TARGET_PT_DMA_TOP,
+		"pt-dma-top": APP_TARGET_PT_DMA_TOP,
+		"dma_top": APP_TARGET_PT_DMA_TOP,
+		"wrapper": APP_TARGET_PT_DMA_TOP,
+	}
+	try:
+		return alias_map[name]
+	except KeyError as exc:
+		raise SystemExit(f"unsupported target {target!r}; expected one of: pt, pt_dma_top") from exc
+
+
+def hdl_toplevel_for_target(target: str) -> str:
+	normalized_target = normalize_target(target)
+	if normalized_target == APP_TARGET_PT:
+		return "PT"
+	return "PT_DMA_TOP"
+
+
+def config_suffix_for_target(target: str) -> str:
+	normalized_target = normalize_target(target)
+	return "" if normalized_target == DEFAULT_RUN_TARGET else f"_{normalized_target}"
+
+
+def apply_target_to_config(config: RunConfig, target: str) -> RunConfig:
+	normalized_target = normalize_target(target)
+	default_toplevel = hdl_toplevel_for_target(normalized_target)
+	if config.hdl_toplevel == "PT_DMA_TOP":
+		if normalized_target != APP_TARGET_PT_DMA_TOP:
+			raise SystemExit(f"suite {config.name!r} is wrapper-only and does not support --target {normalized_target}")
+		return config
+	if default_toplevel == config.hdl_toplevel:
+		return config
+	suffix = config_suffix_for_target(normalized_target)
+	return replace(
+		config,
+		name=f"{config.name}{suffix}",
+		build_name=None if config.build_name is None else f"{config.build_name}{suffix}",
+		hdl_toplevel=default_toplevel,
+	)
 
 
 def rtl_sources() -> List[Path]:
@@ -239,20 +290,23 @@ def _full_like_configs(prefix: str, seed_override: Optional[int], include_stress
 	]
 
 
-def suite_configs(suite: str, seed_override: Optional[int]) -> List[RunConfig]:
+def suite_configs(suite: str, seed_override: Optional[int], target: str) -> List[RunConfig]:
+	normalized_target = normalize_target(target)
 	default_seed = seed_override_or_default(seed_override)
+	configs: List[RunConfig]
 
 	if suite == "smoke":
-		return [
+		configs = [
 			RunConfig(name="smoke_4x4", x_dim=4, y_dim=4, test_modules=["tests.test_pt_smoke_cases", "tests.test_pt_load_cases", "tests.test_pt_multik_cases"], seeds=[default_seed]),
 			RunConfig(name="smoke_8x8", x_dim=8, y_dim=8, test_modules=["tests.test_pt_smoke_cases", "tests.test_pt_load_cases", "tests.test_pt_multik_cases"], seeds=[default_seed]),
 		]
+		return [apply_target_to_config(config, normalized_target) for config in configs]
 
 	if suite == "full":
-		return _full_like_configs("full", seed_override, include_stress=False)
+		return [apply_target_to_config(config, normalized_target) for config in _full_like_configs("full", seed_override, include_stress=False)]
 
 	if suite == "ci":
-		return _full_like_configs("ci", seed_override, include_stress=True)
+		return [apply_target_to_config(config, normalized_target) for config in _full_like_configs("ci", seed_override, include_stress=True)]
 
 	if suite == "randomized":
 		configs = []
@@ -272,7 +326,7 @@ def suite_configs(suite: str, seed_override: Optional[int]) -> List[RunConfig]:
 					extra_env={"PT_RANDOM_PROFILE": profile.profile},
 				)
 			)
-		return configs
+		return [apply_target_to_config(config, normalized_target) for config in configs]
 
 	if suite == "extended":
 		configs = []
@@ -292,7 +346,7 @@ def suite_configs(suite: str, seed_override: Optional[int]) -> List[RunConfig]:
 					extra_env={"PT_RANDOM_PROFILE": profile.profile},
 				)
 			)
-		return configs
+		return [apply_target_to_config(config, normalized_target) for config in configs]
 
 	if suite == "soak":
 		configs = []
@@ -317,10 +371,10 @@ def suite_configs(suite: str, seed_override: Optional[int]) -> List[RunConfig]:
 					},
 				)
 			)
-		return configs
+		return [apply_target_to_config(config, normalized_target) for config in configs]
 
 	if suite == "stress":
-		return [
+		configs = [
 			RunConfig(name="stress_4x4", x_dim=4, y_dim=4, test_modules=STRESS_MODULES, seeds=[default_seed]),
 			RunConfig(name="stress_8x8", x_dim=8, y_dim=8, test_modules=STRESS_MODULES, seeds=[default_seed]),
 			RunConfig(
@@ -333,9 +387,10 @@ def suite_configs(suite: str, seed_override: Optional[int]) -> List[RunConfig]:
 				rtl_params={"A_LOAD_LANES": 16, "B_LOAD_LANES": 16, "M_WRITE_LANES": 16, "M_EXPORT_LANES": 16, "M_PHYSICAL_COPIES": 2},
 			),
 		]
+		return [apply_target_to_config(config, normalized_target) for config in configs]
 
 	if suite == "perf":
-		return [
+		configs = [
 			RunConfig(
 				name="perf_legacy_4x4",
 				x_dim=4,
@@ -378,8 +433,11 @@ def suite_configs(suite: str, seed_override: Optional[int]) -> List[RunConfig]:
 				rtl_params={"A_LOAD_LANES": 16, "B_LOAD_LANES": 16, "M_WRITE_LANES": 16, "M_EXPORT_LANES": 16, "M_PHYSICAL_COPIES": 2},
 			),
 		]
+		return [apply_target_to_config(config, normalized_target) for config in configs]
 
 	if suite == "axil":
+		if normalized_target != APP_TARGET_PT_DMA_TOP:
+			raise SystemExit("suite 'axil' is wrapper-only; use --target pt_dma_top")
 		return [
 			RunConfig(
 				name="axil_pt_dma_top_4x4",
@@ -402,6 +460,8 @@ def suite_configs(suite: str, seed_override: Optional[int]) -> List[RunConfig]:
 		]
 
 	if suite == "axil_perf":
+		if normalized_target != APP_TARGET_PT_DMA_TOP:
+			raise SystemExit("suite 'axil_perf' is wrapper-only; use --target pt_dma_top")
 		return [
 			RunConfig(
 				name="axil_perf_legacy_4x4",
@@ -443,7 +503,7 @@ def suite_configs(suite: str, seed_override: Optional[int]) -> List[RunConfig]:
 			),
 		]
 
-	return [
+	configs = [
 		RunConfig(
 			name="coverage_core_4x4",
 			build_name="coverage_dim4_core",
@@ -461,7 +521,7 @@ def suite_configs(suite: str, seed_override: Optional[int]) -> List[RunConfig]:
 			y_dim=4,
 			test_modules=["tests.test_pt_coverage_cases"],
 			seeds=[default_seed],
-			rtl_params={"A_LOAD_LANES": 4, "B_LOAD_LANES": 4, "M_WRITE_LANES": 4, "M_EXPORT_LANES": 4, "M_PHYSICAL_COPIES": 2},
+			rtl_params={"A_LOAD_LANES": 2, "B_LOAD_LANES": 2, "M_WRITE_LANES": 2, "M_EXPORT_LANES": 2, "M_PHYSICAL_COPIES": 2},
 			build_args=["--coverage", "--assert"],
 			enable_coverage=True,
 		),
@@ -482,11 +542,12 @@ def suite_configs(suite: str, seed_override: Optional[int]) -> List[RunConfig]:
 			y_dim=8,
 			test_modules=["tests.test_pt_coverage_cases"],
 			seeds=[default_seed],
-			rtl_params={"A_LOAD_LANES": 8, "B_LOAD_LANES": 8, "M_WRITE_LANES": 8, "M_EXPORT_LANES": 8, "M_PHYSICAL_COPIES": 2},
+			rtl_params={"A_LOAD_LANES": 4, "B_LOAD_LANES": 4, "M_WRITE_LANES": 4, "M_EXPORT_LANES": 4, "M_PHYSICAL_COPIES": 2},
 			build_args=["--coverage", "--assert"],
 			enable_coverage=True,
 		),
 	]
+	return [apply_target_to_config(config, normalized_target) for config in configs]
 
 
 def safe_read_text(path: Path) -> str:
@@ -786,13 +847,16 @@ def ensure_dirs() -> None:
 
 def main() -> None:
 	args = parse_args()
+	target = normalize_target(args.target)
+	if args.suite == "coverage":
+		target = APP_TARGET_PT
 	ensure_dirs()
 	staged_fragment_root = COVERAGE_ROOT / ".fragments" / sanitize_name(args.suite)
 	if staged_fragment_root.exists():
 		shutil.rmtree(staged_fragment_root)
 	all_coverage_files: List[Path] = []
 	all_functional_files: List[Path] = []
-	for config in suite_configs(args.suite, args.seed):
+	for config in suite_configs(args.suite, args.seed, target):
 		coverage_files, functional_files = run_case(args.sim, args.suite, args.waves, args.verbose, config)
 		all_coverage_files.extend(coverage_files)
 		all_functional_files.extend(functional_files)

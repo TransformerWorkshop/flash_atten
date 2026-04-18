@@ -18,8 +18,10 @@
 
 - `recommend`
   - 对任意合法 `M/K/N` 输出 tiled 分解和算法推荐
+  - 支持按 `--target` 读取 native `PT` 或 `PT_DMA_TOP` 的实测 metrics
 - `verify`
   - 运行 app 本地 cocotb tests，验证该 `M/K/N` 的 tiled 流程
+  - 支持 `PT` 和 `PT_DMA_TOP` 两个 target；默认现在是 `PT_DMA_TOP`
 - `report`
   - 生成 Markdown 报告，并把 verify 的 measured 数据回灌到推荐结果
 
@@ -28,36 +30,50 @@
 推荐算法：
 
 ```bash
+python3 app/pt_tiled_gemm/run.py recommend --m 16 --k 32 --n 16
 python3 app/pt_tiled_gemm/run.py recommend --m 16 --k 64 --n 16
-python3 app/pt_tiled_gemm/run.py recommend --m 32 --k 32 --n 16
 python3 app/pt_tiled_gemm/run.py recommend --m 32 --k 64 --n 32 --json
+python3 app/pt_tiled_gemm/run.py recommend --m 16 --k 64 --n 16 --target pt
 ```
 
 运行验证：
 
 ```bash
-python3 app/pt_tiled_gemm/run.py verify --m 16 --k 64 --n 16 --sim icarus
 python3 app/pt_tiled_gemm/run.py verify --m 16 --k 32 --n 16 --sim icarus
-python3 app/pt_tiled_gemm/run.py verify --m 32 --k 32 --n 16 --sim verilator
+python3 app/pt_tiled_gemm/run.py verify --m 16 --k 64 --n 16 --sim icarus
+python3 app/pt_tiled_gemm/run.py verify --m 32 --k 16 --n 32 --sim icarus
+python3 app/pt_tiled_gemm/run.py verify --m 16 --k 16 --n 16 --sim icarus --target pt
 ```
 
 生成报告：
 
 ```bash
+python3 app/pt_tiled_gemm/run.py report --m 16 --k 32 --n 16 --sim icarus
 python3 app/pt_tiled_gemm/run.py report --m 16 --k 64 --n 16 --sim icarus
-python3 app/pt_tiled_gemm/run.py report --m 32 --k 32 --n 16 --sim icarus
+python3 app/pt_tiled_gemm/run.py report --m 16 --k 16 --n 16 --sim icarus --target pt
 ```
+
+target 说明：
+
+- `--target pt`
+  - 直接对 native top-level `PT` 跑 app verify
+- `--target pt_dma_top`
+  - 对 AXI-Lite + DMA descriptor wrapper `PT_DMA_TOP` 跑同一套 app-level verify
+- 默认 target 是 `pt_dma_top`
 
 ## 默认输出
 
-不同 shape 会写到不同文件，避免互相覆盖：
+不同 shape / target 会写到不同文件，避免互相覆盖：
 
 - metrics
-  - `app/pt_tiled_gemm/out/verify_metrics_m<M>_k<K>_n<N>.json`
+  - 默认 `PT_DMA_TOP`: `app/pt_tiled_gemm/out/verify_metrics_pt_dma_top_m<M>_k<K>_n<N>.json`
+  - 显式 `--target pt`: `app/pt_tiled_gemm/out/verify_metrics_m<M>_k<K>_n<N>.json`
 - report
-  - `app/pt_tiled_gemm/out/report_m<M>_k<K>_n<N>.md`
+  - 默认 `PT_DMA_TOP`: `app/pt_tiled_gemm/out/report_pt_dma_top_m<M>_k<K>_n<N>.md`
+  - 显式 `--target pt`: `app/pt_tiled_gemm/out/report_m<M>_k<K>_n<N>.md`
 - cocotb build/logs/results
-  - `app/pt_tiled_gemm/out/cocotb/m<M>_k<K>_n<N>/...`
+  - 默认 `PT_DMA_TOP`: `app/pt_tiled_gemm/out/cocotb/pt_dma_top/m<M>_k<K>_n<N>/...`
+  - 显式 `--target pt`: `app/pt_tiled_gemm/out/cocotb/m<M>_k<K>_n<N>/...`
 
 ## 候选算法
 
@@ -95,7 +111,29 @@ python3 app/pt_tiled_gemm/run.py report --m 32 --k 32 --n 16 --sim icarus
 
 ## 最近一次回归结果
 
-最近一次完整回归基线仍是 `2026-04-15`，覆盖了基础功能、压力、随机、扩展、性能、coverage 和 app 级 verify。
+`2026-04-18` 对 app 和 cocotb 主线做了一次 wrapper-oriented 重跑：
+
+- app 默认 target 现已切到 `PT_DMA_TOP`
+- native `PT` 仅保留显式对照入口
+- 详细说明见：
+  - `debug/20260418_pt_dma_top_mainline_rebase.md`
+
+### 2026-04-18 App Verify
+
+| Flow | Simulator | Result | Notes / Artifacts |
+| --- | --- | --- | --- |
+| `app verify m16_k32_n16` | `icarus` | `PASS` | 默认 `PT_DMA_TOP`，`5/5` 通过；见 `verify_metrics_pt_dma_top_m16_k32_n16.json` |
+| `app verify m16_k64_n16` | `icarus` | `FAIL` | 默认 `PT_DMA_TOP`，`3/5` 通过；`pt ctrl accept id=0x00000e02` 超时 |
+| `app verify m16_k16_n16` | `icarus` | `PASS` | 默认 `PT_DMA_TOP`，`5/5` 通过；见 `verify_metrics_pt_dma_top_m16_k16_n16.json` |
+| `app verify m32_k16_n32` | `icarus` | `PASS` | 默认 `PT_DMA_TOP`，`5/5` 通过；见 `verify_metrics_pt_dma_top_m32_k16_n32.json` |
+| `app verify m32_k32_n32` | `icarus` | `FAIL` | 默认 `PT_DMA_TOP`，`1/5` 通过；较大 tiled flow 命中 `pt ctrl accept` 超时 |
+| `app verify m48_k32_n32` | `icarus` | `FAIL` | 默认 `PT_DMA_TOP`，`1/5` 通过；较大 tiled flow 命中 `pt ctrl accept` 超时 |
+| `app verify m16_k16_n16 --target pt` | `icarus` | `PASS` | native 对照，`5/5` 通过 |
+| `app verify m16_k64_n16 --target pt` | `icarus` | `PASS` | native 对照，`5/5` 通过 |
+
+### Earlier Native Baseline
+
+最近一次完整 native 基线仍是 `2026-04-15/2026-04-16`，覆盖了基础功能、压力、随机、扩展、性能、coverage 和 app 级 verify。
 
 在此基础上，`2026-04-16` 又补跑了：
 

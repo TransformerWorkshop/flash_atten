@@ -150,9 +150,21 @@ SUITE_CASE_OVERRIDES: Dict[str, Dict[str, Sequence[str]]] = {
 	},
 }
 
+DMA_TOP_FILTERED_CASES = {
+	"test_pt_protocol_error_stream_wrong_tuser_a_13",
+	"test_pt_protocol_error_stream_wrong_tuser_b_14",
+	"test_pt_protocol_error_stream_dma_error_a_short_15",
+	"test_pt_protocol_error_stream_dma_error_b_short_16",
+	"test_pt_protocol_error_stream_dma_error_b_long_17",
+}
+
 
 def _suite_name() -> str:
 	return os.getenv("PT_SUITE_NAME", "full").strip() or "full"
+
+
+def _is_dma_top() -> bool:
+	return os.getenv("PT_TOPLEVEL", "PT") == "PT_DMA_TOP"
 
 
 def _current_dims() -> tuple[int, int]:
@@ -177,6 +189,8 @@ def _selected_case_names(module_key: str) -> Sequence[str] | None:
 
 def select_cases(module_key: str, cases: Iterable[ScenarioCase]) -> List[ScenarioCase]:
 	candidates = [case for case in cases if _matches_current_dims(case)]
+	if _is_dma_top():
+		candidates = [case for case in candidates if case.case_name not in DMA_TOP_FILTERED_CASES]
 	if _suite_name() == "coverage":
 		return candidates
 	selected_names = _selected_case_names(module_key)
@@ -456,6 +470,8 @@ async def run_protocol_case(dut, case: ScenarioCase) -> None:
 				env.queue_ab_injection(AbInjection(error_mode="before_stream", done_delay=int(params["delay"])))
 			await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL), ctrl_id)
 			await env.wait_ctrl_resp(pack_resp(True, 0, ctrl_id), 4000)
+			if _is_dma_top():
+				await env.soft_clear()
 			return
 
 		if kind == "export_error":

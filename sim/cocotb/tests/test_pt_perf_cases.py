@@ -20,6 +20,23 @@ def _is_dma_top() -> bool:
 	return os.getenv("PT_TOPLEVEL", "PT") == "PT_DMA_TOP"
 
 
+def _dma_top_accept_to_resp_delta(cold_miss: bool) -> int:
+	"""General perf tests measure PT accept -> ctrl_resp.
+
+	The dedicated PT_DMA_TOP perf suite tracks wrapper-visible
+	CTRL_DESC_PUSH -> resp latency. The wrapper contributes:
+	- cold miss: native + 2 cycles
+	- cache hit: native + 4 cycles
+
+	But PT accept itself is observed 3 cycles after CTRL_DESC_PUSH, so the
+	accept-relative deltas used here are:
+	- cold miss: +2 - 3 = -1
+	- cache hit: +4 - 3 = +1
+	"""
+
+	return -1 if cold_miss else 1
+
+
 def _expected_internal_ctrl_resp_cycles(env) -> int:
 	# GEMM now streams rows directly from PE FIFOs, so there is no extra
 	# collect bubble between feed completion and row capture.
@@ -94,7 +111,7 @@ async def test_pt_perf_cache_hit_ctrl_resp_scales_with_m_write_lanes(dut) -> Non
 
 		expected_cycles = frontend_overhead_cycles + _expected_internal_ctrl_resp_cycles(env)
 		if _is_dma_top():
-			expected_cycles += 4
+			expected_cycles += _dma_top_accept_to_resp_delta(False)
 		assert ctrl_resp_cycles == expected_cycles, (
 			f"cache-hit ctrl_resp cycles mismatch x={env.x_dim} y={env.y_dim} "
 			f"m_write_lanes={env.m_write_lanes}: exp={expected_cycles} got={ctrl_resp_cycles}"
@@ -126,7 +143,7 @@ async def test_pt_perf_cold_miss_ctrl_resp_scales_with_ab_load_lanes(dut) -> Non
 		internal_cycles = _expected_internal_ctrl_resp_cycles(env)
 		expected_cycles = frontend_overhead_cycles + input_cycles + internal_cycles
 		if _is_dma_top():
-			expected_cycles += 2
+			expected_cycles += _dma_top_accept_to_resp_delta(True)
 		assert ctrl_resp_cycles == expected_cycles, (
 			f"cold-miss ctrl_resp cycles mismatch x={env.x_dim} y={env.y_dim} "
 			f"a_load_lanes={env.a_load_lanes} b_load_lanes={env.b_load_lanes}: "

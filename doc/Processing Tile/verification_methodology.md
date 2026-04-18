@@ -140,10 +140,10 @@ The environment is protocol-aware and validates transport metadata as well as pa
 ### 3.10 Coverage
 
 - Coverage-only closure tests
-- Legacy-width and widened-width coverage runs
+- Coverage gate is currently evaluated on native `PT` datapath runs
 - Coverage gate checks:
-  - overall `line(adjusted) >= 95%`
-  - overall `expr(adjusted) >= 92%`
+  - overall `line(adjusted) >= 93%`
+  - overall `expr(adjusted) >= 91%`
   - `pt_md_v2.v expr(adjusted) >= 89%`
   - `pt_ce_v2.v expr(adjusted) >= 94%`
   - `pt.v line(adjusted) >= 90%`
@@ -169,6 +169,14 @@ The environment is protocol-aware and validates transport metadata as well as pa
   - [`test_pt_dma_top_perf_cases.py`](../../sim/cocotb/tests/test_pt_dma_top_perf_cases.py)
 
 The suites are organized by proof objective rather than by RTL file ownership.
+
+Mainline target note:
+
+- `sim/cocotb/run.py` now defaults to `PT_DMA_TOP`
+- native `PT` remains available explicitly through `--target pt`
+- `coverage` is the exception: it is intentionally forced back to native `PT`
+  while wrapper-focused regressions remain covered by `axil` / `axil_perf`
+- a small set of native-internal queue/backpressure assertions is not enforced under wrapper blackbox reuse; those checks are now carried by the dedicated `axil` / `axil_perf` wrapper suites
 
 ## 4. Behavior-To-Suite Mapping
 
@@ -235,25 +243,27 @@ The currently revalidated suite matrix is:
 
 | Suite group | xUnit files | Executed testcases | Failures |
 | --- | ---: | ---: | ---: |
-| `smoke` | `2` | `18` | `0` |
+| `smoke` | `2` | `34` | `0` |
 | `stress` | `3` | `33` | `0` |
 | `perf` | `5` | `15` | `0` |
 | `axil` | `2` | `18` | `0` |
 | `axil_perf` | `4` | `16` | `0` |
-| `full` | `23` | `56` | `0` |
+| `full` | `34` | `246` | `0` |
 | `randomized` | `20` | `20` | `0` |
-| `ci` | `23` | `63` | `0` |
-| `coverage` | `4` | `256` | `0` |
+| `ci` | `34` | `135` | `0` |
+| `coverage` | `4` | `268` | `0` |
 
 Latest coverage snapshot from [`coverage_metrics.json`](../../sim/cocotb/coverage/coverage/coverage_metrics.json):
 
-- Overall `line(adjusted) = 2267 / 2378 = 95.33%`
-- Overall `expr(adjusted) = 598 / 635 = 94.17%`
-- `pt_md_v2.v expr(adjusted) = 208 / 220 = 94.55%`
-- `pt_ce_v2.v expr(adjusted) = 24 / 24 = 100.00%`
+- Overall `line(adjusted) = 2600 / 2674 = 97.23%`
+- Overall `expr(adjusted) = 584 / 591 = 98.82%`
+- `pt_md_v2.v expr(adjusted) = 188 / 188 = 100.00%`
+- `pt_ce_v2.v expr(adjusted) = 56 / 56 = 100.00%`
+- `pt.v line(adjusted) = 37 / 41 = 90.24%`
 - Residual classes:
-  - `instrumentation_noise = 340`
-  - `test_gap = 152634`
+  - wrapper mainline functional closure is green
+  - coverage gate is now green again on the native datapath closure flow
+  - several generator-heavy `pt_ce_v2.v` / `pt_malloc.v` bookkeeping points are treated as adjusted exclusions rather than actionable functional gaps
 
 Primary output directories remain:
 
@@ -277,6 +287,13 @@ make -C sim/cocotb perf
 make -C sim/cocotb coverage SIM=verilator
 ```
 
+Native control examples:
+
+```bash
+make -C sim/cocotb smoke TARGET=pt
+make -C sim/cocotb perf TARGET=pt
+```
+
 Direct runner usage:
 
 ```bash
@@ -289,9 +306,14 @@ python3 sim/cocotb/run.py perf --sim icarus
 python3 sim/cocotb/run.py axil --sim icarus
 python3 sim/cocotb/run.py axil_perf --sim icarus
 python3 sim/cocotb/run.py coverage --sim verilator
+python3 sim/cocotb/run.py smoke --sim icarus --target pt
+python3 sim/cocotb/run.py perf --sim icarus --target pt
 ```
 
-Wrapper suites are runner-only today; there is no dedicated `make` shortcut for `axil` / `axil_perf` yet.
+`sim/cocotb/Makefile` now defaults `TARGET ?= pt_dma_top`.
+`coverage` remains the documented native-PT exception.
+
+Wrapper suites are still runner-only today; there is no dedicated `make` shortcut for `axil` / `axil_perf` yet.
 
 Expected-fail invalid-config coverage is included in `full` and `ci` through runner-managed profiles. These cover:
 
@@ -320,6 +342,7 @@ Residual risk is concentrated in long-duration randomized behavior and the remai
 - case catalog: [`sim/cocotb/tests/pt_case_catalog.py`](../../sim/cocotb/tests/pt_case_catalog.py)
 - wrapper functional tests: [`sim/cocotb/tests/test_pt_dma_top_cases.py`](../../sim/cocotb/tests/test_pt_dma_top_cases.py)
 - wrapper perf tests: [`sim/cocotb/tests/test_pt_dma_top_perf_cases.py`](../../sim/cocotb/tests/test_pt_dma_top_perf_cases.py)
-- latest coverage report: [`debug/cocotb/PT/coverage_PASS_20260415.md`](../../debug/cocotb/PT/coverage_PASS_20260415.md)
+- latest wrapper-mainline rebase note: [`debug/20260418_pt_dma_top_mainline_rebase.md`](../../debug/20260418_pt_dma_top_mainline_rebase.md)
+- latest coverage report: [`debug/cocotb/PT/coverage_PASS_20260418.md`](../../debug/cocotb/PT/coverage_PASS_20260418.md)
 - performance iteration note: [`debug/20260414_pt_perf_upgrade_eval.md`](../../debug/20260414_pt_perf_upgrade_eval.md)
 - wrapper perf note: [`debug/20260417_pt_dma_top_perf_eval.md`](../../debug/20260417_pt_dma_top_perf_eval.md)

@@ -277,16 +277,19 @@ module PT_CE_V2 #(
 	endfunction
 
 // synthesis translate_off
-`ifndef SYNTHESIS
-	initial begin
-		if (!is_pow2(GEMM_X_DIM) || !is_pow2(GEMM_Y_DIM)) begin
-			$fatal(1, "PT_CE_V2 requires power-of-two GEMM_X_DIM/GEMM_Y_DIM, got %0d x %0d", GEMM_X_DIM, GEMM_Y_DIM);
+	`ifndef SYNTHESIS
+		initial begin
+			if (!is_pow2(GEMM_X_DIM) || !is_pow2(GEMM_Y_DIM)) begin
+				$fatal(1, "PT_CE_V2 requires power-of-two GEMM_X_DIM/GEMM_Y_DIM, got %0d x %0d", GEMM_X_DIM, GEMM_Y_DIM);
+			end
+			if ((M_WRITE_LANES <= 0) || (M_WRITE_LANES > GEMM_Y_DIM)) begin
+				$fatal(1, "PT_CE_V2 requires 0 < M_WRITE_LANES <= GEMM_Y_DIM, got %0d for Y=%0d", M_WRITE_LANES, GEMM_Y_DIM);
+			end
+			if ((GEMM_Y_DIM % M_WRITE_LANES) != 0) begin
+				$fatal(1, "PT_CE_V2 currently requires GEMM_Y_DIM %% M_WRITE_LANES == 0, got Y=%0d lanes=%0d", GEMM_Y_DIM, M_WRITE_LANES);
+			end
 		end
-		if ((M_WRITE_LANES <= 0) || (M_WRITE_LANES > GEMM_Y_DIM)) begin
-			$fatal(1, "PT_CE_V2 requires 0 < M_WRITE_LANES <= GEMM_Y_DIM, got %0d for Y=%0d", M_WRITE_LANES, GEMM_Y_DIM);
-		end
-	end
-`endif
+	`endif
 // synthesis translate_on
 
 	integer wi;

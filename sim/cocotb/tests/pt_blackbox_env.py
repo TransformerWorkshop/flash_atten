@@ -277,14 +277,16 @@ class PTBlackBoxEnv:
 	def _pack_export_beats(self, matrix: Sequence[int]) -> List[Tuple[int, int]]:
 		beats: List[Tuple[int, int]] = []
 		byte_mask = (1 << (self.data_width // 8)) - 1
-		for start in range(0, len(matrix), self.m_export_lanes):
-			chunk = list(matrix[start : start + self.m_export_lanes])
-			beat_data = 0
-			beat_strb = 0
-			for lane_idx, word in enumerate(chunk):
-				beat_data |= to_unsigned(int(word), self.data_width) << (lane_idx * self.data_width)
-				beat_strb |= byte_mask << (lane_idx * (self.data_width // 8))
-			beats.append((beat_data, beat_strb))
+		for row_start in range(0, len(matrix), self.y_dim):
+			row = list(matrix[row_start : row_start + self.y_dim])
+			for start in range(0, len(row), self.m_export_lanes):
+				chunk = row[start : start + self.m_export_lanes]
+				beat_data = 0
+				beat_strb = 0
+				for lane_idx, word in enumerate(chunk):
+					beat_data |= to_unsigned(int(word), self.data_width) << (lane_idx * self.data_width)
+					beat_strb |= byte_mask << (lane_idx * (self.data_width // 8))
+				beats.append((beat_data, beat_strb))
 		return beats
 
 	def snapshot(self) -> CounterSnapshot:
@@ -319,6 +321,18 @@ class PTBlackBoxEnv:
 
 	def queue_export_injection(self, injection: ExportInjection) -> None:
 		self.export_injections.append(injection)
+
+	def _pt_root_prefix(self) -> str:
+		return "u_pt_v2"
+
+	def _resolve_path(self, path: str):
+		handle = self.dut
+		for part in path.split("."):
+			handle = getattr(handle, part)
+		return handle
+
+	def _signal_value(self, path: str) -> int:
+		return value_to_int(self._resolve_path(path).value)
 
 	async def start(self) -> None:
 		if self._started:

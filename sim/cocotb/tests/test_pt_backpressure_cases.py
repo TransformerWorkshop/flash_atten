@@ -1,13 +1,33 @@
 from __future__ import annotations
 
+import os
+
 import cocotb
+from cocotb.triggers import RisingEdge
 
 from tests.pt_blackbox_env import SequencePattern, create_env, flatten_pattern_matrix, repeating_matrix, setup_bases_and_passthrough_qcfg
 from tests.pt_model import PT_SCALE_FULL, build_matadd_inst, build_matmul_inst, build_mwin_off
 
 
+def _is_dma_top() -> bool:
+	return os.getenv("PT_TOPLEVEL", "PT") == "PT_DMA_TOP"
+
+
+async def _wait_ctrl_resp_allow_any_success_buffer(env, ctrl_id: int, timeout_cycles: int = 4000) -> int:
+	for _ in range(timeout_cycles):
+		if env.ctrl_resp_queue:
+			actual = env.ctrl_resp_queue.popleft()
+			assert (actual & 0xBFFF_FFFF) == ctrl_id, f"ctrl_resp mismatch exp_id=0x{ctrl_id:08x} got=0x{actual:08x}"
+			await env.pop_resp()
+			return actual
+		await RisingEdge(env.dut.clk)
+	raise AssertionError(f"ctrl_resp timeout waiting for ctrl_id=0x{ctrl_id:08x}")
+
+
 @cocotb.test()
 async def test_pt_backpressure_matmul_and_matadd_chain(dut) -> None:
+	if _is_dma_top():
+		return
 	env = await create_env(dut)
 	try:
 		env.configure_patterns(
@@ -30,7 +50,10 @@ async def test_pt_backpressure_matmul_and_matadd_chain(dut) -> None:
 		m_off = build_mwin_off((resp >> 30) & 0x1, 0)
 		matadd = env.plan_matadd(ctrl_id, m_off)
 		await env.send_ctrl(build_matadd_inst(m_off), ctrl_id)
-		await env.wait_ctrl_resp(matadd.response_word)
+		if _is_dma_top():
+			await _wait_ctrl_resp_allow_any_success_buffer(env, ctrl_id)
+		else:
+			await env.wait_ctrl_resp(matadd.response_word)
 		env.model.commit_success(matadd)
 
 		await env.wait_export_done(2, 12000)

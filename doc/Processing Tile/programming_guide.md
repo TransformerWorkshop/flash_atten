@@ -239,6 +239,15 @@ Two important profiles are used in practice:
   - single-element M writeback/export beats
   - `M_PHYSICAL_COPIES = 3`
 
+Current supported-lane rule:
+
+- `A_LOAD_LANES` must divide `GEMM_X_DIM`
+- `B_LOAD_LANES` must divide `GEMM_Y_DIM`
+- `M_WRITE_LANES` must divide `GEMM_Y_DIM`
+- `M_EXPORT_LANES` must divide `GEMM_Y_DIM`
+
+This restriction was tightened after the `2026-04-18` coverage/RTL refresh so that non-divisor lane counts are no longer treated as supported operating points.
+
 ### 7.1 `PT_DMA_TOP` Practical Integration Notes
 
 If software talks to [`PT_DMA_TOP`](../../rtl/pt_dma_top.v) rather than native [`PT`](../../rtl/pt.v), the current wrapper behavior has a few practical implications:

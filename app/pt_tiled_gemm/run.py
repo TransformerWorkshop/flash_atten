@@ -8,7 +8,16 @@ from pathlib import Path
 if __package__ in {None, ""}:
 	sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app.pt_tiled_gemm import DEFAULT_OUT_DIR, DEFAULT_PROBLEM, ProblemSpec, default_metrics_path, default_report_path
+from app.pt_tiled_gemm import (
+	DEFAULT_APP_TARGET,
+	DEFAULT_OUT_DIR,
+	DEFAULT_PROBLEM,
+	ProblemSpec,
+	SUPPORTED_APP_TARGETS,
+	default_metrics_path,
+	default_report_path,
+	normalize_app_target,
+)
 from app.pt_tiled_gemm.planner import build_recommendation, build_report_markdown, render_text
 from app.pt_tiled_gemm.verify_runner import render_verify_text, run_verification
 
@@ -17,14 +26,27 @@ def _problem_from_args(args: argparse.Namespace) -> ProblemSpec:
 	return ProblemSpec(m_dim=args.m, k_dim=args.k, n_dim=args.n)
 
 
+def _target_from_args(args: argparse.Namespace) -> str:
+	return normalize_app_target(args.target)
+
+
 def _add_problem_args(parser: argparse.ArgumentParser) -> None:
 	parser.add_argument("--m", type=int, default=DEFAULT_PROBLEM.m_dim, help="矩阵 A 的行数 / 输出 C 的行数，必须是 16 的倍数")
 	parser.add_argument("--k", type=int, default=DEFAULT_PROBLEM.k_dim, help="矩阵 A 的列数 / B 的行数，必须是 16 的倍数")
 	parser.add_argument("--n", type=int, default=DEFAULT_PROBLEM.n_dim, help="矩阵 B 的列数 / 输出 C 的列数，必须是 16 的倍数")
 
 
-def _recommend_command(problem: ProblemSpec, as_json: bool) -> int:
-	recommendation = build_recommendation(problem, default_metrics_path(problem))
+def _add_target_arg(parser: argparse.ArgumentParser) -> None:
+	parser.add_argument(
+		"--target",
+		default=DEFAULT_APP_TARGET,
+		choices=list(SUPPORTED_APP_TARGETS),
+		help="选择 app 运行目标：native `PT` 或 wrapper `PT_DMA_TOP`",
+	)
+
+
+def _recommend_command(problem: ProblemSpec, target: str, as_json: bool) -> int:
+	recommendation = build_recommendation(problem, default_metrics_path(problem, target), target=target)
 	if as_json:
 		print(json.dumps(recommendation.to_dict(), ensure_ascii=False, indent=2))
 	else:
@@ -32,8 +54,8 @@ def _recommend_command(problem: ProblemSpec, as_json: bool) -> int:
 	return 0
 
 
-def _verify_command(problem: ProblemSpec, sim_name: str, waves: bool, as_json: bool) -> int:
-	result = run_verification(problem=problem, sim_name=sim_name, waves=waves)
+def _verify_command(problem: ProblemSpec, target: str, sim_name: str, waves: bool, as_json: bool) -> int:
+	result = run_verification(problem=problem, target=target, sim_name=sim_name, waves=waves)
 	if as_json:
 		print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
 	else:
@@ -41,11 +63,11 @@ def _verify_command(problem: ProblemSpec, sim_name: str, waves: bool, as_json: b
 	return 0 if result.success else 1
 
 
-def _report_command(problem: ProblemSpec, sim_name: str, waves: bool, out_path: Path) -> int:
+def _report_command(problem: ProblemSpec, target: str, sim_name: str, waves: bool, out_path: Path) -> int:
 	out_path.parent.mkdir(parents=True, exist_ok=True)
-	metrics_path = default_metrics_path(problem)
-	initial_recommendation = build_recommendation(problem, metrics_path)
-	verify_result = run_verification(problem=problem, sim_name=sim_name, waves=waves)
+	metrics_path = default_metrics_path(problem, target)
+	initial_recommendation = build_recommendation(problem, metrics_path, target=target)
+	verify_result = run_verification(problem=problem, target=target, sim_name=sim_name, waves=waves)
 	if verify_result.success:
 		recommendation = build_recommendation(
 			problem,
@@ -54,6 +76,7 @@ def _report_command(problem: ProblemSpec, sim_name: str, waves: bool, out_path: 
 				"algorithms": verify_result.algorithms,
 				"unsupported_paths": verify_result.unsupported_paths,
 			},
+			target=target,
 		)
 	else:
 		recommendation = initial_recommendation
@@ -72,16 +95,19 @@ def parse_args() -> argparse.Namespace:
 
 	recommend = subparsers.add_parser("recommend", help="输出当前 M/K/N 下的算法推荐")
 	_add_problem_args(recommend)
+	_add_target_arg(recommend)
 	recommend.add_argument("--json", action="store_true", help="输出机器可读 JSON")
 
 	verify = subparsers.add_parser("verify", help="运行 app 本地 cocotb 验证")
 	_add_problem_args(verify)
+	_add_target_arg(verify)
 	verify.add_argument("--sim", default="icarus", choices=["icarus", "verilator", "questa"])
 	verify.add_argument("--waves", action="store_true")
 	verify.add_argument("--json", action="store_true", help="输出机器可读 JSON")
 
 	report = subparsers.add_parser("report", help="生成 Markdown 报告并附带 verify 结果")
 	_add_problem_args(report)
+	_add_target_arg(report)
 	report.add_argument("--sim", default="icarus", choices=["icarus", "verilator", "questa"])
 	report.add_argument("--waves", action="store_true")
 	report.add_argument("--out", type=Path, default=None, help="输出 Markdown 路径，默认使用 shape-specific 文件名")
@@ -94,18 +120,19 @@ def main() -> int:
 	args = parse_args()
 	try:
 		problem = _problem_from_args(args)
+		target = _target_from_args(args)
 		problem.validate()
 	except ValueError as exc:
-		print(f"invalid problem shape: {exc}", file=sys.stderr)
+		print(f"invalid arguments: {exc}", file=sys.stderr)
 		return 2
 
 	if args.command == "recommend":
-		return _recommend_command(problem, args.json)
+		return _recommend_command(problem, target, args.json)
 	if args.command == "verify":
-		return _verify_command(problem, args.sim, args.waves, args.json)
+		return _verify_command(problem, target, args.sim, args.waves, args.json)
 	if args.command == "report":
-		out_path = args.out if args.out is not None else default_report_path(problem)
-		return _report_command(problem, args.sim, args.waves, out_path)
+		out_path = args.out if args.out is not None else default_report_path(problem, target)
+		return _report_command(problem, target, args.sim, args.waves, out_path)
 	raise ValueError(f"unsupported command {args.command!r}")
 
 

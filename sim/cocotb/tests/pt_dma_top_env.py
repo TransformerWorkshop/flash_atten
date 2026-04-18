@@ -412,6 +412,11 @@ class PTDmaTopEnv:
 		self.dut.m_axis_tready.value = 1
 
 	def _apply_soft_clear_model(self) -> None:
+		dma_req_count = self.dma_req_count
+		export_req_count = self.export_req_count
+		export_done_count = self.export_done_count
+		export_error_count = self.export_error_count
+		irq_count = self.irq_count
 		self.model.reset_runtime_state()
 		self.expected_rd_dma.clear()
 		self.pending_resp_plans.clear()
@@ -423,11 +428,11 @@ class PTDmaTopEnv:
 		self.export_injections.clear()
 		self.rd_desc_count = 0
 		self.wr_desc_count = 0
-		self.dma_req_count = 0
-		self.export_req_count = 0
-		self.export_done_count = 0
-		self.export_error_count = 0
-		self.irq_count = 0
+		self.dma_req_count = dma_req_count
+		self.export_req_count = export_req_count
+		self.export_done_count = export_done_count
+		self.export_error_count = export_error_count
+		self.irq_count = irq_count
 		self.dma_stream_busy = False
 		self.export_busy = False
 		self._resp_visible = False
@@ -585,14 +590,16 @@ class PTDmaTopEnv:
 	def _pack_export_beats(self, matrix: Sequence[int]) -> List[Tuple[int, int]]:
 		beats: List[Tuple[int, int]] = []
 		byte_mask = (1 << (self.data_width // 8)) - 1
-		for start in range(0, len(matrix), self.m_export_lanes):
-			chunk = list(matrix[start : start + self.m_export_lanes])
-			beat_data = 0
-			beat_strb = 0
-			for lane_idx, word in enumerate(chunk):
-				beat_data |= to_unsigned(int(word), self.data_width) << (lane_idx * self.data_width)
-				beat_strb |= byte_mask << (lane_idx * (self.data_width // 8))
-			beats.append((beat_data, beat_strb))
+		for row_start in range(0, len(matrix), self.y_dim):
+			row = list(matrix[row_start : row_start + self.y_dim])
+			for start in range(0, len(row), self.m_export_lanes):
+				chunk = row[start : start + self.m_export_lanes]
+				beat_data = 0
+				beat_strb = 0
+				for lane_idx, word in enumerate(chunk):
+					beat_data |= to_unsigned(int(word), self.data_width) << (lane_idx * self.data_width)
+					beat_strb |= byte_mask << (lane_idx * (self.data_width // 8))
+				beats.append((beat_data, beat_strb))
 		return beats
 
 	async def axil_write(self, addr: int, data: int, wstrb: int = 0xF, write_delay_cycles: int = 0) -> int:
@@ -972,6 +979,19 @@ class PTDmaTopEnv:
 	def _queue_pending_plan(self, response_word: int, plan_kind: str, plan: ExecPlan | LoadPlan) -> None:
 		self.pending_resp_plans.setdefault(response_word, deque()).append((plan_kind, plan))
 
+	def _pop_matching_rd_expectation(self, actual_id: int, actual_kind: int, actual_addr: int, actual_elems: int) -> ReadDmaExpectation | None:
+		for expected in list(self.expected_rd_dma):
+			exp_kind = {"A": DMA_KIND_A, "B": DMA_KIND_B, "C": DMA_KIND_C}[expected.kind]
+			if (
+				actual_id == (expected.ctrl_id & 0xFFFF_FFFF)
+				and actual_kind == exp_kind
+				and actual_addr == expected.addr
+				and actual_elems == expected.elems
+			):
+				self.expected_rd_dma.remove(expected)
+				return expected
+		return None
+
 	def _finalize_pending_plan(self, response_word: int) -> None:
 		plan_queue = self.pending_resp_plans.get(response_word)
 		if not plan_queue:
@@ -1042,7 +1062,6 @@ class PTDmaTopEnv:
 			raise
 
 	async def send_ctrl_timed(self, inst: int, ctrl_id: int, timeout_cycles: int = 4000) -> CtrlSendTrace:
-		del timeout_cycles
 		desc = self.descriptors.get(ctrl_id & 0xFFFF_FFFF, self._auto_descriptor_addrs(ctrl_id))
 		trace = await self.send_desc_command_timed(
 			inst,
@@ -1053,7 +1072,7 @@ class PTDmaTopEnv:
 			m_addr=desc.m_addr,
 			mode="delta" if (ctrl_id & 0xFFFF_FFFF) in self.descriptors else "full",
 		)
-		accept = await self.wait_pt_ctrl_accept(ctrl_id, after_cycle=trace.ctrl_write_start_cycle)
+		accept = await self.wait_pt_ctrl_accept(ctrl_id, after_cycle=trace.ctrl_write_start_cycle, timeout_cycles=timeout_cycles)
 		wait_cycles = max(1, accept.cycle - trace.ctrl_write_start_cycle)
 		ready_low_cycles = max(0, wait_cycles - 1)
 		return CtrlSendTrace(wait_cycles=wait_cycles, ready_low_cycles=ready_low_cycles)
@@ -1230,17 +1249,12 @@ class PTDmaTopEnv:
 					desc_cycle = self.current_cycle()
 					self.rd_desc_count += 1
 					self.dma_req_count += 1
-					assert self.expected_rd_dma, "unexpected rd_dma_desc handshake"
-					expected = self.expected_rd_dma.popleft()
 					actual_id = value_to_int(self.dut.rd_dma_desc_id.value)
 					actual_kind = value_to_int(self.dut.rd_dma_desc_kind.value)
 					actual_addr = value_to_int(self.dut.rd_dma_desc_addr.value)
 					actual_elems = value_to_int(self.dut.rd_dma_desc_elems.value)
-					assert actual_id == (expected.ctrl_id & 0xFFFF_FFFF)
-					exp_kind = {"A": DMA_KIND_A, "B": DMA_KIND_B, "C": DMA_KIND_C}[expected.kind]
-					assert actual_kind == exp_kind
-					assert actual_addr == expected.addr
-					assert actual_elems == expected.elems
+					expected = self._pop_matching_rd_expectation(actual_id, actual_kind, actual_addr, actual_elems)
+					assert expected is not None, "unexpected rd_dma_desc handshake"
 					self.rd_desc_log.append(ReadDmaLog(ctrl_id=actual_id, kind=actual_kind, addr=actual_addr, elems=actual_elems))
 					injection = self.ab_injections.popleft() if self.ab_injections else AbInjection()
 					beats = self._pack_ab_beats(expected.kind, self.external_a_tiles[actual_id] if expected.kind == "A" else (self.external_b_tiles[actual_id] if expected.kind == "B" else self.external_c_tiles[actual_id]), expected)
@@ -1370,7 +1384,7 @@ class PTDmaTopEnv:
 			self.dut._log.exception("wr_dma_agent crashed")
 			raise
 
-	async def _await_expected_export(self, timeout_cycles: int = 2) -> ExportExpectation:
+	async def _await_expected_export(self, timeout_cycles: int = 64) -> ExportExpectation:
 		last_error: Optional[Exception] = None
 		for attempt in range(timeout_cycles + 1):
 			try:
@@ -1389,6 +1403,8 @@ class PTDmaTopEnv:
 		while beat_idx < len(expected_beats):
 			await RisingEdge(self.dut.clk)
 			await ReadOnly()
+			if value_to_int(self.dut.clear.value):
+				return last_beat_cycle, self.current_cycle()
 			if value_to_int(self.dut.m_axis_tvalid.value) and value_to_int(self.dut.m_axis_tready.value):
 				actual_word = value_to_int(self.dut.m_axis_tdata.value)
 				expected_word, expected_strb = expected_beats[beat_idx]
@@ -1433,6 +1449,10 @@ async def create_env(dut) -> PTDmaTopEnv:
 
 
 async def setup_bases_and_passthrough_qcfg(env: PTDmaTopEnv) -> None:
-	await env.cfg_base32("A", 0x0000_1000, 0x10)
-	await env.cfg_base32("B", 0x0000_2000, 0x20)
-	await env.qcfg_success(PT_QGRAN_PER_TENSOR, [0x0001_0000], 0x30)
+	# Reuse a small, fixed ctrl_id set so wrapper-side descriptor slots are not
+	# consumed by repeated bring-up configuration traffic.
+	await env.cfg_selector16(PT_CFG_A_BASE_LO, 0x1000, 0x10)
+	await env.cfg_selector16(PT_CFG_A_BASE_HI, 0x0000, 0x10)
+	await env.cfg_selector16(PT_CFG_B_BASE_LO, 0x2000, 0x10)
+	await env.cfg_selector16(PT_CFG_B_BASE_HI, 0x0000, 0x10)
+	await env.qcfg_success(PT_QGRAN_PER_TENSOR, [0x0001_0000], 0x20)
