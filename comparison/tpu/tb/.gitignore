@@ -1,6 +1,0 @@
-build/
-results/
-logs/
-coverage/
-__pycache__/
-tests/__pycache__/
