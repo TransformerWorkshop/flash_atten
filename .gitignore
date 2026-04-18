@@ -27,3 +27,9 @@ sim/modelsim/*.vstf
 
 codex/
 rtl/a.out
+
+
+# Ddesign Compiler artifacts
+libs/
+ref/
+work/
