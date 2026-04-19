@@ -3,6 +3,7 @@
 //Height:5
 `include "param.vh"
 
+/* verilator lint_off PINCONNECTEMPTY */
 module NoD #(
     parameter NODID = 0
 )(
@@ -1310,3 +1311,4 @@ router #(
 );
 
 endmodule
+/* verilator lint_on PINCONNECTEMPTY */

@@ -8,7 +8,7 @@
 
 ### 1.1 功能概述
 
-- 输入：`a`、`b` 两路标量流（`WIDTH` 位）。
+- 输入：`a`、`b` 两路标量流（`WIDTH` 位，按二补码 `signed` 解释参与乘法）。
 - 控制：`start` 启动一次累加，`num_acc` 指定累加对数。
 - 输出：`m`（`4*WIDTH` 位累加结果）和 `m_valid/m_ready` 握手。
 - 内部通过 3 个 `sync_fifo` 做 A/B 输入缓冲与 M 输出缓冲。
@@ -41,7 +41,7 @@
 ### 1.4 状态机
 
 - `STATE_IDLE`：等待 `start`。
-- `STATE_ACCM`：按握手接收 A/B，对 `(a*b)` 累加，直到 `acc_cnt == num_acc`。
+- `STATE_ACCM`：按握手接收 A/B，对 `signed(a) * signed(b)` 做符号累加，直到 `acc_cnt == num_acc`。
 
 关键实现语义：
 - `acc_done = (acc_cnt == num_acc)`。
@@ -93,10 +93,5 @@
 
 ## 2 Verification Notes
 
-- `tb/tb_gemu.v` 覆盖场景：
-  - 基本点积
-  - 宽位累加
-  - A/B 任一侧延迟或双侧延迟
-- 关键检查点：
-  - 仅在累加完成后输出一次有效结果
-  - 输出可被 `m_ready` 正确回压
+- 旧的独立 Verilog testbench `tb/tb_gemu.v` 已移除。
+- 当前验证入口统一为 `sim/cocotb/` 下的 cocotb 回归；GEMU 作为 PT 数据通路内部模块，随 PT 黑盒回归一并覆盖。

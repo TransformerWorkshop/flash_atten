@@ -22,20 +22,21 @@ module PT_DISPATCH_V2 #(
 	output wire [`PT_MALLOC_KIND_W-1:0] malloc_cmd_kind,
 	output wire [`INST_WIDTH-1:0]     malloc_cmd_inst,
 	output wire [31:0]                malloc_cmd_id,
-	input  wire                       malloc_resp_valid
+	input  wire                       malloc_resp_valid,
+	input  wire                       malloc_exec_busy,
+	input  wire                       malloc_serial_busy
 );
 
 	localparam integer MAX_DIM = (GEMM_X_DIM >= GEMM_Y_DIM) ? GEMM_X_DIM : GEMM_Y_DIM;
 	localparam integer QCFG_CNT_W = (MAX_DIM <= 1) ? 1 : $clog2(MAX_DIM + 1);
 	localparam integer CMD_KIND_W = 1 + `PT_MEM_KIND_W + `PT_MALLOC_KIND_W;
 	localparam integer CMDQ_W = CMD_KIND_W + `INST_WIDTH + 32;
-	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_CFG          = `PT_MEM_KIND_CFG;
-	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_QCFG_HDR     = `PT_MEM_KIND_QCFG_HDR;
-	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_QCFG_PAYLOAD = `PT_MEM_KIND_QCFG_PAYLOAD;
-	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_REJECT       = `PT_MEM_KIND_REJECT;
-	localparam [1:0] ACTIVE_NONE   = 2'd0;
-	localparam [1:0] ACTIVE_MD     = 2'd1;
-	localparam [1:0] ACTIVE_MALLOC = 2'd2;
+	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_CFG          = 2'd0;
+	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_QCFG_HDR     = 2'd1;
+	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_QCFG_PAYLOAD = 2'd2;
+	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_REJECT       = 2'd3;
+	localparam [1:0] ACTIVE_NONE = 2'd0;
+	localparam [1:0] ACTIVE_MD   = 2'd1;
 
 	wire [3:0] ctrl_opcode = ctrl_inst[`PT_INST_OPCODE_H:`PT_INST_OPCODE_L];
 	wire [3:0] ctrl_matmul_m_tiles = ctrl_inst[`PT_MATMUL_M_TILES_H:`PT_MATMUL_M_TILES_L];
@@ -52,19 +53,28 @@ module PT_DISPATCH_V2 #(
 	wire [`PT_SIZE_W-1:0] ctrl_load_a_size = ctrl_inst[`PT_LOAD_A_SIZE_H:`PT_LOAD_A_SIZE_L];
 	wire [`PT_SIZE_W-1:0] ctrl_load_b_size = ctrl_inst[`PT_LOAD_B_SIZE_H:`PT_LOAD_B_SIZE_L];
 	wire [5:0] ctrl_load_reserved = ctrl_inst[`PT_LOAD_RSV_H:`PT_LOAD_RSV_L];
+	wire [1:0] ctrl_load_m_code = ctrl_inst[`PT_LOAD_M_CODE_H:`PT_LOAD_M_CODE_L];
+	wire [1:0] ctrl_load_n_code = ctrl_inst[`PT_LOAD_N_CODE_H:`PT_LOAD_N_CODE_L];
+	wire [1:0] ctrl_load_k_code = ctrl_inst[`PT_LOAD_K_CODE_H:`PT_LOAD_K_CODE_L];
 	wire ctrl_qcfg_hdr_cmd = (ctrl_inst[`PT_QCFG_CMD_H:`PT_QCFG_CMD_L] == `PT_QCFG_CMD_HDR);
 	wire [1:0] ctrl_qcfg_qtype = ctrl_inst[`PT_QCFG_QTYPE_H:`PT_QCFG_QTYPE_L];
 	wire [2:0] ctrl_qcfg_gran = ctrl_inst[`PT_QCFG_GRAN_H:`PT_QCFG_GRAN_L];
+	wire ctrl_matmul_m_valid = (ctrl_matmul_m_tiles == `PT_TILES_1) || (ctrl_matmul_m_tiles == `PT_TILES_2) || (ctrl_matmul_m_tiles == `PT_TILES_4);
+	wire ctrl_matmul_n_valid = (ctrl_matmul_n_tiles == `PT_TILES_1) || (ctrl_matmul_n_tiles == `PT_TILES_2) || (ctrl_matmul_n_tiles == `PT_TILES_4);
+	wire ctrl_matmul_k_valid = (ctrl_matmul_k_tiles == `PT_TILES_1) || (ctrl_matmul_k_tiles == `PT_TILES_2) || (ctrl_matmul_k_tiles == `PT_TILES_4);
+	wire ctrl_load_shape_legal = (ctrl_load_m_code != 2'b11) &&
+	                            (ctrl_load_n_code != 2'b11) &&
+	                            (ctrl_load_k_code != 2'b11);
 
 	wire ctrl_matmul_legal = (ctrl_opcode == `PT_OP_MATMUL) &&
-	                         (ctrl_matmul_m_tiles == `PT_TILES_1) &&
-	                         (ctrl_matmul_n_tiles == `PT_TILES_1) &&
-	                         ((ctrl_matmul_k_tiles == `PT_TILES_1) || (ctrl_matmul_k_tiles == `PT_TILES_2) || (ctrl_matmul_k_tiles == `PT_TILES_4)) &&
+	                         ctrl_matmul_m_valid &&
+	                         ctrl_matmul_n_valid &&
+	                         ctrl_matmul_k_valid &&
 	                         (ctrl_matmul_reserved_a == 8'd0) &&
 	                         (ctrl_matmul_reserved_b == 8'd0);
 	wire ctrl_load_legal = (ctrl_opcode == `PT_OP_LOAD) &&
 	                       (ctrl_load_need_a || ctrl_load_need_b) &&
-	                       (ctrl_load_reserved == 6'd0) &&
+	                       ctrl_load_shape_legal &&
 	                       (!ctrl_load_need_a || (ctrl_load_a_size != {`PT_SIZE_W{1'b0}})) &&
 	                       (!ctrl_load_need_b || (ctrl_load_b_size != {`PT_SIZE_W{1'b0}}));
 	wire ctrl_matadd_legal = (ctrl_opcode == `PT_OP_MATADD) &&
@@ -211,8 +221,12 @@ module PT_DISPATCH_V2 #(
 	wire [31:0] q_out_id = cmd_q_out_data[31:0];
 
 	reg [1:0] active_dst_r;
-	wire allow_md_issue = (active_dst_r != ACTIVE_MALLOC);
-	wire allow_malloc_issue = (active_dst_r == ACTIVE_NONE);
+	wire allow_md_issue = malloc_cmd_ready && !malloc_exec_busy;
+	wire allow_malloc_issue = (active_dst_r == ACTIVE_NONE) &&
+	                         malloc_cmd_ready &&
+	                         ((q_out_malloc_kind == `PT_MALLOC_KIND_LOAD)   ? !malloc_exec_busy :
+	                          (q_out_malloc_kind == `PT_MALLOC_KIND_MATMUL) ? !malloc_serial_busy :
+	                                                                          !malloc_exec_busy);
 	wire issue_md = cmd_q_out_valid && q_out_is_md && allow_md_issue && md_cmd_ready;
 	wire issue_malloc = cmd_q_out_valid && !q_out_is_md && allow_malloc_issue && malloc_cmd_ready;
 
@@ -255,13 +269,9 @@ module PT_DISPATCH_V2 #(
 				end
 			end
 
-			if (issue_malloc) begin
-				active_dst_r <= ACTIVE_MALLOC;
-			end else if (issue_md && (active_dst_r == ACTIVE_NONE)) begin
+			if (issue_md && (active_dst_r == ACTIVE_NONE)) begin
 				active_dst_r <= ACTIVE_MD;
 			end else if ((active_dst_r == ACTIVE_MD) && md_cmd_resp_valid) begin
-				active_dst_r <= ACTIVE_NONE;
-			end else if ((active_dst_r == ACTIVE_MALLOC) && malloc_resp_valid) begin
 				active_dst_r <= ACTIVE_NONE;
 			end
 		end

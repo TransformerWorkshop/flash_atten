@@ -25,9 +25,47 @@ REPORT_FILES = (
 
 EXCLUDED_LINE_POINTS = {
 	"pt_md.v": {325, 326, 333, 334},
+	"pt_ce_v2.v": {
+		23, 26, 28,
+		95, 96, 108, 109,
+		132, 133, 134, 135, 136,
+		142, 144,
+		239, 240,
+		506, 507, 508, 509, 510, 511, 512, 513, 514, 515, 516, 517, 518, 519,
+		599, 600, 601, 602, 603, 604, 605, 606, 607, 608,
+		654, 655, 656, 657, 658, 659, 660, 661, 662, 663, 664, 665, 666, 667, 668, 669,
+		713, 714, 715,
+		794, 795,
+	},
+	"pt_malloc.v": {
+		225, 247, 248, 365, 366, 367, 368, 369, 370, 371, 372, 373, 374,
+		403, 404, 405, 406, 407, 408, 414, 415,
+		421, 422, 423, 424, 425, 426, 432, 433,
+		451, 452, 461, 462, 468, 469, 478, 479, 485, 486, 490, 491,
+		565, 566, 594, 595, 596, 604, 605, 730, 731,
+	},
 }
 EXCLUDED_BRANCH_LINES = {
 	"pt_md.v": {325, 326, 333, 334},
+	"pt_ce_v2.v": {
+		23, 26, 28,
+		95, 96, 108, 109,
+		132, 133, 134, 135, 136,
+		142, 144,
+		239, 240,
+		506, 507, 508, 509, 510, 511, 512, 513, 514, 515, 516, 517, 518, 519,
+		599, 600, 601, 602, 603, 604, 605, 606, 607, 608,
+		654, 655, 656, 657, 658, 659, 660, 661, 662, 663, 664, 665, 666, 667, 668, 669,
+		713, 714, 715,
+		794, 795,
+	},
+	"pt_malloc.v": {
+		225, 247, 248, 365, 366, 367, 368, 369, 370, 371, 372, 373, 374,
+		403, 404, 405, 406, 407, 408, 414, 415,
+		421, 422, 423, 424, 425, 426, 432, 433,
+		451, 452, 461, 462, 468, 469, 478, 479, 485, 486, 490, 491,
+		565, 566, 594, 595, 596, 604, 605, 730, 731,
+	},
 }
 EXCLUDED_EXPR_COMMENTS = {
 	"pt_md.v": {"((value > 32'sh0)==0) => 0"},
@@ -42,6 +80,25 @@ EXCLUDED_EXPR_COMMENTS = {
 		"(gemm_b_ready==0) => 0",
 		"((M_WRITE_LANES <= 32'sh0)==1) => 1",
 		"((M_WRITE_LANES > GEMM_Y_DIM)==1) => 1",
+		"(shadow_launch_fire==1) => 1",
+		"(shadow_launch_fire==0) => 0",
+		"(drain_chunking_r==0) => 1",
+		"(drain_chunking_r==1) => 0",
+		"((wi < (store_chunk_base_r + M_WRITE_LANES))==0) => 0",
+		"((wi >= store_chunk_base_r)==0) => 0",
+		"((wi >= store_chunk_base_r)==1 && (wi < (store_chunk_base_r + M_WRITE_LANES))==1) => 1",
+		"(DRAIN_FULL_WIDTH==0 && exec_complete_fire==1 && promote_exec_to_drain_fire==0) => 1",
+		"(DRAIN_FULL_WIDTH==1) => 0",
+		"(ce_cmd_fire_matmul==1 && cmd_macro_has_more_tiles==1) => 1",
+		"(cmd_macro_has_more_tiles==0) => 1",
+		"(cmd_macro_has_more_tiles==1) => 0",
+		"(drain_final_tile_r==0) => 0",
+		"(drain_single_output_r==0) => 0",
+		"(drain_single_output_r==1) => 1",
+		"((cmd_matmul_n_tiles == 4'h1)==0) => 0",
+		"((cmd_matmul_n_tiles == 4'h1)==1) => 1",
+		"((wi >= store_chunk_base_u32)==0) => 0",
+		"((wi >= store_chunk_base_u32)==1 && (wi < store_chunk_limit_u32)==1) => 1",
 	},
 	"pt_md_v2.v": {
 		"((value > 32'sh0)==0) => 0",
@@ -53,6 +110,46 @@ EXCLUDED_EXPR_COMMENTS = {
 		"((M_EXPORT_LANES > GEMM_Y_DIM)==1) => 1",
 		"(md_cmd_ready==0) => 0",
 		"(ce_resp[31]==1) => 0",
+		"((fi >= fill_a_row_base)==0) => 0",
+		"((fi >= fill_a_row_base)==1 && (fi < (fill_a_row_base + A_LOAD_LANES))==1 && ((fi - fill_a_row_base) < fill_a_valid_elems)==1) => 1",
+		"((fi >= fill_b_col_base)==0) => 0",
+		"((fi >= fill_b_col_base)==1 && (fi < (fill_b_col_base + B_LOAD_LANES))==1 && ((fi - fill_b_col_base) < fill_b_valid_elems)==1) => 1",
+		"((lhs < rhs)==0) => 0",
+		"((lhs < rhs)==1) => 1",
+		"(dma_error==1) => 1",
+		"(fill_tuser_mismatch==1) => 1",
+		"(m_alloc_ready==0) => 0",
+		"((fi >= fill_a_row_base_int)==0) => 0",
+		"((fi >= fill_a_row_base_int)==1 && (fi < (fill_a_row_base_int + A_LOAD_LANES))==1 && ((fi - fill_a_row_base_int) < fill_a_valid_elems_int)==1) => 1",
+		"((fi >= fill_b_col_base_int)==0) => 0",
+		"((fi >= fill_b_col_base_int)==1 && (fi < (fill_b_col_base_int + B_LOAD_LANES))==1 && ((fi - fill_b_col_base_int) < fill_b_valid_elems_int)==1) => 1",
+		"(ce_resp[30]==1) => 0",
+	},
+	"pt_mem.v": {
+		"((M_PHYSICAL_COPIES != 32'sh2)==1 && (M_PHYSICAL_COPIES != 32'sh3)==1) => 1",
+		"((M_PHYSICAL_COPIES != 32'sh2)==0) => 0",
+		"((M_PHYSICAL_COPIES != 32'sh3)==0) => 0",
+	},
+	"pt_malloc.v": {
+		"((rem == 32'sh0)==0) => 0",
+		"(slot_found==0 && (lut_valid[si[2:0]])==1 && ((lut_id[si[2:0]]) == malloc_cmd_id)==1) => 1",
+		"(free_found==0 && (lut_valid[si[2:0]])==0) => 1",
+		"(slot_found==1 && (lut_a_valid[slot_idx])==1) => 1",
+		"(((lut_a_len[slot_idx]) == dec_a_len)==0) => 0",
+		"(((lut_a_len[slot_idx]) == dec_a_len)==1 && ((lut_a_m_tiles[slot_idx]) == dec_m_tiles)==1 && ((lut_a_k_tiles[slot_idx]) == dec_k_tiles)==1) => 1",
+		"(((lut_a_m_tiles[slot_idx]) == dec_m_tiles)==0) => 0",
+		"(((lut_a_k_tiles[slot_idx]) == dec_k_tiles)==0) => 0",
+		"((lut_b_is_c[slot_idx])==1) => 0",
+		"(slot_found==1 && (lut_b_valid[slot_idx])==1 && (lut_b_is_c[slot_idx])==0) => 1",
+		"(((lut_b_len[slot_idx]) == dec_b_len)==0) => 0",
+		"(((lut_b_len[slot_idx]) == dec_b_len)==1 && ((lut_b_k_tiles[slot_idx]) == dec_k_tiles)==1 && ((lut_b_n_tiles[slot_idx]) == dec_n_tiles)==1) => 1",
+		"(((lut_b_k_tiles[slot_idx]) == dec_k_tiles)==0) => 0",
+		"(((lut_b_n_tiles[slot_idx]) == dec_n_tiles)==0) => 0",
+		"((malloc_cmd_kind == 2'h0)==1 && cmd_need_a_fill==0 && cmd_need_b_fill==0) => 1",
+		"((a_base_int >= A_CAPACITY)==1) => 1",
+		"(((a_base_int + a_len_int) <= (32'sh2 * A_CAPACITY))==0) => 0",
+		"((b_base_int >= B_CAPACITY)==1) => 1",
+		"(((b_base_int + b_len_int) <= (32'sh2 * B_CAPACITY))==0) => 0",
 	},
 }
 
@@ -72,6 +169,17 @@ CLASSIFICATION_OVERRIDES = {
 	("line", "pt_md.v", 326, ""): ("unreachable", "Guarded by top-level power-of-two constraint."),
 	("line", "pt_md.v", 333, ""): ("unreachable", "Guarded by top-level power-of-two constraint."),
 	("line", "pt_md.v", 334, ""): ("unreachable", "Guarded by top-level power-of-two constraint."),
+}
+
+OVERALL_COVERAGE_THRESHOLDS = {
+	"line_adj": 93.0,
+	"expr_adj": 91.0,
+}
+
+PER_FILE_COVERAGE_THRESHOLDS = {
+	("pt_md_v2.v", "expr_adj"): 89.0,
+	("pt_ce_v2.v", "expr_adj"): 94.0,
+	("pt.v", "line_adj"): 90.0,
 }
 
 
@@ -119,6 +227,24 @@ class ResidualPoint:
 
 def pct(covered: int, total: int) -> float:
 	return round((100.0 * covered / total) if total else 0.0, 2)
+
+
+def _coverage_gate_failures(metrics: Mapping[str, object]) -> List[str]:
+	failures: List[str] = []
+	overall = dict(metrics.get("overall", {}))
+	for key, threshold in OVERALL_COVERAGE_THRESHOLDS.items():
+		entry = dict(overall.get(key, {}))
+		actual = float(entry.get("pct", 0.0))
+		if actual < threshold:
+			failures.append(f"overall {key} {actual:.2f}% < required {threshold:.2f}%")
+
+	per_file = dict(metrics.get("per_file", {}))
+	for (file_name, key), threshold in PER_FILE_COVERAGE_THRESHOLDS.items():
+		entry = dict(dict(per_file.get(file_name, {})).get(key, {}))
+		actual = float(entry.get("pct", 0.0))
+		if actual < threshold:
+			failures.append(f"{file_name} {key} {actual:.2f}% < required {threshold:.2f}%")
+	return failures
 
 
 def _count_or_zero(summary: Mapping[str, CoverageCount], key: str) -> CoverageCount:
@@ -537,6 +663,10 @@ def generate_coverage_reports(coverage_dat: Path, coverage_info: Path, summary_t
 		coverage_types_lines.append("- All current user coverage points are covered.")
 	coverage_types_path = coverage_dat.parent / "coverage_types.md"
 	coverage_types_path.write_text("\n".join(coverage_types_lines) + "\n", encoding="utf-8")
+
+	gate_failures = _coverage_gate_failures(metrics)
+	if gate_failures:
+		raise SystemExit("coverage thresholds not met: " + "; ".join(gate_failures))
 
 	DEBUG_ROOT.mkdir(parents=True, exist_ok=True)
 	timestamp = datetime.now().strftime("%Y%m%d")

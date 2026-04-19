@@ -2,6 +2,8 @@
 
 This document describes how software or an upstream controller should drive the native PT interface and what assumptions are valid for the current RTL.
 
+If your integration point is [`PT_DMA_TOP`](../../rtl/pt_dma_top.v) instead of native [`PT`](../../rtl/pt.v), the command payload and response encoding stay the same, but software injects them through AXI-Lite staging registers and consumes DMA descriptors from `rd_dma_desc_*` / `wr_dma_desc_*` rather than driving `ctrl_*` directly.
+
 ## 1. Native Command Model
 
 PT is not programmed through AXI-Lite directly. Its native command plane is the `ctrl_*` stream:
@@ -55,14 +57,19 @@ Unknown opcodes are rejected and return `err=1`.
 Current accepted encoding:
 
 - `opcode == PT_OP_MATMUL`
-- `M/N/K == PT_SCALE_FULL`
+- `M/N/K ∈ {PT_TILES_1, PT_TILES_2, PT_TILES_4}`
 - `a_off == 0`
 - `b_off == 0`
 - low reserved bits are zero
 
 Current architectural meaning:
 
-- PT performs a full-tile GEMM using the A and B banks only
+- PT performs one aggregated GEMM using the A and B banks only
+- logical shapes are:
+  - A = `(m_tiles * GEMM_X_DIM) x (k_tiles * GEMM_X_DIM)`
+  - B = `(k_tiles * GEMM_Y_DIM) x (n_tiles * GEMM_Y_DIM)`
+  - C = `(m_tiles * GEMM_X_DIM) x (n_tiles * GEMM_Y_DIM)`
+- PT internally iterates over all output subtile positions and returns exactly one final `ctrl_resp` plus one aggregated export
 - A and B residency may come from explicit `LOAD`, compute-side fill, or same-`ctrl_id` cache reuse
 - `M`-as-`A` or `M`-as-`B` `MATMUL` reuse is **not** implemented in the current RTL
 
@@ -92,11 +99,12 @@ Current accepted encoding:
 - `opcode == PT_OP_LOAD`
 - at least one of `need_a` or `need_b` must be set
 - size fields must be non-zero for requested sides
-- reserved bits must be zero
+- `reserved_lo[5:0]` encodes `m_tiles/n_tiles/k_tiles` as `00->1`, `01->2`, `10->4`, `11->illegal`
 
 Semantics:
 
 - `LOAD` prefetches A and/or B/C external payload into the PT side caches associated with `ctrl_id`
+- A-side residency matches `(m_tiles, k_tiles)` and B-side residency matches `(k_tiles, n_tiles)`; cache hit requires both shape and length to match
 - success returns `pack_resp(err=0, m_buf=0, id=ctrl_id)`
 - success does not itself raise `irq`
 
@@ -230,6 +238,49 @@ Two important profiles are used in practice:
   - single-element A/B load beats
   - single-element M writeback/export beats
   - `M_PHYSICAL_COPIES = 3`
+
+Current supported-lane rule:
+
+- `A_LOAD_LANES` must divide `GEMM_X_DIM`
+- `B_LOAD_LANES` must divide `GEMM_Y_DIM`
+- `M_WRITE_LANES` must divide `GEMM_Y_DIM`
+- `M_EXPORT_LANES` must divide `GEMM_Y_DIM`
+
+This restriction was tightened after the `2026-04-18` coverage/RTL refresh so that non-divisor lane counts are no longer treated as supported operating points.
+
+### 7.1 `PT_DMA_TOP` Practical Integration Notes
+
+If software talks to [`PT_DMA_TOP`](../../rtl/pt_dma_top.v) rather than native [`PT`](../../rtl/pt.v), the current wrapper behavior has a few practical implications:
+
+- a full descriptor submission currently uses `11` AXI-Lite writes:
+  - `CMD_INST`, `CMD_ID`
+  - `A/B/C/M` low + high address words
+  - `CTRL_DESC_PUSH`
+- in the current `EXT_ADDR_W=32` build profile, the four `*_ADDR_HI` writes are functionally redundant because the wrapper exposes only 32-bit external addresses
+- same-`ctrl_id` pushes update the existing descriptor entry in place, so software can avoid full rewrites when only a subset of the staged fields changed
+- descriptor entries are not retired automatically in the current RTL; measured wrapper tests show the table holds only `8` live IDs before `STATUS_DESC_OVERFLOW` asserts on the ninth unique ID
+- under sustained DMA-side backpressure, wrapper-side command headroom is finite; current tests observe `STATUS_CMD_OVERFLOW` on the tenth repeated push in the standard configuration
+
+Current measured top-level timing facts for the app-style wide `16x16` profile are:
+
+- cold-miss `MATMUL`
+  - `first AXI-Lite write -> resp visible = 123 cycles`
+  - `CTRL_DESC_PUSH -> resp visible = 83 cycles`
+- cache-hit `MATMUL`
+  - full rewrite = `85 cycles`
+  - same-id delta replay = `45 cycles`
+- retained-M `MATADD`
+  - `first AXI-Lite write -> resp visible = 147 cycles`
+  - `CTRL_DESC_PUSH -> resp visible = 107 cycles`
+- export
+  - `wr_dma_desc -> m_axis_tlast = 33 cycles`
+
+Software guidance from these measurements:
+
+- reuse `ctrl_id` aggressively
+- avoid rewriting unchanged descriptor fields
+- when the build is known to use `EXT_ADDR_W=32`, skip redundant `*_ADDR_HI` writes
+- treat AXI-Lite submission cost as a first-order performance term on cache-hit flows, not just a small control-side detail
 
 ## 8. Integration Rules
 

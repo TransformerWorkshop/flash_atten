@@ -3,49 +3,64 @@ module sram #(
 	parameter DEPTH      = 16,
 	parameter ADDR_WIDTH = (DEPTH <= 1) ? 1 : $clog2(DEPTH)
 ) (
-	input  wire                  clk   ,
-	// Port A
-	input  wire                  en_a  ,
-	input  wire                  we_a  ,
-	input  wire [ADDR_WIDTH-1:0] addr_a,
-	input  wire [ DATA_WIDTH-1:0] din_a ,
-	output reg  [ DATA_WIDTH-1:0] dout_a,
-	// Port B
-	input  wire                  en_b  ,
-	input  wire                  we_b  ,
-	input  wire [ADDR_WIDTH-1:0] addr_b,
-	input  wire [ DATA_WIDTH-1:0] din_b ,
-	output reg  [ DATA_WIDTH-1:0] dout_b
+	input  wire                  clk ,
+	input  wire                  en  ,
+	input  wire                  we  ,
+	input  wire [ADDR_WIDTH-1:0] addr,
+	input  wire [ DATA_WIDTH-1:0] din ,
+	output reg  [ DATA_WIDTH-1:0] dout
 );
 
+`ifdef SYNTHESIS
+	localparam USE_TSMC_64X32 = (DATA_WIDTH == 32) && (DEPTH == 64);
+
+	generate
+		if (USE_TSMC_64X32) begin : gen_tsmc_sram
+			wire [DATA_WIDTH-1:0] macro_q;
+			wire                  macro_ceb = ~en;
+			wire                  macro_web = ~we;
+			wire [DATA_WIDTH-1:0] macro_bweb = we ? {DATA_WIDTH{1'b0}} : {DATA_WIDTH{1'b1}};
+
+			TEM5N28HPCPLVTA64X32M4SWSO u_tsmc_sram (
+				.SLP (1'b0      ),
+				.SD  (1'b0      ),
+				.A   (addr       ),
+				.D   (din        ),
+				.BWEB(macro_bweb ),
+				.Q   (macro_q    ),
+				.WEB (macro_web  ),
+				.CEB (macro_ceb  ),
+				.CLK (clk        )
+			);
+
+			always @(*) begin
+				if (en && !we) begin
+					dout = macro_q;
+				end else begin
+					dout = {DATA_WIDTH{1'b0}};
+				end
+			end
+		end else begin : gen_unsup_cfg
+			always @(*) begin
+				dout = {DATA_WIDTH{1'b0}};
+			end
+		end
+	endgenerate
+`else
 	reg [DATA_WIDTH-1:0] mem [0:DEPTH-1];
 
-	integer mi;
-	initial begin
-		for (mi = 0; mi < DEPTH; mi = mi + 1) begin
-			mem[mi] = {DATA_WIDTH{1'b0}};
-		end
-		dout_a = {DATA_WIDTH{1'b0}};
-		dout_b = {DATA_WIDTH{1'b0}};
-	end
-
 	always @(posedge clk) begin
-		if (en_a && we_a) begin
-			mem[addr_a] <= din_a;
-		end
-		if (en_b && we_b) begin
-			mem[addr_b] <= din_b;
-		end
-		if (en_a) begin
-			dout_a <= mem[addr_a];
+		if (en) begin
+			if (we) begin
+				mem[addr] <= din;
+				dout <= {DATA_WIDTH{1'b0}};
+			end else begin
+				dout <= mem[addr];
+			end
 		end else begin
-			dout_a <= {DATA_WIDTH{1'b0}};
-		end
-		if (en_b) begin
-			dout_b <= mem[addr_b];
-		end else begin
-			dout_b <= {DATA_WIDTH{1'b0}};
+			dout <= {DATA_WIDTH{1'b0}};
 		end
 	end
+`endif
 
 endmodule

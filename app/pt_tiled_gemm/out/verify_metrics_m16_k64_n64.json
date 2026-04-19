@@ -1,0 +1,20 @@
+{
+  "metadata": {
+    "problem": {
+      "k_dim": 64,
+      "k_tiles": 4,
+      "m_dim": 16,
+      "m_tiles": 1,
+      "n_dim": 64,
+      "n_tiles": 4
+    }
+  },
+  "unsupported_paths": {
+    "same_id_k_slice_swap": {
+      "observed_dma_increment": 0,
+      "observed_result_changed": false,
+      "observed_same_result": true,
+      "status": "unsupported"
+    }
+  }
+}

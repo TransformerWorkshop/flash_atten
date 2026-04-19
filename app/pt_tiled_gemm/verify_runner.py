@@ -7,7 +7,19 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from . import COCOTB_ROOT, PT_PARAMS, ProblemSpec, REPO_ROOT, RTL_DIR, cocotb_output_root, default_metrics_path
+from . import (
+	COCOTB_ROOT,
+	DEFAULT_APP_TARGET,
+	PT_PARAMS,
+	ProblemSpec,
+	REPO_ROOT,
+	RTL_DIR,
+	app_target_label,
+	cocotb_output_root,
+	default_metrics_path,
+	hdl_toplevel_for_target,
+	normalize_app_target,
+)
 
 try:
 	from cocotb_tools.runner import get_runner
@@ -25,6 +37,7 @@ APP_TEST_MODULE = "app.pt_tiled_gemm.tests.test_pt_tiled_gemm"
 class VerifyResult:
 	available: bool
 	success: bool
+	target: str
 	simulator: str
 	problem: Dict[str, list[int]]
 	tests: int
@@ -90,6 +103,7 @@ def render_verify_text(result: VerifyResult) -> str:
 		f"  Problem   : A={result.problem['A'][0]}x{result.problem['A'][1]}, "
 		f"B={result.problem['B'][0]}x{result.problem['B'][1]}, "
 		f"C={result.problem['C'][0]}x{result.problem['C'][1]}",
+		f"  Target    : {app_target_label(result.target)}",
 		f"  Simulator : {result.simulator}",
 		f"  Success   : {result.success}",
 		f"  Tests     : {result.tests}",
@@ -103,16 +117,23 @@ def render_verify_text(result: VerifyResult) -> str:
 	return "\n".join(lines)
 
 
-def run_verification(problem: ProblemSpec, sim_name: str = "icarus", waves: bool = False) -> VerifyResult:
+def run_verification(
+	problem: ProblemSpec,
+	sim_name: str = "icarus",
+	waves: bool = False,
+	target: str = DEFAULT_APP_TARGET,
+) -> VerifyResult:
 	problem.validate()
+	normalized_target = normalize_app_target(target)
 	normalized_sim = normalize_sim_name(sim_name)
-	base_dir = cocotb_output_root(problem) / normalized_sim
+	base_dir = cocotb_output_root(problem, normalized_target) / normalized_sim
 	build_dir = base_dir / "build"
 	test_dir = base_dir / "test"
 	log_dir = base_dir / "logs"
 	func_cov_dir = base_dir / "functional"
 	results_xml = base_dir / "results.xml"
-	metrics_path = default_metrics_path(problem)
+	metrics_path = default_metrics_path(problem, normalized_target)
+	hdl_toplevel = hdl_toplevel_for_target(normalized_target)
 
 	for path in (build_dir, test_dir, log_dir, func_cov_dir, metrics_path.parent):
 		path.mkdir(parents=True, exist_ok=True)
@@ -123,6 +144,7 @@ def run_verification(problem: ProblemSpec, sim_name: str = "icarus", waves: bool
 		return VerifyResult(
 			available=False,
 			success=False,
+			target=normalized_target,
 			simulator=normalized_sim,
 			problem=problem.shape,
 			tests=0,
@@ -148,6 +170,7 @@ def run_verification(problem: ProblemSpec, sim_name: str = "icarus", waves: bool
 
 	extra_env = {
 		"PYTHONPATH": os.pathsep.join(pythonpath_entries),
+		"PT_APP_TARGET": normalized_target,
 		"PT_X_DIM": str(PT_PARAMS["GEMM_X_DIM"]),
 		"PT_Y_DIM": str(PT_PARAMS["GEMM_Y_DIM"]),
 		"PT_DATA_WIDTH": str(PT_PARAMS["DATA_WIDTH"]),
@@ -177,7 +200,7 @@ def run_verification(problem: ProblemSpec, sim_name: str = "icarus", waves: bool
 		runner.build(
 			sources=_rtl_sources(),
 			includes=[RTL_DIR],
-			hdl_toplevel="PT",
+			hdl_toplevel=hdl_toplevel,
 			parameters=PT_PARAMS,
 			build_args=["-Wall"],
 			build_dir=build_dir,
@@ -189,7 +212,7 @@ def run_verification(problem: ProblemSpec, sim_name: str = "icarus", waves: bool
 		)
 		runner.test(
 			test_module=APP_TEST_MODULE,
-			hdl_toplevel="PT",
+			hdl_toplevel=hdl_toplevel,
 			build_dir=build_dir,
 			test_dir=test_dir,
 			results_xml=str(results_xml),
@@ -220,6 +243,7 @@ def run_verification(problem: ProblemSpec, sim_name: str = "icarus", waves: bool
 	return VerifyResult(
 		available=True,
 		success=success,
+		target=normalized_target,
 		simulator=normalized_sim,
 		problem=problem.shape,
 		tests=result_counts["tests"],

@@ -636,9 +636,9 @@ async def test_pt_protocol_errors(dut) -> None:
 	env.register_external_matrix("B", 0, flatten_pattern_matrix(env.y_dim, 2, 1, 0))
 
 	start = env.snapshot()
-	bad_mnk_plan = env.plan_matmul(0x200, 0x000, 0x000, n_scale=PT_SCALE_FULL_DIV2)
+	bad_mnk_plan = env.plan_matmul(0x200, 0x000, 0x000, n_scale=0x0)
 	assert bad_mnk_plan.err
-	await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL_DIV2, PT_SCALE_FULL, 0x000, 0x000), 0x200)
+	await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, 0x0, PT_SCALE_FULL, 0x000, 0x000), 0x200)
 	await env.wait_ctrl_resp(bad_mnk_plan.response_word, 500)
 	await ClockCycles(dut.clk, 8)
 	assert env.dma_req_count == start.dma_req_count

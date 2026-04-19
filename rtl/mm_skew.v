@@ -28,50 +28,60 @@ module MM_SKEW #(
 	genvar i, j;
 	generate
 		for (i = 0; i < X_DIM; i = i + 1) begin: gen_skew
-			if (i > 0) begin
+			if (i > 0) begin : gen_shift_a
+				wire [i*WIDTH-1:0] unused_sipo_data;
+				wire [i-1:0]       unused_sipo_valid;
 				SHIFT_REG #(
 					.WIDTH(WIDTH),
 					.DEPTH(i),
 					.USE_SIPO(0)
-				) shift_reg (
+				) u_shift_reg_a (
 					.clk(clk),
 					.rstn(rstn),
 					.clear(clear),
 					.data_in(a[(i+1)*WIDTH-1:i*WIDTH]),
 					.valid_in(a_valid),
 					.ready_in(a_ready_vec[i]),
+					.sipo_data_out(unused_sipo_data),
+					.sipo_ready({i{1'b0}}),
+					.sipo_valid(unused_sipo_valid),
 					.siso_data_out(a_skewed[(i+1)*WIDTH-1:i*WIDTH]),
 					.siso_valid(a_skewed_valid[i]),
 					.siso_ready(a_skewed_ready)
 				);
-			end else begin
+			end else begin : gen_passthrough_a
 				assign a_skewed[WIDTH-1:0] = a[WIDTH-1:0];
 				assign a_skewed_valid[0]   = a_valid;
-				assign a_ready_vec[0]      = a_ready;
+				assign a_ready_vec[0]      = a_skewed_ready;
 			end
 		end
 
 		for (j = 0; j < Y_DIM; j = j + 1) begin: gen_skew_b
-			if (j > 0) begin
+			if (j > 0) begin : gen_shift_b
+				wire [j*WIDTH-1:0] unused_sipo_data;
+				wire [j-1:0]       unused_sipo_valid;
 				SHIFT_REG #(
 					.WIDTH(WIDTH),
 					.DEPTH(j),
 					.USE_SIPO(0)
-				) shift_reg (
+				) u_shift_reg_b (
 					.clk(clk),
 					.rstn(rstn),
 					.clear(clear),
 					.data_in(b[(j+1)*WIDTH-1:j*WIDTH]),
 					.valid_in(b_valid),
 					.ready_in(b_ready_vec[j]),
+					.sipo_data_out(unused_sipo_data),
+					.sipo_ready({j{1'b0}}),
+					.sipo_valid(unused_sipo_valid),
 					.siso_data_out(b_skewed[(j+1)*WIDTH-1:j*WIDTH]),
 					.siso_valid(b_skewed_valid[j]),
 					.siso_ready(b_skewed_ready)
 				);
-			end else begin
+			end else begin : gen_passthrough_b
 				assign b_skewed[WIDTH-1:0] = b[WIDTH-1:0];
 				assign b_skewed_valid[0]   = b_valid;
-				assign b_ready_vec[0]      = b_ready;
+				assign b_ready_vec[0]      = b_skewed_ready;
 			end
 		end
 	endgenerate

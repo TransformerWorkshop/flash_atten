@@ -113,6 +113,27 @@ SUITE_REQUIRED_BINS: Dict[str, List[str]] = {
 	],
 }
 SUITE_REQUIRED_BINS["coverage"] = list(SUITE_REQUIRED_BINS["ci"])
+SUITE_REQUIRED_BINS["perf"] = [
+	"cmd:matmul",
+	"cache:a_hit",
+	"cache:a_miss",
+	"cache:b_hit",
+	"cache:b_miss",
+	"export:success",
+]
+SUITE_REQUIRED_BINS["stress"] = [
+	"cmd:load",
+	"cmd:matmul",
+	"queue:ctrl_ready_low",
+	"backpressure:long_phase",
+	"slot_scan:hit_nonzero",
+	"slot_scan:free_nonzero",
+	"slot_scan:lut_full_reject",
+	"clear:pre_issue",
+	"clear:in_flight",
+	"clear:post_export",
+	"export:success",
+]
 SUITE_REQUIRED_BINS["soak"] = [
 	"cmd:matmul",
 	"cache:a_miss",

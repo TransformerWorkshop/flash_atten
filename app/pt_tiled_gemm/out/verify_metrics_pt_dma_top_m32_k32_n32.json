@@ -1,0 +1,22 @@
+{
+  "metadata": {
+    "problem": {
+      "k_dim": 32,
+      "k_tiles": 2,
+      "m_dim": 32,
+      "m_tiles": 2,
+      "n_dim": 32,
+      "n_tiles": 2,
+      "target": "pt_dma_top",
+      "target_label": "PT_DMA_TOP"
+    }
+  },
+  "unsupported_paths": {
+    "same_id_k_slice_swap": {
+      "observed_dma_increment": 0,
+      "observed_result_changed": false,
+      "observed_same_result": true,
+      "status": "unsupported"
+    }
+  }
+}

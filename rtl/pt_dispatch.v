@@ -22,7 +22,9 @@ module PT_DISPATCH #(
 	output wire [`PT_MALLOC_KIND_W-1:0] malloc_cmd_kind,
 	output wire [`INST_WIDTH-1:0]     malloc_cmd_inst,
 	output wire [31:0]                malloc_cmd_id,
-	input  wire                       malloc_resp_valid
+	input  wire                       malloc_resp_valid,
+	input  wire                       malloc_exec_busy,
+	input  wire                       malloc_serial_busy
 );
 
 	PT_DISPATCH_V2 #(
@@ -47,7 +49,9 @@ module PT_DISPATCH #(
 		.malloc_cmd_kind (malloc_cmd_kind),
 		.malloc_cmd_inst (malloc_cmd_inst),
 		.malloc_cmd_id   (malloc_cmd_id),
-		.malloc_resp_valid(malloc_resp_valid)
+		.malloc_resp_valid(malloc_resp_valid),
+		.malloc_exec_busy(malloc_exec_busy),
+		.malloc_serial_busy(malloc_serial_busy)
 	);
 
 endmodule

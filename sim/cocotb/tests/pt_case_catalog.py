@@ -123,10 +123,10 @@ QCFG_CASES = [
 
 
 PROTOCOL_CASES = [
-	_case("test_pt_protocol_error_control_invalid_scale_n_01", "PT-BB-004", "异常路径测试", "控制编码异常", "N scale 非法", (4,), ("full",), "control_invalid_scale_n", kind="invalid_scale", params={"m_scale": 0x3, "n_scale": 0x2, "k_scale": 0x3}),
-	_case("test_pt_protocol_error_control_invalid_scale_m_02", "PT-BB-004", "异常路径测试", "控制编码异常", "M scale 非法", (4,), ("full",), "control_invalid_scale_m", kind="invalid_scale", params={"m_scale": 0x2, "n_scale": 0x3, "k_scale": 0x3}),
-	_case("test_pt_protocol_error_control_invalid_scale_k_03", "PT-BB-004", "异常路径测试", "控制编码异常", "K scale 非法", (4,), ("full",), "control_invalid_scale_k", kind="invalid_scale", params={"m_scale": 0x3, "n_scale": 0x3, "k_scale": 0x2}),
-	_case("test_pt_protocol_error_control_invalid_scale_all_04", "PT-BB-004", "异常路径测试", "控制编码异常", "MNK scale 全非法", (4,), ("full",), "control_invalid_scale_all", kind="invalid_scale", params={"m_scale": 0x2, "n_scale": 0x2, "k_scale": 0x2}),
+	_case("test_pt_protocol_error_control_invalid_scale_n_01", "PT-BB-004", "异常路径测试", "控制编码异常", "N scale 非法", (4,), ("full",), "control_invalid_scale_n", kind="invalid_scale", params={"m_scale": 0x1, "n_scale": 0x0, "k_scale": 0x1}),
+	_case("test_pt_protocol_error_control_invalid_scale_m_02", "PT-BB-004", "异常路径测试", "控制编码异常", "M scale 非法", (4,), ("full",), "control_invalid_scale_m", kind="invalid_scale", params={"m_scale": 0x5, "n_scale": 0x1, "k_scale": 0x1}),
+	_case("test_pt_protocol_error_control_invalid_scale_k_03", "PT-BB-004", "异常路径测试", "控制编码异常", "K scale 非法", (4,), ("full",), "control_invalid_scale_k", kind="invalid_scale", params={"m_scale": 0x1, "n_scale": 0x1, "k_scale": 0x0}),
+	_case("test_pt_protocol_error_control_invalid_scale_all_04", "PT-BB-004", "异常路径测试", "控制编码异常", "MNK scale 全非法", (4,), ("full",), "control_invalid_scale_all", kind="invalid_scale", params={"m_scale": 0x0, "n_scale": 0x0, "k_scale": 0x0}),
 	_case("test_pt_protocol_error_align_bad_a_off_05", "PT-BB-004", "异常路径测试", "地址/对齐异常", "A offset 非对齐 1", (4,), ("full",), "align_bad_a_off_1", kind="bad_align", params={"a_off": 0x001, "b_off": 0x000}),
 	_case("test_pt_protocol_error_align_bad_b_off_06", "PT-BB-004", "异常路径测试", "地址/对齐异常", "B offset 非对齐 1", (4,), ("full",), "align_bad_b_off_1", kind="bad_align", params={"a_off": 0x000, "b_off": 0x001}),
 	_case("test_pt_protocol_error_align_bad_a_off_07", "PT-BB-004", "异常路径测试", "地址/对齐异常", "A offset 非对齐 3", (4,), ("full",), "align_bad_a_off_3", kind="bad_align", params={"a_off": 0x003, "b_off": 0x000}),
@@ -167,6 +167,7 @@ PROTOCOL_EDGE_CASES = [
 	_case("test_pt_protocol_edge_dma_error_after_b_06", "PT-BB-009", "异常路径测试", "输入流异常", "B stream after-stream error", (4, 8), ("full",), "dma_error_after_b", kind="dma_error_after_b", params={"delay": 1}),
 	_case("test_pt_protocol_edge_single_side_hit_mix_07", "PT-BB-009", "异常路径测试", "cache/M-window 组合", "单边 hit/miss 组合只触发一侧 DMA", (4, 8), ("full",), "single_side_hit_mix", kind="single_side_hit_mix", params={}),
 	_case("test_pt_protocol_edge_single_side_mwindow_mix_08", "PT-BB-009", "异常路径测试", "cache/M-window 组合", "单边 M-window + 单边 ext 组合只触发一侧 DMA", (4, 8), ("full",), "single_side_mwindow_mix", kind="single_side_mwindow_mix", params={}),
+	_case("test_pt_protocol_edge_bslot_overwritten_by_c_then_b_reloads_09", "PT-BB-009", "异常路径测试", "cache/M-window 组合", "B-side 被 C 覆盖后，再次 MATMUL 需要重装 B", (4, 8), ("full",), "bslot_overwritten_by_c_then_b_reloads", kind="bslot_overwritten_by_c_then_b_reloads", params={}),
 ]
 
 
@@ -227,6 +228,9 @@ RANDOMIZED_PROFILES = [
 	_case("test_pt_randomized_profile_export_error_heavy_8x8_18", "PT-BB-007", "随机扰动测试", "export_error_heavy", "8x8 导出错误偏置", (8,), ("randomized",), "export_error_heavy_8x8", seed=817, random_cases=20, weights={"legal": 3, "hit": 2, "mwindow": 2, "qcfg": 2, "invalid": 1, "wrong_tuser": 1, "export_error": 7}, ready_probs={"dma_req_ready": 0.78, "m_dma_req_ready": 0.78, "m_axis_ready": 0.70, "s_axis_valid": 0.80}),
 	_case("test_pt_randomized_profile_backpressure_heavy_8x8_19", "PT-BB-007", "随机扰动测试", "backpressure_heavy", "8x8 重回压随机偏置", (8,), ("randomized",), "backpressure_heavy_8x8", seed=818, random_cases=20, weights={"legal": 4, "hit": 2, "mwindow": 2, "qcfg": 2, "invalid": 2, "wrong_tuser": 1, "export_error": 1}, ready_probs={"dma_req_ready": 0.62, "m_dma_req_ready": 0.66, "m_axis_ready": 0.58, "s_axis_valid": 0.66}),
 	_case("test_pt_randomized_profile_cache_reuse_heavy_8x8_20", "PT-BB-007", "随机扰动测试", "cache_reuse_heavy", "8x8 cache reuse 偏置", (8,), ("randomized",), "cache_reuse_heavy_8x8", seed=819, random_cases=20, weights={"legal": 2, "hit": 6, "mwindow": 5, "qcfg": 2, "invalid": 1, "wrong_tuser": 1, "export_error": 1}, ready_probs={"dma_req_ready": 0.80, "m_dma_req_ready": 0.84, "m_axis_ready": 0.76, "s_axis_valid": 0.82}),
+	_case("test_pt_randomized_profile_balanced_mix_16x16_21", "PT-BB-007", "随机扰动测试", "balanced_mix", "16x16 均衡随机流量", (16,), ("extended", "soak"), "balanced_mix_16x16", seed=1610, random_cases=24, weights={"legal": 4, "hit": 2, "mwindow": 2, "qcfg": 2, "invalid": 2, "wrong_tuser": 1, "export_error": 1}, ready_probs={"dma_req_ready": 0.76, "m_dma_req_ready": 0.80, "m_axis_ready": 0.72, "s_axis_valid": 0.80}),
+	_case("test_pt_randomized_profile_backpressure_heavy_16x16_22", "PT-BB-007", "随机扰动测试", "backpressure_heavy", "16x16 重回压随机偏置", (16,), ("extended", "soak"), "backpressure_heavy_16x16", seed=1618, random_cases=24, weights={"legal": 4, "hit": 2, "mwindow": 2, "qcfg": 2, "invalid": 2, "wrong_tuser": 1, "export_error": 1}, ready_probs={"dma_req_ready": 0.58, "m_dma_req_ready": 0.62, "m_axis_ready": 0.54, "s_axis_valid": 0.62}),
+	_case("test_pt_randomized_profile_cache_reuse_heavy_16x16_23", "PT-BB-007", "随机扰动测试", "cache_reuse_heavy", "16x16 cache reuse 偏置", (16,), ("extended", "soak"), "cache_reuse_heavy_16x16", seed=1619, random_cases=24, weights={"legal": 2, "hit": 7, "mwindow": 5, "qcfg": 2, "invalid": 1, "wrong_tuser": 1, "export_error": 1}, ready_probs={"dma_req_ready": 0.78, "m_dma_req_ready": 0.82, "m_axis_ready": 0.74, "s_axis_valid": 0.80}),
 ]
 
 
@@ -251,6 +255,17 @@ GUARD_PROFILES = [
 	_case("test_pt_guard_config_asym_invalid_x12_y8_18", "PT-BB-005", "约束/配置测试", "asymmetric invalid", "X 非幂偶数、Y 合法", (12, 8), ("full",), "asym_invalid_x12_y8", x_dim=12, y_dim=8),
 	_case("test_pt_guard_config_asym_invalid_x8_y12_19", "PT-BB-005", "约束/配置测试", "asymmetric invalid", "X 合法、Y 非幂偶数", (8, 12), ("full",), "asym_invalid_x8_y12", x_dim=8, y_dim=12),
 	_case("test_pt_guard_config_both_odd_x7_y9_20", "PT-BB-005", "约束/配置测试", "both odd", "更大双奇数组合", (7, 9), ("full",), "both_odd_x7_y9", x_dim=7, y_dim=9),
+	_case("test_pt_guard_config_a_load_lanes_zero_4x4_21", "PT-BB-005", "约束/配置测试", "lane invalid", "A_LOAD_LANES 为 0", (4, 4), ("full",), "a_load_lanes_zero_4x4", x_dim=4, y_dim=4, rtl_params={"A_LOAD_LANES": 0}, expected_log_tokens=["PT_MD_V2 requires 0 < A_LOAD_LANES <= GEMM_X_DIM"]),
+	_case("test_pt_guard_config_a_load_lanes_gt_x_4x4_22", "PT-BB-005", "约束/配置测试", "lane invalid", "A_LOAD_LANES 大于 X", (4, 4), ("full",), "a_load_lanes_gt_x_4x4", x_dim=4, y_dim=4, rtl_params={"A_LOAD_LANES": 5}, expected_log_tokens=["PT_MD_V2 requires 0 < A_LOAD_LANES <= GEMM_X_DIM"]),
+	_case("test_pt_guard_config_b_load_lanes_zero_4x4_23", "PT-BB-005", "约束/配置测试", "lane invalid", "B_LOAD_LANES 为 0", (4, 4), ("full",), "b_load_lanes_zero_4x4", x_dim=4, y_dim=4, rtl_params={"B_LOAD_LANES": 0}, expected_log_tokens=["PT_MD_V2 requires 0 < B_LOAD_LANES <= GEMM_Y_DIM"]),
+	_case("test_pt_guard_config_b_load_lanes_gt_y_4x4_24", "PT-BB-005", "约束/配置测试", "lane invalid", "B_LOAD_LANES 大于 Y", (4, 4), ("full",), "b_load_lanes_gt_y_4x4", x_dim=4, y_dim=4, rtl_params={"B_LOAD_LANES": 5}, expected_log_tokens=["PT_MD_V2 requires 0 < B_LOAD_LANES <= GEMM_Y_DIM"]),
+	_case("test_pt_guard_config_m_write_lanes_zero_4x4_25", "PT-BB-005", "约束/配置测试", "lane invalid", "M_WRITE_LANES 为 0", (4, 4), ("full",), "m_write_lanes_zero_4x4", x_dim=4, y_dim=4, rtl_params={"M_WRITE_LANES": 0}, expected_log_tokens=["PT_CE_V2 requires 0 < M_WRITE_LANES <= GEMM_Y_DIM"]),
+	_case("test_pt_guard_config_m_write_lanes_gt_y_4x4_26", "PT-BB-005", "约束/配置测试", "lane invalid", "M_WRITE_LANES 大于 Y", (4, 4), ("full",), "m_write_lanes_gt_y_4x4", x_dim=4, y_dim=4, rtl_params={"M_WRITE_LANES": 5}, expected_log_tokens=["PT_CE_V2 requires 0 < M_WRITE_LANES <= GEMM_Y_DIM"]),
+	_case("test_pt_guard_config_m_export_lanes_zero_4x4_27", "PT-BB-005", "约束/配置测试", "lane invalid", "M_EXPORT_LANES 为 0", (4, 4), ("full",), "m_export_lanes_zero_4x4", x_dim=4, y_dim=4, rtl_params={"M_EXPORT_LANES": 0}, expected_log_tokens=["Concatenation repeat may not be undefined"]),
+	_case("test_pt_guard_config_m_export_lanes_gt_y_4x4_28", "PT-BB-005", "约束/配置测试", "lane invalid", "M_EXPORT_LANES 大于 Y", (4, 4), ("full",), "m_export_lanes_gt_y_4x4", x_dim=4, y_dim=4, rtl_params={"M_EXPORT_LANES": 5}, expected_log_tokens=["PT_MD_V2 requires 0 < M_EXPORT_LANES <= GEMM_Y_DIM"]),
+	_case("test_pt_guard_config_m_physical_copies_one_4x4_29", "PT-BB-005", "约束/配置测试", "copy invalid", "M_PHYSICAL_COPIES 为 1", (4, 4), ("full",), "m_physical_copies_one_4x4", x_dim=4, y_dim=4, rtl_params={"M_PHYSICAL_COPIES": 1}, expected_log_tokens=["PT_M_MEM requires M_PHYSICAL_COPIES to be 2 or 3"]),
+	_case("test_pt_guard_config_m_physical_copies_four_4x4_30", "PT-BB-005", "约束/配置测试", "copy invalid", "M_PHYSICAL_COPIES 为 4", (4, 4), ("full",), "m_physical_copies_four_4x4", x_dim=4, y_dim=4, rtl_params={"M_PHYSICAL_COPIES": 4}, expected_log_tokens=["PT_M_MEM requires M_PHYSICAL_COPIES to be 2 or 3"]),
+	_case("test_pt_guard_config_m_bank_depth_underflow_4x4_31", "PT-BB-005", "约束/配置测试", "bank invalid", "M_BANK_DEPTH * X 小于 max(X, Y)", (4, 4), ("full",), "m_bank_depth_underflow_4x4", x_dim=4, y_dim=4, rtl_params={"M_BANK_DEPTH": 0}, expected_log_tokens=["illegal PT config: M_BANK_DEPTH(0) * GEMM_X_DIM(4) < max(4, 4)"]),
 ]
 
 

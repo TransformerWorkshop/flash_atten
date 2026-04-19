@@ -7,11 +7,11 @@
 - Architecture overview: [README.md](./README.md)
 - Programmer and integration guide: [programming_guide.md](./programming_guide.md)
 - Verification methodology: [verification_methodology.md](./verification_methodology.md)
-- Top-level block diagram: [block_diagram.svg](./block_diagram.svg)
+- Symbol block diagram: [block_diagram.md](./block_diagram.md)
 
 This directory is the authoritative home for PT documentation. Architecture, programming, and verification are kept as separate but aligned documents.
 
-The SVG block diagram is a conceptual aid. For exact signal widths, parameter semantics, and currently supported behaviors, treat the written documentation and RTL as authoritative.
+The symbol block diagram is the main conceptual architecture view. For exact signal widths, parameter semantics, and currently supported behaviors, treat the written documentation and RTL as authoritative.
 
 ## 2. Role In The System
 
@@ -21,7 +21,8 @@ PT accepts tile-level control commands, fetches operand tiles A and B on demand,
 
 | Module | Role | Current behavior |
 | --- | --- | --- |
-| [`PT`](../../rtl/pt.v) | Public top-level wrapper | Exposes the native PT control interface plus A/B load and M export DMA/stream ports |
+| [`PT`](../../rtl/pt.v) | Native datapath-facing top | Exposes the native PT control interface plus A/B load and M export DMA/stream ports; now kept primarily as an explicit control/reference path |
+| [`PT_DMA_TOP`](../../rtl/pt_dma_top.v) | Default software-facing wrapper top | Wraps `PT` with AXI-Lite staging registers, command/response FIFOs, and external read/write DMA descriptor ports while keeping the existing PT data streams |
 | [`PT_V2`](../../rtl/pt_top_v2.v) | Canonical assembled implementation | Connects dispatch, allocation, memory/control execution, compute, storage, and response merge |
 | [`PT_DISPATCH`](../../rtl/pt_dispatch.v) | Front-end dispatch | Owns `ctrl_*` ingress, command classification, ordering, and QCFG barrier handling |
 | [`PT_MALLOC`](../../rtl/pt_malloc.v) | Residency and allocation control | Tracks A/B cache entries by `ctrl_id`, allocates local buffer space, and issues fill/compute work |
@@ -51,6 +52,31 @@ PT accepts tile-level control commands, fetches operand tiles A and B on demand,
 | Completion/error indication | `irq` | Pulses on successful compute completion and error paths |
 
 PT is programmed through its native command interface. It is not driven through [`csr_array.v`](../../rtl/csr_array.v).
+
+For software-facing bring-up that prefers an AXI-Lite mailbox over native `ctrl_*`, use [`PT_DMA_TOP`](../../rtl/pt_dma_top.v). That wrapper keeps the existing `s_axis_*` / `m_axis_*` payload semantics, but replaces native `ctrl_*`, `dma_req_*`, and `m_dma_req_*` with:
+
+- `s_axil_*` staging/control registers
+- `rd_dma_desc_*` for A/B/C read descriptors
+- `wr_dma_desc_*` for M export descriptors
+
+Wrapper validation note:
+
+- `PT_DMA_TOP` now has dedicated functional and performance regressions:
+  - `python3 sim/cocotb/run.py axil --sim icarus`
+  - `python3 sim/cocotb/run.py axil_perf --sim icarus`
+- The main cocotb entrypoint now defaults to `PT_DMA_TOP` for:
+  - `smoke`
+  - `full`
+  - `ci`
+  - `stress`
+  - `randomized`
+  - `perf`
+- Native `PT` is still available explicitly through:
+  - `python3 sim/cocotb/run.py smoke --sim icarus --target pt`
+  - `python3 sim/cocotb/run.py perf --sim icarus --target pt`
+- the wrapper-specific performance note lives in:
+  - [`debug/20260417_pt_dma_top_perf_eval.md`](../../debug/20260417_pt_dma_top_perf_eval.md)
+  - [`debug/20260418_pt_dma_top_mainline_rebase.md`](../../debug/20260418_pt_dma_top_mainline_rebase.md)
 
 ### 4.2 Width And Streaming Semantics
 
@@ -100,6 +126,10 @@ Important distinctions:
   - `M_WRITE_LANES = 1`
   - `M_EXPORT_LANES = 1`
   - `M_PHYSICAL_COPIES = 3`
+- In practical tiled-GEMM software flows, `LUT_DEPTH` is also a real scaling limit:
+  - if software allocates a fresh `ctrl_id` for every partial tile, the default
+    `LUT_DEPTH = 8` can be exhausted before the compute datapath itself becomes
+    the bottleneck
 
 Depth semantics remain intentionally different across A/B and M:
 
@@ -115,6 +145,10 @@ Legal builds must satisfy:
 - `0 < B_LOAD_LANES <= GEMM_Y_DIM`
 - `0 < M_WRITE_LANES <= GEMM_Y_DIM`
 - `0 < M_EXPORT_LANES <= GEMM_Y_DIM`
+- `GEMM_X_DIM % A_LOAD_LANES == 0`
+- `GEMM_Y_DIM % B_LOAD_LANES == 0`
+- `GEMM_Y_DIM % M_WRITE_LANES == 0`
+- `GEMM_Y_DIM % M_EXPORT_LANES == 0`
 - `M_PHYSICAL_COPIES in {2, 3}`
 
 ### 5.1 Internal CSR State
@@ -154,6 +188,11 @@ Current consumers of this state:
 
 Architecturally, this means PT has mutable internal configuration state even though its public programming model is command-stream based rather than memory-mapped.
 
+Additional note from the `2026-04-18` coverage/debug refresh:
+
+- non-divisor `A_LOAD_LANES / B_LOAD_LANES / M_WRITE_LANES / M_EXPORT_LANES` are no longer treated as supported build points
+- chunked configurations must use divisor lane counts
+
 ## 6. Current Execution Model
 
 ### 6.1 Main Flow
@@ -176,6 +215,10 @@ There is no separate export command. Export is a post-compute side effect once a
 - For the same `ctrl_id`, B and C share the B-side residency slot. A later `MATADD` may therefore overwrite B metadata with C metadata, which can force a later B reload.
 - M retention is not cache-by-`ctrl_id`. It is a dual-buffer lifetime model owned by `PT_MD`.
 - `PT_MD` tracks `m_buf_state{0,1}` as `FREE`, `READY`, or `EXPORTING`.
+- Practical implication:
+  - software that keeps assigning new `ctrl_id`s instead of reusing old ones may
+    hit the default `LUT_DEPTH = 8` residency limit on larger tiled problems,
+    even when the underlying `MATMUL` datapath is otherwise functioning normally
 
 ## 7. Storage Organization
 
@@ -207,10 +250,11 @@ Implementation detail:
 
 ## 8. Current Architectural Constraints
 
-- `MATMUL` currently accepts only full-tile `M/N/K = PT_SCALE_FULL`
+- `MATMUL` accepts `M/N/K ∈ {1,2,4}` tile counts and returns one aggregated response/export for the full `(M_tiles x N_tiles)` output
 - `MATMUL` currently requires `a_off == 0` and `b_off == 0`
 - `M` as a `MATMUL` operand is **not** implemented in the current RTL
 - `MATADD` accepts only `M-window + external/B-style tile`
+- retained M produced by a multi-`M/N` `MATMUL` is export-only in the current RTL and is rejected if reused by `MATADD`
 - External A/B offsets must remain tile-row aligned
 - `QCFG` supports only `PT_QTYPE_SYMMETRIC` with the `PT_QCFG_CMD_HDR` header format
 - `ctrl_resp` returns only `ctrl_id[29:0]`; exact round-trip recovery therefore assumes IDs are constrained to 30 bits
@@ -244,3 +288,10 @@ After `clear`, stale data may still exist in SRAM physically, but PT must treat 
 - Instruction definitions: [`rtl/param.vh`](../../rtl/param.vh)
 - Quantizer: [`rtl/quant.v`](../../rtl/quant.v)
 - Verification entry: [`sim/cocotb/run.py`](../../sim/cocotb/run.py)
+- Repo-level synthesis sanity entry:
+  - [`scripts/synth_sanity.sh`](../../scripts/synth_sanity.sh)
+  - run with `./scripts/synth_sanity.sh`
+- Latest wrapper-mainline rebase note:
+  - [`debug/20260418_pt_dma_top_mainline_rebase.md`](../../debug/20260418_pt_dma_top_mainline_rebase.md)
+- Latest DC refresh status:
+  - [`debug/20260418_dc_compile_refresh_blocked.md`](../../debug/20260418_dc_compile_refresh_blocked.md)

@@ -1,0 +1,68 @@
+{
+  "algorithms": {
+    "host_reduce_direct_pipelined": {
+      "dma_req_count": 8,
+      "export_beats": 64,
+      "export_req_count": 4,
+      "matadd_count": 0,
+      "total_cycles": 592
+    },
+    "host_reduce_direct_tiled_matmul": {
+      "dma_req_count": 8,
+      "export_beats": 64,
+      "export_req_count": 4,
+      "matadd_count": 0,
+      "total_cycles": 592
+    },
+    "host_reduce_load_then_matmul": {
+      "dma_req_count": 8,
+      "export_beats": 64,
+      "export_req_count": 4,
+      "matadd_count": 0,
+      "total_cycles": 668
+    },
+    "pt_matadd_reduce": {
+      "dma_req_count": 8,
+      "export_beats": 64,
+      "export_req_count": 4,
+      "matadd_count": 0,
+      "total_cycles": 592
+    }
+  },
+  "metadata": {
+    "problem": {
+      "k_dim": 16,
+      "k_tiles": 1,
+      "m_dim": 32,
+      "m_tiles": 2,
+      "n_dim": 32,
+      "n_tiles": 2,
+      "target": "pt_dma_top",
+      "target_label": "PT_DMA_TOP"
+    }
+  },
+  "tests": {
+    "algorithm_compare_reduction_strategies": {
+      "status": "passed",
+      "winner": "host_reduce_direct_tiled_matmul"
+    },
+    "numeric_host_reduce_per_tensor": {
+      "status": "passed",
+      "total_cycles": 592
+    },
+    "numeric_host_reduce_pipelined": {
+      "status": "passed",
+      "total_cycles": 592
+    },
+    "numeric_pt_matadd_reduce_per_tensor": {
+      "status": "passed",
+      "total_cycles": 592
+    }
+  },
+  "unsupported_paths": {
+    "same_id_k_slice_swap": {
+      "reason": "K has only one tile",
+      "status": "not_applicable"
+    }
+  }
+}

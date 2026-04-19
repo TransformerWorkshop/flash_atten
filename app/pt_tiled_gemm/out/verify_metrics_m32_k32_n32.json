@@ -1,0 +1,46 @@
+{
+  "algorithms": {
+    "host_reduce_direct_tiled_matmul": {
+      "dma_req_count": 16,
+      "export_beats": 128,
+      "export_req_count": 8,
+      "matadd_count": 0,
+      "total_cycles": 943
+    },
+    "host_reduce_load_then_matmul": {
+      "dma_req_count": 16,
+      "export_beats": 128,
+      "export_req_count": 8,
+      "matadd_count": 0,
+      "total_cycles": 983
+    }
+  },
+  "metadata": {
+    "problem": {
+      "k_dim": 32,
+      "k_tiles": 2,
+      "m_dim": 32,
+      "m_tiles": 2,
+      "n_dim": 32,
+      "n_tiles": 2
+    }
+  },
+  "tests": {
+    "numeric_host_reduce_per_tensor": {
+      "status": "passed",
+      "total_cycles": 943
+    },
+    "numeric_host_reduce_pipelined": {
+      "status": "passed",
+      "total_cycles": 639
+    }
+  },
+  "unsupported_paths": {
+    "same_id_k_slice_swap": {
+      "observed_dma_increment": 0,
+      "observed_result_changed": false,
+      "observed_same_result": true,
+      "status": "unsupported"
+    }
+  }
+}

@@ -17,8 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 if str(COCOTB_ROOT) not in sys.path:
 	sys.path.insert(0, str(COCOTB_ROOT))
 
-from app.pt_tiled_gemm import ProblemSpec, TILE_DIM
-from tests.pt_blackbox_env import create_env, setup_bases_and_passthrough_qcfg
+from app.pt_tiled_gemm import ProblemSpec, TILE_DIM, app_target_label, normalize_app_target
 from tests.pt_model import (
 	PT_SCALE_FULL,
 	build_load_inst,
@@ -28,6 +27,12 @@ from tests.pt_model import (
 	matmul_row_major,
 	to_unsigned,
 )
+
+APP_TARGET = normalize_app_target(os.getenv("PT_APP_TARGET", "pt"))
+if APP_TARGET == "pt_dma_top":
+	from tests.pt_dma_top_env import create_env, setup_bases_and_passthrough_qcfg
+else:
+	from tests.pt_blackbox_env import create_env, setup_bases_and_passthrough_qcfg
 
 
 CLK_PERIOD_NS = 10
@@ -161,6 +166,8 @@ async def prepare_env(env) -> Tuple[List[int], List[int], List[int]]:
 		"metadata",
 		"problem",
 		{
+			"target": APP_TARGET,
+			"target_label": app_target_label(APP_TARGET),
 			"m_dim": PROBLEM.m_dim,
 			"k_dim": PROBLEM.k_dim,
 			"n_dim": PROBLEM.n_dim,
@@ -196,6 +203,62 @@ async def run_host_reduce_direct(env, a_full: List[int], b_full: List[int]) -> D
 	assert start_cycle is not None
 	return {
 		"name": "host_reduce_direct_tiled_matmul",
+		"total_cycles": cycle_now() - start_cycle,
+		"dma_req_count": env.dma_req_count - snapshot.dma_req_count,
+		"export_req_count": env.export_req_count - snapshot.export_req_count,
+		"export_beats": (env.export_req_count - snapshot.export_req_count) * EXPORT_BEATS_PER_TILE,
+		"matadd_count": 0,
+		"final_matrix": c_full,
+	}
+
+
+async def run_host_reduce_direct_pipelined(env, a_full: List[int], b_full: List[int]) -> Dict[str, object]:
+	"""Like run_host_reduce_direct but keeps up to 2 MATMULs in-flight
+	(limited by M_PHYSICAL_COPIES=2).  The next MATMUL is dispatched before
+	draining the previous one, so the DUT can overlap DMA-fill of tile N+1
+	with compute/export of tile N."""
+	snapshot = env.snapshot()
+	start_cycle = None
+	c_full = [0] * (PROBLEM.m_dim * PROBLEM.n_dim)
+	ctrl_seed = 0
+	pipeline_depth = 2
+	for m_tile in range(PROBLEM.m_tiles):
+		for n_tile in range(PROBLEM.n_tiles):
+			inflight: List[Tuple] = []
+			partials: List[List[int]] = []
+			export_base = env.export_done_count
+			n_sent = 0
+			for k_tile in range(PROBLEM.k_tiles):
+				# drain oldest if window is full
+				if len(inflight) >= pipeline_depth:
+					plan_old, exp_target = inflight.pop(0)
+					await env.wait_ctrl_resp(plan_old.response_word, 80000)
+					env.model.commit_success(plan_old)
+					await env.wait_export_done(exp_target, 80000)
+					assert plan_old.result_matrix is not None
+					partials.append(list(plan_old.result_matrix))
+				ctrl_id = 0xA00 + ctrl_seed
+				ctrl_seed += 1
+				env.register_external_matrix("A", ctrl_id, extract_a_tile(PROBLEM, a_full, m_tile, k_tile))
+				env.register_external_matrix("B", ctrl_id, extract_b_tile(PROBLEM, b_full, k_tile, n_tile))
+				plan = env.plan_matmul(ctrl_id, m_scale=PT_SCALE_FULL, n_scale=PT_SCALE_FULL, k_scale=PT_SCALE_FULL)
+				assert not plan.err
+				await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL), ctrl_id)
+				if start_cycle is None:
+					start_cycle = cycle_now()
+				n_sent += 1
+				inflight.append((plan, export_base + n_sent))
+			# drain remaining
+			for plan_rem, exp_target in inflight:
+				await env.wait_ctrl_resp(plan_rem.response_word, 80000)
+				env.model.commit_success(plan_rem)
+				await env.wait_export_done(exp_target, 80000)
+				assert plan_rem.result_matrix is not None
+				partials.append(list(plan_rem.result_matrix))
+			place_c_tile(PROBLEM, c_full, reduce_partials(partials), m_tile, n_tile)
+	assert start_cycle is not None
+	return {
+		"name": "host_reduce_direct_pipelined",
 		"total_cycles": cycle_now() - start_cycle,
 		"dma_req_count": env.dma_req_count - snapshot.dma_req_count,
 		"export_req_count": env.export_req_count - snapshot.export_req_count,
@@ -299,6 +362,18 @@ async def test_numeric_host_reduce_per_tensor(dut) -> None:
 		result = await run_host_reduce_direct(env, a_full, b_full)
 		assert result["final_matrix"] == golden
 		record_metric("tests", "numeric_host_reduce_per_tensor", {"status": "passed", "total_cycles": result["total_cycles"]})
+	finally:
+		env.shutdown()
+
+
+@cocotb.test()
+async def test_numeric_host_reduce_pipelined(dut) -> None:
+	env = await create_env(dut)
+	try:
+		a_full, b_full, golden = await prepare_env(env)
+		result = await run_host_reduce_direct_pipelined(env, a_full, b_full)
+		assert result["final_matrix"] == golden
+		record_metric("tests", "numeric_host_reduce_pipelined", {"status": "passed", "total_cycles": result["total_cycles"]})
 	finally:
 		env.shutdown()
 
@@ -416,8 +491,25 @@ async def test_algorithm_compare_reduction_strategies(dut) -> None:
 			},
 		)
 
-		assert pt_reduce["total_cycles"] > direct["total_cycles"]
+		a_full, b_full, golden = await prepare_env(env)
+		pipelined = await run_host_reduce_direct_pipelined(env, a_full, b_full)
+		assert pipelined["final_matrix"] == golden
+		record_metric(
+			"algorithms",
+			pipelined["name"],
+			{
+				"total_cycles": pipelined["total_cycles"],
+				"dma_req_count": pipelined["dma_req_count"],
+				"export_req_count": pipelined["export_req_count"],
+				"export_beats": pipelined["export_beats"],
+				"matadd_count": pipelined["matadd_count"],
+			},
+		)
+
+		assert pt_reduce["total_cycles"] >= direct["total_cycles"]
 		assert load_then["total_cycles"] >= direct["total_cycles"]
-		record_metric("tests", "algorithm_compare_reduction_strategies", {"status": "passed", "winner": direct["name"]})
+		assert direct["total_cycles"] >= pipelined["total_cycles"]
+		winner = pipelined["name"] if pipelined["total_cycles"] < direct["total_cycles"] else direct["name"]
+		record_metric("tests", "algorithm_compare_reduction_strategies", {"status": "passed", "winner": winner})
 	finally:
 		env.shutdown()

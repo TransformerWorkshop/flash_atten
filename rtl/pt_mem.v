@@ -17,7 +17,6 @@ module PT_MEM_BANK #(
 	output reg  [LANES*DATA_WIDTH-1:0]     rd_data
 );
 
-	localparam integer TOTAL_LANES = 2 * LANES;
 	localparam integer ADDR_W      = (DEPTH <= 1) ? 1 : $clog2(DEPTH);
 
 	wire [DATA_WIDTH-1:0] lane_rd_ping [0:LANES-1];
@@ -25,39 +24,78 @@ module PT_MEM_BANK #(
 
 	genvar gi;
 	generate
-		for (gi = 0; gi < TOTAL_LANES; gi = gi + 1) begin : gen_sram_bank
-			localparam integer LANE_IDX = (gi < LANES) ? gi : (gi - LANES);
-			wire this_wr_hit = wr_en &&
-			                   wr_mask[LANE_IDX] &&
-			                   (wr_buf ? (gi >= LANES) : (gi < LANES));
-			wire this_rd_hit = rd_en &&
-			                   (rd_buf ? (gi >= LANES) : (gi < LANES));
+		for (gi = 0; gi < LANES; gi = gi + 1) begin : gen_sram_bank
+			localparam integer LANE_IDX = gi;
 
-			wire [DATA_WIDTH-1:0] dout_b_i;
+			wire ping_wr_hit;
+			wire ping_rd_hit;
+			wire pong_wr_hit;
+			wire pong_rd_hit;
+			wire ping_en;
+			wire pong_en;
+			wire ping_we;
+			wire pong_we;
+			wire ping_conflict;
+			wire pong_conflict;
+			wire [ADDR_W-1:0] ping_addr;
+			wire [ADDR_W-1:0] pong_addr;
+			wire [DATA_WIDTH-1:0] ping_dout_i;
+			wire [DATA_WIDTH-1:0] pong_dout_i;
+
+			assign ping_wr_hit = wr_en && wr_mask[LANE_IDX] && !wr_buf;
+			assign ping_rd_hit = rd_en && !rd_buf;
+			assign pong_wr_hit = wr_en && wr_mask[LANE_IDX] && wr_buf;
+			assign pong_rd_hit = rd_en && rd_buf;
+			assign ping_en = ping_wr_hit || ping_rd_hit;
+			assign pong_en = pong_wr_hit || pong_rd_hit;
+			assign ping_we = ping_wr_hit;
+			assign pong_we = pong_wr_hit;
+			assign ping_conflict = ping_wr_hit && ping_rd_hit;
+			assign pong_conflict = pong_wr_hit && pong_rd_hit;
+			assign ping_addr = ping_wr_hit ? wr_addr : rd_addr;
+			assign pong_addr = pong_wr_hit ? wr_addr : rd_addr;
+
+// synthesis translate_off
+`ifndef SYNTHESIS
+			always @(posedge clk) begin
+				if (ping_conflict) begin
+					$fatal(1, "PT_MEM_BANK lane %0d ping bank saw simultaneous read/write on single-port SRAM", LANE_IDX);
+				end
+				if (pong_conflict) begin
+					$fatal(1, "PT_MEM_BANK lane %0d pong bank saw simultaneous read/write on single-port SRAM", LANE_IDX);
+				end
+			end
+`endif
+// synthesis translate_on
 
 			sram #(
 				.DATA_WIDTH(DATA_WIDTH),
 				.DEPTH     (DEPTH),
 				.ADDR_WIDTH(ADDR_W)
-			) u_sram (
-				.clk   (clk             ),
-				.en_a  (this_wr_hit     ),
-				.we_a  (this_wr_hit     ),
-				.addr_a(wr_addr         ),
-				.din_a (wr_data[LANE_IDX*DATA_WIDTH +: DATA_WIDTH]),
-				.dout_a(               ),
-				.en_b  (this_rd_hit     ),
-				.we_b  (1'b0            ),
-				.addr_b(rd_addr         ),
-				.din_b ({DATA_WIDTH{1'b0}}),
-				.dout_b(dout_b_i        )
+			) u_sram_ping (
+				.clk (clk                                       ),
+				.en  (ping_en                                   ),
+				.we  (ping_we                                   ),
+				.addr(ping_addr                                 ),
+				.din (wr_data[LANE_IDX*DATA_WIDTH +: DATA_WIDTH]),
+				.dout(ping_dout_i                               )
 			);
 
-			if (gi < LANES) begin : gen_rd_pack0
-				assign lane_rd_ping[gi] = dout_b_i;
-			end else begin : gen_rd_pack1
-				assign lane_rd_pong[gi-LANES] = dout_b_i;
-			end
+			sram #(
+				.DATA_WIDTH(DATA_WIDTH),
+				.DEPTH     (DEPTH),
+				.ADDR_WIDTH(ADDR_W)
+			) u_sram_pong (
+				.clk (clk                                       ),
+				.en  (pong_en                                   ),
+				.we  (pong_we                                   ),
+				.addr(pong_addr                                 ),
+				.din (wr_data[LANE_IDX*DATA_WIDTH +: DATA_WIDTH]),
+				.dout(pong_dout_i                               )
+			);
+
+			assign lane_rd_ping[gi] = ping_dout_i;
+			assign lane_rd_pong[gi] = pong_dout_i;
 		end
 	endgenerate
 
@@ -95,13 +133,15 @@ module PT_M_MEM #(
 	output reg  [B_LANES*DATA_WIDTH-1:0]   rd_exp_data
 );
 
+// synthesis translate_off
+`ifndef SYNTHESIS
 	initial begin
 		if ((M_PHYSICAL_COPIES != 2) && (M_PHYSICAL_COPIES != 3)) begin
 			$fatal(1, "PT_M_MEM requires M_PHYSICAL_COPIES to be 2 or 3, got %0d", M_PHYSICAL_COPIES);
 		end
-		rd_b_data = {B_LANES*DATA_WIDTH{1'b0}};
-		rd_exp_data = {B_LANES*DATA_WIDTH{1'b0}};
 	end
+`endif
+// synthesis translate_on
 
 	wire [B_LANES*DATA_WIDTH-1:0] row_rd_data_w;
 	wire [B_LANES*DATA_WIDTH-1:0] exp_rd_data_w;

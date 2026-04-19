@@ -1,25 +1,32 @@
 {
   "algorithms": {
+    "host_reduce_direct_pipelined": {
+      "dma_req_count": 8,
+      "export_beats": 64,
+      "export_req_count": 4,
+      "matadd_count": 0,
+      "total_cycles": 277
+    },
     "host_reduce_direct_tiled_matmul": {
       "dma_req_count": 8,
       "export_beats": 64,
       "export_req_count": 4,
       "matadd_count": 0,
-      "total_cycles": 547
+      "total_cycles": 471
     },
     "host_reduce_load_then_matmul": {
       "dma_req_count": 8,
       "export_beats": 64,
       "export_req_count": 4,
       "matadd_count": 0,
-      "total_cycles": 567
+      "total_cycles": 491
     },
     "pt_matadd_reduce": {
       "dma_req_count": 11,
       "export_beats": 112,
       "export_req_count": 7,
       "matadd_count": 3,
-      "total_cycles": 973
+      "total_cycles": 894
     }
   },
   "metadata": {
@@ -29,21 +36,27 @@
       "m_dim": 16,
       "m_tiles": 1,
       "n_dim": 16,
-      "n_tiles": 1
+      "n_tiles": 1,
+      "target": "pt",
+      "target_label": "PT"
     }
   },
   "tests": {
     "algorithm_compare_reduction_strategies": {
       "status": "passed",
-      "winner": "host_reduce_direct_tiled_matmul"
+      "winner": "host_reduce_direct_pipelined"
     },
     "numeric_host_reduce_per_tensor": {
       "status": "passed",
-      "total_cycles": 547
+      "total_cycles": 471
+    },
+    "numeric_host_reduce_pipelined": {
+      "status": "passed",
+      "total_cycles": 277
     },
     "numeric_pt_matadd_reduce_per_tensor": {
       "status": "passed",
-      "total_cycles": 973
+      "total_cycles": 894
     }
   },
   "unsupported_paths": {

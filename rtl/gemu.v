@@ -15,37 +15,49 @@ module GEMU #(parameter WIDTH = 32) (
 	input  wire               m_ready,
 	// control signals
 	input  wire               start  ,
-	input  wire [  WIDTH-1:0] num_acc
+	input  wire [  WIDTH-1:0] num_acc,
+	output wire               start_ready,
+	output wire               tile_done
 );
 
 	localparam STATE_IDLE = 2'b00;
 	localparam STATE_ACCM = 2'b01;
 
 
-	reg  [4*WIDTH-1:0] accm                           ;
-	reg  [  WIDTH-1:0] acc_cnt                        ;
+	reg signed [4*WIDTH-1:0] accm                           ;
+	reg        [  WIDTH-1:0] acc_cnt                        ;
 	reg [1:0] current_state, next_state;
-	wire               in_accm = (current_state == STATE_ACCM);
-	wire               acc_done = (acc_cnt == num_acc) && (num_acc != 0);
+	wire                      in_accm = (current_state == STATE_ACCM);
+	wire                      acc_done = (acc_cnt == num_acc) && (num_acc != 0);
 	// FIFO interfaces
-	wire [  WIDTH-1:0] fifo_a_out  ;
-	wire               fifo_a_valid, fifo_a_ready;
-	wire [  WIDTH-1:0] fifo_b_out  ;
-	wire               fifo_b_valid, fifo_b_ready;
-	wire [4*WIDTH-1:0] fifo_m_in   ;
-	wire               fifo_m_valid, fifo_m_ready;
-	wire [4*WIDTH-1:0] fifo_m_out  ;
+	wire        [  WIDTH-1:0] fifo_a_out  ;
+	wire                      fifo_a_valid, fifo_a_ready;
+	wire        [  WIDTH-1:0] fifo_b_out  ;
+	wire                      fifo_b_valid, fifo_b_ready;
+	wire        [4*WIDTH-1:0] fifo_m_in   ;
+	wire                      fifo_m_valid, fifo_m_ready;
+	wire        [4*WIDTH-1:0] fifo_m_out  ;
+	wire signed [  WIDTH-1:0] fifo_a_out_signed;
+	wire signed [  WIDTH-1:0] fifo_b_out_signed;
+	wire signed [2*WIDTH-1:0] mult_signed      ;
+	wire signed [4*WIDTH-1:0] mult_signed_ext  ;
 
 
 	wire is_a = fifo_a_valid && fifo_a_ready;
 	wire is_b = fifo_b_valid && fifo_b_ready;
 
 	// combinational assign
+	assign fifo_a_out_signed = fifo_a_out;
+	assign fifo_b_out_signed = fifo_b_out;
+	assign mult_signed       = fifo_a_out_signed * fifo_b_out_signed;
+	assign mult_signed_ext   = {{(2*WIDTH){mult_signed[2*WIDTH-1]}}, mult_signed};
 	assign fifo_m_in    = accm;
 	assign fifo_m_valid = in_accm && acc_done;
 	assign fifo_a_ready = in_accm && !acc_done;
 	assign fifo_b_ready = in_accm && !acc_done;
-	assign m            = m_valid ? fifo_m_out : 0;
+	assign m            = m_valid ? fifo_m_out : {4*WIDTH{1'b0}};
+	assign start_ready  = (current_state == STATE_IDLE);
+	assign tile_done    = fifo_m_valid && fifo_m_ready;
 
 	sync_fifo #(.WIDTH(WIDTH), .DEPTH(4)) fifo_a (
 		.clk      (clk         ),
@@ -95,12 +107,16 @@ module GEMU #(parameter WIDTH = 32) (
 	end
 
 	always@(*) begin
+		next_state = current_state;
 		case(current_state)
 			STATE_IDLE : begin
 				next_state = start ? STATE_ACCM : STATE_IDLE;
 			end
 			STATE_ACCM : begin
-				next_state = (acc_done || clear) ? STATE_IDLE : STATE_ACCM;
+				next_state = (clear || (acc_done && fifo_m_ready)) ? STATE_IDLE : STATE_ACCM;
+			end
+			default : begin
+				next_state = STATE_IDLE;
 			end
 		endcase
 	end
@@ -109,17 +125,29 @@ module GEMU #(parameter WIDTH = 32) (
 		if(!rstn) begin
 			accm    <= 0;
 			acc_cnt <= 0;
+		end else if (clear) begin
+			accm    <= 0;
+			acc_cnt <= 0;
 		end else begin
-			case(next_state)
+			case(current_state)
 				STATE_IDLE : begin
 					accm    <= 0;
 					acc_cnt <= 0;
 				end
 				STATE_ACCM : begin
-					if(is_a && is_b) begin
-						accm    <= accm + fifo_a_out * fifo_b_out;
+					if(acc_done) begin
+						if (fifo_m_ready) begin
+							accm    <= 0;
+							acc_cnt <= 0;
+						end
+					end else if(is_a && is_b) begin
+						accm    <= accm + mult_signed_ext;
 						acc_cnt <= acc_cnt + 1;
 					end
+				end
+				default : begin
+					accm    <= 0;
+					acc_cnt <= 0;
 				end
 			endcase
 		end

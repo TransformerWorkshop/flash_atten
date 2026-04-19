@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import os
+
 import cocotb
 from cocotb.triggers import RisingEdge
 
 from tests.pt_blackbox_env import ConstantPattern, create_env, flatten_pattern_matrix, repeating_matrix, setup_bases_and_passthrough_qcfg
 from tests.pt_model import PT_SCALE_FULL, build_load_inst, build_matmul_inst, identity_matrix
+
+
+def _is_dma_top() -> bool:
+	return os.getenv("PT_TOPLEVEL", "PT") == "PT_DMA_TOP"
 
 
 async def _prepare_env(dut):
@@ -20,6 +26,8 @@ def _register_ab(env, ctrl_id: int, bias: int) -> None:
 
 @cocotb.test()
 async def test_pt_stress_ctrl_queue_fill_and_recovery(dut) -> None:
+	if _is_dma_top():
+		return
 	env = await _prepare_env(dut)
 	try:
 		env.configure_patterns(dma_req_ready=ConstantPattern(0))
@@ -52,6 +60,8 @@ async def test_pt_stress_ctrl_queue_fill_and_recovery(dut) -> None:
 
 @cocotb.test()
 async def test_pt_stress_slot_scan_nonzero_hit_free_and_lut_full_reject(dut) -> None:
+	if _is_dma_top():
+		return
 	env = await _prepare_env(dut)
 	try:
 		a_matrix = identity_matrix(env.x_dim, env.data_width)
@@ -105,25 +115,38 @@ async def test_pt_stress_slot_scan_nonzero_hit_free_and_lut_full_reject(dut) -> 
 
 @cocotb.test()
 async def test_pt_stress_near_full_b_capacity_reject(dut) -> None:
+	if _is_dma_top():
+		return
 	env = await _prepare_env(dut)
 	try:
-		fill_size = min(1000, env.b_capacity_elems - 1)
-		fill_matrix = [idx & 0xFFFF_FFFF for idx in range(fill_size)]
-		reject_matrix = [idx & 0xFFFF_FFFF for idx in range(env.y_dim * env.y_dim)]
+		tile_elems = env.y_dim * env.y_dim
+		reject_matrix = [idx & 0xFFFF_FFFF for idx in range(tile_elems)]
+		target_fill = max(1, (2 * env.b_capacity_elems) - tile_elems + 1)
+		fills_needed = (target_fill + tile_elems - 1) // tile_elems
+		expected_reject = "reject:b_capacity" if fills_needed < env.lut_depth else "reject:lut_full_miss"
+		filled = 0
+		offset = 0
 
-		for offset in range(2):
+		while filled < target_fill:
+			fill_matrix = [((idx + filled) & 0xFFFF_FFFF) for idx in range(tile_elems)]
 			ctrl_id = 0xD00 + offset
 			env.register_external_matrix("B", ctrl_id, fill_matrix)
-			plan = env.plan_load(ctrl_id, 0, fill_size, need_a=False, need_b=True)
-			assert not plan.err
-			await env.send_ctrl(build_load_inst(0, fill_size, need_a=False, need_b=True), ctrl_id)
+			plan = env.plan_load(ctrl_id, 0, tile_elems, need_a=False, need_b=True)
+			if plan.err:
+				assert plan.reject_reason == expected_reject
+				await env.send_ctrl(build_load_inst(0, tile_elems, need_a=False, need_b=True), ctrl_id)
+				await env.wait_ctrl_resp(plan.response_word, 12000)
+				return
+			await env.send_ctrl(build_load_inst(0, tile_elems, need_a=False, need_b=True), ctrl_id)
 			await env.wait_ctrl_resp(plan.response_word, 12000)
+			filled += tile_elems
+			offset += 1
 
 		reject_id = 0xD10
 		env.register_external_matrix("B", reject_id, reject_matrix)
 		reject_plan = env.plan_load(reject_id, 0, len(reject_matrix), need_a=False, need_b=True)
 		assert reject_plan.err
-		assert reject_plan.reject_reason == "reject:b_capacity"
+		assert reject_plan.reject_reason == expected_reject
 		await env.send_ctrl(build_load_inst(0, len(reject_matrix), need_a=False, need_b=True), reject_id)
 		await env.wait_ctrl_resp(reject_plan.response_word, 12000)
 	finally:

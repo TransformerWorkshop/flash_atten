@@ -14,6 +14,13 @@ DEFAULT_OUT_DIR = APP_ROOT / "out"
 TILE_DIM = 16
 DATA_WIDTH = 32
 INV_SCALE_WORD = 0x0001_0000
+APP_TARGET_PT = "pt"
+APP_TARGET_PT_DMA_TOP = "pt_dma_top"
+DEFAULT_APP_TARGET = APP_TARGET_PT_DMA_TOP
+SUPPORTED_APP_TARGETS = (
+	APP_TARGET_PT,
+	APP_TARGET_PT_DMA_TOP,
+)
 
 PT_PARAMS = {
 	"DATA_WIDTH": DATA_WIDTH,
@@ -22,7 +29,7 @@ PT_PARAMS = {
 	"EXT_ADDR_W": 32,
 	"DMA_BEATS_W": 16,
 	"LUT_DEPTH": 8,
-	"A_BANK_DEPTH": 8,
+	"A_BANK_DEPTH": 16,
 	"B_BANK_DEPTH": 16,
 	"M_BANK_DEPTH": 16,
 	"A_LOAD_LANES": TILE_DIM,
@@ -94,14 +101,58 @@ class ProblemSpec:
 DEFAULT_PROBLEM = ProblemSpec(m_dim=16, k_dim=64, n_dim=16)
 
 
-def default_metrics_path(problem: ProblemSpec) -> Path:
-	return DEFAULT_OUT_DIR / f"verify_metrics_{problem.tag}.json"
+def normalize_app_target(target: str | None) -> str:
+	if target is None:
+		return DEFAULT_APP_TARGET
+	name = target.strip().lower()
+	alias_map = {
+		"pt": APP_TARGET_PT,
+		"native": APP_TARGET_PT,
+		"pt_dma_top": APP_TARGET_PT_DMA_TOP,
+		"pt-dma-top": APP_TARGET_PT_DMA_TOP,
+		"dma_top": APP_TARGET_PT_DMA_TOP,
+		"wrapper": APP_TARGET_PT_DMA_TOP,
+	}
+	try:
+		return alias_map[name]
+	except KeyError as exc:
+		raise ValueError(f"unsupported app target {target!r}") from exc
 
 
-def default_report_path(problem: ProblemSpec) -> Path:
-	return DEFAULT_OUT_DIR / f"report_{problem.tag}.md"
+def app_target_label(target: str) -> str:
+	normalized_target = normalize_app_target(target)
+	if normalized_target == APP_TARGET_PT:
+		return "PT"
+	if normalized_target == APP_TARGET_PT_DMA_TOP:
+		return "PT_DMA_TOP"
+	raise ValueError(f"unsupported app target {target!r}")
 
 
-def cocotb_output_root(problem: ProblemSpec) -> Path:
-	return DEFAULT_OUT_DIR / "cocotb" / problem.tag
+def default_metrics_path(problem: ProblemSpec, target: str = DEFAULT_APP_TARGET) -> Path:
+	normalized_target = normalize_app_target(target)
+	if normalized_target == APP_TARGET_PT:
+		return DEFAULT_OUT_DIR / f"verify_metrics_{problem.tag}.json"
+	return DEFAULT_OUT_DIR / f"verify_metrics_{normalized_target}_{problem.tag}.json"
 
+
+def default_report_path(problem: ProblemSpec, target: str = DEFAULT_APP_TARGET) -> Path:
+	normalized_target = normalize_app_target(target)
+	if normalized_target == APP_TARGET_PT:
+		return DEFAULT_OUT_DIR / f"report_{problem.tag}.md"
+	return DEFAULT_OUT_DIR / f"report_{normalized_target}_{problem.tag}.md"
+
+
+def cocotb_output_root(problem: ProblemSpec, target: str = DEFAULT_APP_TARGET) -> Path:
+	normalized_target = normalize_app_target(target)
+	if normalized_target == APP_TARGET_PT:
+		return DEFAULT_OUT_DIR / "cocotb" / problem.tag
+	return DEFAULT_OUT_DIR / "cocotb" / normalized_target / problem.tag
+
+
+def hdl_toplevel_for_target(target: str) -> str:
+	normalized_target = normalize_app_target(target)
+	if normalized_target == APP_TARGET_PT:
+		return "PT"
+	if normalized_target == APP_TARGET_PT_DMA_TOP:
+		return "PT_DMA_TOP"
+	raise ValueError(f"unsupported app target {target!r}")

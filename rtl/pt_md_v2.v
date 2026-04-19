@@ -5,7 +5,7 @@ module PT_MD_V2 #(
 	parameter GEMM_X_DIM   = 4,
 	parameter GEMM_Y_DIM   = 4,
 	parameter DMA_BEATS_W  = 16,
-	parameter A_BANK_DEPTH = 8,
+	parameter A_BANK_DEPTH = 16,
 	parameter B_BANK_DEPTH = 16,
 	parameter M_BANK_DEPTH = 16,
 	parameter A_LOAD_LANES = GEMM_X_DIM,
@@ -32,6 +32,9 @@ module PT_MD_V2 #(
 	input  wire [31:0]                fill_req_id,
 	input  wire [`PT_LOCAL_ADDR_W-1:0] fill_req_local_base,
 	input  wire [`PT_SIZE_W-1:0]      fill_req_len,
+	input  wire [3:0]                 fill_req_m_tiles,
+	input  wire [3:0]                 fill_req_n_tiles,
+	input  wire [3:0]                 fill_req_k_tiles,
 	output reg                        fill_done_valid,
 	output reg  [`PT_DMA_KIND_W-1:0]  fill_done_kind,
 	output reg  [31:0]                fill_done_id,
@@ -55,8 +58,15 @@ module PT_MD_V2 #(
 	output reg  [GEMM_Y_DIM-1:0]      b_mem_wr_mask,
 	output reg  [(((B_BANK_DEPTH * GEMM_Y_DIM) <= 1) ? 1 : $clog2(B_BANK_DEPTH * GEMM_Y_DIM))-1:0] b_mem_wr_addr,
 	output reg  [GEMM_Y_DIM*DATA_WIDTH-1:0]      b_mem_wr_data,
+	input  wire                       m_alloc_take,
+	output wire                       m_alloc_ready,
+	output wire                       m_alloc_buf,
+	output wire                       m_buf0_single_output,
+	output wire                       m_buf1_single_output,
 	input  wire                       ce_resp_valid,
 	input  wire [31:0]                ce_resp,
+	input  wire [`PT_SIZE_W-1:0]      ce_resp_row_chunk_count,
+	input  wire                       ce_resp_single_output,
 	output wire                       m_dma_req_valid,
 	input  wire                       m_dma_req_ready,
 	output wire [31:0]                m_dma_req_id,
@@ -106,16 +116,20 @@ module PT_MD_V2 #(
 	localparam integer EXP_CHUNKS_PER_ROW = (GEMM_Y_DIM + M_EXPORT_LANES - 1) / M_EXPORT_LANES;
 	localparam integer EXP_CHUNK_W = (EXP_CHUNKS_PER_ROW <= 1) ? 1 : $clog2(EXP_CHUNKS_PER_ROW);
 	localparam integer EXP_BEATS = GEMM_X_DIM * EXP_CHUNKS_PER_ROW;
-	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_CFG          = `PT_MEM_KIND_CFG;
-	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_QCFG_HDR     = `PT_MEM_KIND_QCFG_HDR;
-	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_QCFG_PAYLOAD = `PT_MEM_KIND_QCFG_PAYLOAD;
-	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_REJECT       = `PT_MEM_KIND_REJECT;
+	localparam [31:0] A_LOAD_LANES_U32 = A_LOAD_LANES;
+	localparam [31:0] B_LOAD_LANES_U32 = B_LOAD_LANES;
+	localparam [EXP_CHUNK_W:0] EXP_CHUNKS_PER_ROW_W = exp_chunk_count_trunc(EXP_CHUNKS_PER_ROW);
+	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_CFG          = 2'd0;
+	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_QCFG_HDR     = 2'd1;
+	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_QCFG_PAYLOAD = 2'd2;
+	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_REJECT       = 2'd3;
 	localparam [1:0] FILL_IDLE = 2'd0;
 	localparam [1:0] FILL_REQ  = 2'd1;
 	localparam [1:0] FILL_RECV = 2'd2;
 	localparam [1:0] MBUF_FREE      = 2'd0;
-	localparam [1:0] MBUF_READY     = 2'd1;
-	localparam [1:0] MBUF_EXPORTING = 2'd2;
+	localparam [1:0] MBUF_EXEC      = 2'd1;
+	localparam [1:0] MBUF_READY     = 2'd2;
+	localparam [1:0] MBUF_EXPORTING = 2'd3;
 	localparam [1:0] EXP_IDLE      = 2'd0;
 	localparam [1:0] EXP_REQ       = 2'd1;
 	localparam [1:0] EXP_STREAM    = 2'd2;
@@ -145,20 +159,40 @@ module PT_MD_V2 #(
 		end
 	endfunction
 
-	initial begin
-		if (!is_pow2(GEMM_X_DIM) || !is_pow2(GEMM_Y_DIM)) begin
-			$fatal(1, "PT_MD_V2 requires power-of-two GEMM_X_DIM/GEMM_Y_DIM, got %0d x %0d", GEMM_X_DIM, GEMM_Y_DIM);
+	function [EXP_CHUNK_W:0] exp_chunk_count_trunc;
+		input integer value;
+		begin
+			exp_chunk_count_trunc = value[EXP_CHUNK_W:0];
 		end
-		if ((A_LOAD_LANES <= 0) || (A_LOAD_LANES > GEMM_X_DIM)) begin
-			$fatal(1, "PT_MD_V2 requires 0 < A_LOAD_LANES <= GEMM_X_DIM, got %0d for X=%0d", A_LOAD_LANES, GEMM_X_DIM);
+	endfunction
+
+// synthesis translate_off
+	`ifndef SYNTHESIS
+		initial begin
+			if (!is_pow2(GEMM_X_DIM) || !is_pow2(GEMM_Y_DIM)) begin
+				$fatal(1, "PT_MD_V2 requires power-of-two GEMM_X_DIM/GEMM_Y_DIM, got %0d x %0d", GEMM_X_DIM, GEMM_Y_DIM);
+			end
+			if ((A_LOAD_LANES <= 0) || (A_LOAD_LANES > GEMM_X_DIM)) begin
+				$fatal(1, "PT_MD_V2 requires 0 < A_LOAD_LANES <= GEMM_X_DIM, got %0d for X=%0d", A_LOAD_LANES, GEMM_X_DIM);
+			end
+			if ((GEMM_X_DIM % A_LOAD_LANES) != 0) begin
+				$fatal(1, "PT_MD_V2 currently requires GEMM_X_DIM %% A_LOAD_LANES == 0, got X=%0d lanes=%0d", GEMM_X_DIM, A_LOAD_LANES);
+			end
+			if ((B_LOAD_LANES <= 0) || (B_LOAD_LANES > GEMM_Y_DIM)) begin
+				$fatal(1, "PT_MD_V2 requires 0 < B_LOAD_LANES <= GEMM_Y_DIM, got %0d for Y=%0d", B_LOAD_LANES, GEMM_Y_DIM);
+			end
+			if ((GEMM_Y_DIM % B_LOAD_LANES) != 0) begin
+				$fatal(1, "PT_MD_V2 currently requires GEMM_Y_DIM %% B_LOAD_LANES == 0, got Y=%0d lanes=%0d", GEMM_Y_DIM, B_LOAD_LANES);
+			end
+			if ((M_EXPORT_LANES <= 0) || (M_EXPORT_LANES > GEMM_Y_DIM)) begin
+				$fatal(1, "PT_MD_V2 requires 0 < M_EXPORT_LANES <= GEMM_Y_DIM, got %0d for Y=%0d", M_EXPORT_LANES, GEMM_Y_DIM);
+			end
+			if ((GEMM_Y_DIM % M_EXPORT_LANES) != 0) begin
+				$fatal(1, "PT_MD_V2 currently requires GEMM_Y_DIM %% M_EXPORT_LANES == 0, got Y=%0d lanes=%0d", GEMM_Y_DIM, M_EXPORT_LANES);
+			end
 		end
-		if ((B_LOAD_LANES <= 0) || (B_LOAD_LANES > GEMM_Y_DIM)) begin
-			$fatal(1, "PT_MD_V2 requires 0 < B_LOAD_LANES <= GEMM_Y_DIM, got %0d for Y=%0d", B_LOAD_LANES, GEMM_Y_DIM);
-		end
-		if ((M_EXPORT_LANES <= 0) || (M_EXPORT_LANES > GEMM_Y_DIM)) begin
-			$fatal(1, "PT_MD_V2 requires 0 < M_EXPORT_LANES <= GEMM_Y_DIM, got %0d for Y=%0d", M_EXPORT_LANES, GEMM_Y_DIM);
-		end
-	end
+	`endif
+// synthesis translate_on
 
 	assign md_cmd_ready = 1'b1;
 
@@ -224,9 +258,14 @@ module PT_MD_V2 #(
 	reg [`PT_LOCAL_ADDR_W-1:0] fill_local_base_r;
 	reg [`PT_SIZE_W-1:0] fill_len_r;
 	reg [`PT_SIZE_W-1:0] fill_recv_count_r;
+	reg [3:0] fill_m_tiles_r, fill_n_tiles_r, fill_k_tiles_r;
 	localparam integer FILL_ROW_W = (A_AW >= B_AW) ? A_AW : B_AW;
 	reg [FILL_ROW_W-1:0] fill_row_base_r;
 	reg fill_buf_sel_r;
+	integer fill_a_row_base_int;
+	integer fill_b_col_base_int;
+	integer fill_a_valid_elems_int;
+	integer fill_b_valid_elems_int;
 
 	wire fill_is_a = (fill_kind_r == `PT_DMA_KIND_A);
 	wire fill_is_bc = (fill_kind_r == `PT_DMA_KIND_B) || (fill_kind_r == `PT_DMA_KIND_C);
@@ -234,18 +273,33 @@ module PT_MD_V2 #(
 	                                 ((fill_kind_r == `PT_DMA_KIND_B) ? `PT_STREAM_KIND_B : `PT_STREAM_KIND_C);
 	wire fill_tuser_mismatch = s_axis_tvalid && (s_axis_tuser != fill_expected_tuser);
 	wire [`PT_SIZE_W-1:0] fill_remaining = (fill_len_r > fill_recv_count_r) ? (fill_len_r - fill_recv_count_r) : {`PT_SIZE_W{1'b0}};
-	wire [31:0] fill_recv_count_u32 = fill_recv_count_r;
+	wire [31:0] fill_recv_count_u32 = {{(32-`PT_SIZE_W){1'b0}}, fill_recv_count_r};
+	wire [31:0] fill_remaining_u32 = {{(32-`PT_SIZE_W){1'b0}}, fill_remaining};
 	wire [31:0] fill_a_chunk_idx = fill_recv_count_u32 / A_LOAD_LANES;
 	wire [31:0] fill_b_chunk_idx = fill_recv_count_u32 / B_LOAD_LANES;
-	wire [31:0] fill_a_col = fill_a_chunk_idx / A_LOAD_CHUNKS_PER_COL;
-	wire [31:0] fill_a_row_chunk = fill_a_chunk_idx % A_LOAD_CHUNKS_PER_COL;
-	wire [31:0] fill_b_row = fill_b_chunk_idx / B_LOAD_CHUNKS_PER_ROW;
-	wire [31:0] fill_b_col_chunk = fill_b_chunk_idx % B_LOAD_CHUNKS_PER_ROW;
+	wire [31:0] fill_a_chunks_per_m_tile = fill_k_tiles_r * GEMM_X_DIM * A_LOAD_CHUNKS_PER_COL;
+	wire [31:0] fill_b_chunks_per_n_tile = fill_k_tiles_r * GEMM_Y_DIM * B_LOAD_CHUNKS_PER_ROW;
+	wire [31:0] fill_a_m_tile = (fill_a_chunks_per_m_tile == 0) ? 0 : (fill_a_chunk_idx / fill_a_chunks_per_m_tile);
+	wire [31:0] fill_a_chunk_in_m_tile = (fill_a_chunks_per_m_tile == 0) ? 0 : (fill_a_chunk_idx % fill_a_chunks_per_m_tile);
+	wire [31:0] fill_b_n_tile = (fill_b_chunks_per_n_tile == 0) ? 0 : (fill_b_chunk_idx / fill_b_chunks_per_n_tile);
+	wire [31:0] fill_b_chunk_in_n_tile = (fill_b_chunks_per_n_tile == 0) ? 0 : (fill_b_chunk_idx % fill_b_chunks_per_n_tile);
+	wire [31:0] fill_a_col = fill_a_chunk_in_m_tile / A_LOAD_CHUNKS_PER_COL;
+	wire [31:0] fill_a_row_chunk = fill_a_chunk_in_m_tile % A_LOAD_CHUNKS_PER_COL;
+	wire [31:0] fill_b_row = fill_b_chunk_in_n_tile / B_LOAD_CHUNKS_PER_ROW;
+	wire [31:0] fill_b_col_chunk = fill_b_chunk_in_n_tile % B_LOAD_CHUNKS_PER_ROW;
 	wire [31:0] fill_a_row_base = fill_a_row_chunk * A_LOAD_LANES;
 	wire [31:0] fill_b_col_base = fill_b_col_chunk * B_LOAD_LANES;
-	wire [31:0] fill_a_valid_elems = min_int(fill_remaining, A_LOAD_LANES);
-	wire [31:0] fill_b_valid_elems = min_int(fill_remaining, B_LOAD_LANES);
+	wire [31:0] fill_a_m_tile_row_offset = fill_a_m_tile * (fill_k_tiles_r * GEMM_X_DIM);
+	wire [31:0] fill_b_n_tile_row_offset = fill_b_n_tile * (fill_k_tiles_r * GEMM_Y_DIM);
+	wire [31:0] fill_a_valid_elems = (fill_remaining_u32 < A_LOAD_LANES_U32) ? fill_remaining_u32 : A_LOAD_LANES_U32;
+	wire [31:0] fill_b_valid_elems = (fill_remaining_u32 < B_LOAD_LANES_U32) ? fill_remaining_u32 : B_LOAD_LANES_U32;
 	wire [31:0] fill_beat_elems = fill_is_a ? fill_a_valid_elems : fill_b_valid_elems;
+	wire [`PT_SIZE_W-1:0] fill_beat_elems_size = fill_beat_elems[`PT_SIZE_W-1:0];
+	wire [`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] fill_local_elem = fill_req_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L];
+	wire [`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] fill_req_a_row_base_full = fill_local_elem >> A_DIM_SHIFT;
+	wire [`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] fill_req_b_row_base_full = fill_local_elem >> B_DIM_SHIFT;
+	wire [A_AW-1:0] fill_req_a_row_base = fill_req_a_row_base_full[A_AW-1:0];
+	wire [B_AW-1:0] fill_req_b_row_base = fill_req_b_row_base_full[B_AW-1:0];
 
 	assign fill_req_ready = (fill_state_r == FILL_IDLE);
 	assign dma_req_valid  = (fill_state_r == FILL_REQ);
@@ -281,35 +335,56 @@ module PT_MD_V2 #(
 
 	reg [1:0] m_buf_state0_r, m_buf_state1_r;
 	reg [29:0] m_buf_id0_r, m_buf_id1_r;
+	reg m_buf0_single_output_r, m_buf1_single_output_r;
+	reg [`PT_SIZE_W-1:0] m_buf0_row_chunk_count_r, m_buf1_row_chunk_count_r;
 	reg next_wr_buf_r;
 
 	reg [1:0] exp_state_r, exp_state_n;
 	reg exp_req_buf_r, exp_active_buf_r;
 	reg [29:0] exp_req_id_r, exp_active_id_r;
+	reg [`PT_SIZE_W-1:0] exp_req_row_chunk_count_r, exp_active_row_chunk_count_r;
 	reg [M_AW-1:0] exp_row_idx_r, exp_fetch_row_idx_r;
 	reg [EXP_CHUNK_W-1:0] exp_chunk_idx_r;
 	reg [GEMM_Y_DIM*DATA_WIDTH-1:0] exp_row_data_r;
 	reg exp_row_valid_r, exp_row_fetch_pending_r;
 
+	wire m_buf0_free = (m_buf_state0_r == MBUF_FREE);
+	wire m_buf1_free = (m_buf_state1_r == MBUF_FREE);
 	wire m_buf0_ready = (m_buf_state0_r == MBUF_READY);
 	wire m_buf1_ready = (m_buf_state1_r == MBUF_READY);
 	wire exp_has_ready = m_buf0_ready || m_buf1_ready;
 	wire exp_pick_buf = (m_buf0_ready && m_buf1_ready) ? next_wr_buf_r : (m_buf1_ready ? 1'b1 : 1'b0);
 	wire [29:0] exp_pick_id = exp_pick_buf ? m_buf_id1_r : m_buf_id0_r;
+	wire [`PT_SIZE_W-1:0] exp_pick_row_chunks = exp_pick_buf ? m_buf1_row_chunk_count_r : m_buf0_row_chunk_count_r;
 	wire [EXP_CHUNK_W:0] exp_chunk_limit = exp_chunk_idx_r + 1'b1;
-	wire exp_last_chunk = (exp_chunk_limit >= EXP_CHUNKS_PER_ROW);
-	wire exp_last_beat = exp_row_valid_r && (exp_row_idx_r == (GEMM_X_DIM - 1)) && exp_last_chunk;
+	wire exp_last_chunk = (exp_chunk_limit >= EXP_CHUNKS_PER_ROW_W);
+	wire [31:0] exp_row_idx_u32 = {{(32-M_AW){1'b0}}, exp_row_idx_r};
+	wire [31:0] exp_active_row_chunks_u32 = {{(32-`PT_SIZE_W){1'b0}}, exp_active_row_chunk_count_r};
+	wire [31:0] exp_req_row_chunk_count_u32 = {{(32-`PT_SIZE_W){1'b0}}, exp_req_row_chunk_count_r};
+	wire exp_last_beat = exp_row_valid_r && (exp_row_idx_u32 == (exp_active_row_chunks_u32 - 1'b1)) && exp_last_chunk;
 	wire exp_fire = (exp_state_r == EXP_STREAM) && exp_row_valid_r && m_axis_tready;
 	wire exp_prime_req = (exp_state_r == EXP_STREAM) && !exp_row_valid_r && !exp_row_fetch_pending_r;
 	wire exp_prefetch_req = (exp_state_r == EXP_STREAM) && exp_row_valid_r && exp_fire &&
-	                        exp_last_chunk && (exp_row_idx_r != (GEMM_X_DIM - 1));
+	                        exp_last_chunk && (exp_row_idx_u32 != (exp_active_row_chunks_u32 - 1'b1));
 	wire exp_row_req = exp_prime_req || exp_prefetch_req;
 	wire [M_AW-1:0] exp_req_row_addr = exp_prime_req ? exp_row_idx_r : (exp_row_idx_r + 1'b1);
+	wire [31:0] exp_req_beats_u32 = exp_req_row_chunk_count_u32 * EXP_CHUNKS_PER_ROW;
+
+	always @(*) begin
+		fill_a_row_base_int = fill_a_row_base;
+		fill_b_col_base_int = fill_b_col_base;
+		fill_a_valid_elems_int = fill_a_valid_elems;
+		fill_b_valid_elems_int = fill_b_valid_elems;
+	end
+	assign m_alloc_ready = m_buf0_free || m_buf1_free;
+	assign m_alloc_buf = m_buf0_free ? 1'b0 : 1'b1;
+	assign m_buf0_single_output = m_buf0_single_output_r;
+	assign m_buf1_single_output = m_buf1_single_output_r;
 
 	assign m_dma_req_valid = (exp_state_r == EXP_REQ);
 	assign m_dma_req_id    = {2'b00, exp_req_id_r};
 	assign m_dma_req_buf   = exp_req_buf_r;
-	assign m_dma_req_beats = EXP_BEATS[DMA_BEATS_W-1:0];
+	assign m_dma_req_beats = exp_req_beats_u32[DMA_BEATS_W-1:0];
 	assign exp_rd_en   = exp_row_req;
 	assign exp_rd_buf  = exp_active_buf_r;
 	assign exp_rd_addr = exp_req_row_addr;
@@ -397,17 +472,26 @@ module PT_MD_V2 #(
 			fill_local_base_r         <= {`PT_LOCAL_ADDR_W{1'b0}};
 			fill_len_r                <= {`PT_SIZE_W{1'b0}};
 			fill_recv_count_r         <= {`PT_SIZE_W{1'b0}};
+			fill_m_tiles_r            <= `PT_TILES_1;
+			fill_n_tiles_r            <= `PT_TILES_1;
+			fill_k_tiles_r            <= `PT_TILES_1;
 			fill_row_base_r           <= {FILL_ROW_W{1'b0}};
 			fill_buf_sel_r            <= 1'b0;
 			m_buf_state0_r            <= MBUF_FREE;
 			m_buf_state1_r            <= MBUF_FREE;
 			m_buf_id0_r               <= 30'd0;
 			m_buf_id1_r               <= 30'd0;
+			m_buf0_single_output_r    <= 1'b1;
+			m_buf1_single_output_r    <= 1'b1;
+			m_buf0_row_chunk_count_r  <= GEMM_X_DIM[`PT_SIZE_W-1:0];
+			m_buf1_row_chunk_count_r  <= GEMM_X_DIM[`PT_SIZE_W-1:0];
 			next_wr_buf_r             <= 1'b0;
 			exp_req_buf_r             <= 1'b0;
 			exp_req_id_r              <= 30'd0;
+			exp_req_row_chunk_count_r <= {`PT_SIZE_W{1'b0}};
 			exp_active_buf_r          <= 1'b0;
 			exp_active_id_r           <= 30'd0;
+			exp_active_row_chunk_count_r <= {`PT_SIZE_W{1'b0}};
 			exp_row_idx_r             <= {M_AW{1'b0}};
 			exp_fetch_row_idx_r       <= {M_AW{1'b0}};
 			exp_chunk_idx_r           <= {EXP_CHUNK_W{1'b0}};
@@ -449,17 +533,26 @@ module PT_MD_V2 #(
 			fill_local_base_r         <= {`PT_LOCAL_ADDR_W{1'b0}};
 			fill_len_r                <= {`PT_SIZE_W{1'b0}};
 			fill_recv_count_r         <= {`PT_SIZE_W{1'b0}};
+			fill_m_tiles_r            <= `PT_TILES_1;
+			fill_n_tiles_r            <= `PT_TILES_1;
+			fill_k_tiles_r            <= `PT_TILES_1;
 			fill_row_base_r           <= {FILL_ROW_W{1'b0}};
 			fill_buf_sel_r            <= 1'b0;
 			m_buf_state0_r            <= MBUF_FREE;
 			m_buf_state1_r            <= MBUF_FREE;
 			m_buf_id0_r               <= 30'd0;
 			m_buf_id1_r               <= 30'd0;
+			m_buf0_single_output_r    <= 1'b1;
+			m_buf1_single_output_r    <= 1'b1;
+			m_buf0_row_chunk_count_r  <= GEMM_X_DIM[`PT_SIZE_W-1:0];
+			m_buf1_row_chunk_count_r  <= GEMM_X_DIM[`PT_SIZE_W-1:0];
 			next_wr_buf_r             <= 1'b0;
 			exp_req_buf_r             <= 1'b0;
 			exp_req_id_r              <= 30'd0;
+			exp_req_row_chunk_count_r <= {`PT_SIZE_W{1'b0}};
 			exp_active_buf_r          <= 1'b0;
 			exp_active_id_r           <= 30'd0;
+			exp_active_row_chunk_count_r <= {`PT_SIZE_W{1'b0}};
 			exp_row_idx_r             <= {M_AW{1'b0}};
 			exp_fetch_row_idx_r       <= {M_AW{1'b0}};
 			exp_chunk_idx_r           <= {EXP_CHUNK_W{1'b0}};
@@ -529,8 +622,8 @@ module PT_MD_V2 #(
 							qcfg_shadow_inv_scale_r[qcfg_recv_cnt_r*32 +: 32] <= md_cmd_inst;
 							if ((qcfg_recv_cnt_r + 1'b1) >= qcfg_expect_cnt_r) begin
 								csr_quant_mode_wdata <= qcfg_shadow_mode_r;
-								for (ri = 0; ri < MAX_DIM; ri = ri + 1) begin
-									if (ri == qcfg_recv_cnt_r) begin
+									for (ri = 0; ri < MAX_DIM; ri = ri + 1) begin
+										if (ri[QCFG_CNT_W-1:0] == qcfg_recv_cnt_r) begin
 										csr_quant_inv_scale_wdata[ri*32 +: 32] <= md_cmd_inst;
 									end else begin
 										csr_quant_inv_scale_wdata[ri*32 +: 32] <= qcfg_shadow_inv_scale_r[ri*32 +: 32];
@@ -550,16 +643,27 @@ module PT_MD_V2 #(
 				endcase
 			end
 
+			if (m_alloc_take && m_alloc_ready) begin
+				if (m_alloc_buf) begin
+					m_buf_state1_r <= MBUF_EXEC;
+				end else begin
+					m_buf_state0_r <= MBUF_EXEC;
+				end
+			end
+
 			if ((fill_state_r == FILL_IDLE) && fill_req_valid && fill_req_ready) begin
 				fill_kind_r       <= fill_req_kind;
 				fill_id_r         <= fill_req_id;
 				fill_local_base_r <= fill_req_local_base;
 				fill_len_r        <= fill_req_len;
 				fill_recv_count_r <= {`PT_SIZE_W{1'b0}};
+				fill_m_tiles_r    <= fill_req_m_tiles;
+				fill_n_tiles_r    <= fill_req_n_tiles;
+				fill_k_tiles_r    <= fill_req_k_tiles;
 				fill_buf_sel_r    <= fill_req_local_base[`PT_LOCAL_BUF_BIT];
-				fill_row_base_r   <= (fill_req_kind == `PT_DMA_KIND_A) ?
-				                     (fill_req_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] >> A_DIM_SHIFT) :
-				                     (fill_req_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] >> B_DIM_SHIFT);
+					fill_row_base_r   <= (fill_req_kind == `PT_DMA_KIND_A) ?
+					                     fill_req_a_row_base :
+					                     fill_req_b_row_base;
 			end
 
 			if (fill_state_r == FILL_RECV) begin
@@ -572,32 +676,36 @@ module PT_MD_V2 #(
 					if (fill_is_a) begin
 						a_mem_wr_en   <= 1'b1;
 						a_mem_wr_buf  <= fill_buf_sel_r;
-						a_mem_wr_addr <= fill_row_base_r[A_AW-1:0] + fill_a_col[A_AW-1:0];
+						a_mem_wr_addr <= fill_row_base_r[A_AW-1:0]
+						                 + fill_a_m_tile_row_offset[A_AW-1:0]
+						                 + fill_a_col[A_AW-1:0];
 						a_mem_wr_data <= {GEMM_X_DIM*DATA_WIDTH{1'b0}};
-						for (fi = 0; fi < GEMM_X_DIM; fi = fi + 1) begin
-							if ((fi >= fill_a_row_base) &&
-							    (fi < (fill_a_row_base + A_LOAD_LANES)) &&
-							    ((fi - fill_a_row_base) < fill_a_valid_elems)) begin
-								a_mem_wr_mask[fi] <= 1'b1;
-								a_mem_wr_data[fi*DATA_WIDTH +: DATA_WIDTH] <= s_axis_tdata[(fi - fill_a_row_base)*DATA_WIDTH +: DATA_WIDTH];
+							for (fi = 0; fi < GEMM_X_DIM; fi = fi + 1) begin
+								if ((fi >= fill_a_row_base_int) &&
+								    (fi < (fill_a_row_base_int + A_LOAD_LANES)) &&
+								    ((fi - fill_a_row_base_int) < fill_a_valid_elems_int)) begin
+									a_mem_wr_mask[fi] <= 1'b1;
+									a_mem_wr_data[fi*DATA_WIDTH +: DATA_WIDTH] <= s_axis_tdata[(fi - fill_a_row_base_int)*DATA_WIDTH +: DATA_WIDTH];
+								end
 							end
-						end
 					end else if (fill_is_bc) begin
 						b_mem_wr_en   <= 1'b1;
 						b_mem_wr_buf  <= fill_buf_sel_r;
-						b_mem_wr_addr <= fill_row_base_r[B_AW-1:0] + fill_b_row[B_AW-1:0];
+						b_mem_wr_addr <= fill_row_base_r[B_AW-1:0]
+						                 + fill_b_n_tile_row_offset[B_AW-1:0]
+						                 + fill_b_row[B_AW-1:0];
 						b_mem_wr_data <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
-						for (fi = 0; fi < GEMM_Y_DIM; fi = fi + 1) begin
-							if ((fi >= fill_b_col_base) &&
-							    (fi < (fill_b_col_base + B_LOAD_LANES)) &&
-							    ((fi - fill_b_col_base) < fill_b_valid_elems)) begin
-								b_mem_wr_mask[fi] <= 1'b1;
-								b_mem_wr_data[fi*DATA_WIDTH +: DATA_WIDTH] <= s_axis_tdata[(fi - fill_b_col_base)*DATA_WIDTH +: DATA_WIDTH];
+							for (fi = 0; fi < GEMM_Y_DIM; fi = fi + 1) begin
+								if ((fi >= fill_b_col_base_int) &&
+								    (fi < (fill_b_col_base_int + B_LOAD_LANES)) &&
+								    ((fi - fill_b_col_base_int) < fill_b_valid_elems_int)) begin
+									b_mem_wr_mask[fi] <= 1'b1;
+									b_mem_wr_data[fi*DATA_WIDTH +: DATA_WIDTH] <= s_axis_tdata[(fi - fill_b_col_base_int)*DATA_WIDTH +: DATA_WIDTH];
+								end
 							end
-						end
 					end
-					fill_recv_count_r <= fill_recv_count_r + fill_beat_elems[`PT_SIZE_W-1:0];
-					if ((fill_recv_count_r + fill_beat_elems[`PT_SIZE_W-1:0]) >= fill_len_r) begin
+						fill_recv_count_r <= fill_recv_count_r + fill_beat_elems_size;
+						if ((fill_recv_count_r + fill_beat_elems_size) >= fill_len_r) begin
 						fill_done_valid <= 1'b1;
 						fill_done_kind  <= fill_kind_r;
 						fill_done_id    <= fill_id_r;
@@ -606,14 +714,24 @@ module PT_MD_V2 #(
 				end
 			end
 
-			if (ce_resp_valid && !ce_resp[31]) begin
-				next_wr_buf_r <= ~ce_resp[30];
-				if (ce_resp[30]) begin
-					m_buf_state1_r <= MBUF_READY;
-					m_buf_id1_r    <= ce_resp[29:0];
+			if (ce_resp_valid) begin
+				if (!ce_resp[31]) begin
+					next_wr_buf_r <= ~ce_resp[30];
+					if (ce_resp[30]) begin
+						m_buf_state1_r <= MBUF_READY;
+						m_buf_id1_r    <= ce_resp[29:0];
+						m_buf1_single_output_r <= ce_resp_single_output;
+						m_buf1_row_chunk_count_r <= ce_resp_row_chunk_count;
+					end else begin
+						m_buf_state0_r <= MBUF_READY;
+						m_buf_id0_r    <= ce_resp[29:0];
+						m_buf0_single_output_r <= ce_resp_single_output;
+						m_buf0_row_chunk_count_r <= ce_resp_row_chunk_count;
+					end
+				end else if (ce_resp[30]) begin
+					m_buf_state1_r <= MBUF_FREE;
 				end else begin
-					m_buf_state0_r <= MBUF_READY;
-					m_buf_id0_r    <= ce_resp[29:0];
+					m_buf_state0_r <= MBUF_FREE;
 				end
 			end
 
@@ -630,12 +748,14 @@ module PT_MD_V2 #(
 					if (exp_has_ready) begin
 						exp_req_buf_r <= exp_pick_buf;
 						exp_req_id_r  <= exp_pick_id;
+						exp_req_row_chunk_count_r <= exp_pick_row_chunks;
 					end
 				end
 				EXP_REQ: begin
 					if (m_dma_req_ready) begin
 						exp_active_buf_r        <= exp_req_buf_r;
 						exp_active_id_r         <= exp_req_id_r;
+						exp_active_row_chunk_count_r <= exp_req_row_chunk_count_r;
 						exp_row_idx_r           <= {M_AW{1'b0}};
 						exp_chunk_idx_r         <= {EXP_CHUNK_W{1'b0}};
 						exp_row_data_r          <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};

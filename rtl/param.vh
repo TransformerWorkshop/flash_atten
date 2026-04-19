@@ -62,7 +62,10 @@
 // [26]    need_b
 // [25:16] A size in elements
 // [15: 6] B size in elements
-// [ 5: 0] reserved, must be zero
+// [ 5: 4] M tile-count code: 00->1, 01->2, 10->4, 11->illegal
+// [ 3: 2] N tile-count code: 00->1, 01->2, 10->4, 11->illegal
+// [ 1: 0] K tile-count code: 00->1, 01->2, 10->4, 11->illegal
+// all-zero legacy encoding therefore still means 1x1x1
 `define             PT_LOAD_NEED_A_BIT      27
 `define             PT_LOAD_NEED_B_BIT      26
 `define             PT_LOAD_A_SIZE_H        25
@@ -71,6 +74,12 @@
 `define             PT_LOAD_B_SIZE_L        6
 `define             PT_LOAD_RSV_H           5
 `define             PT_LOAD_RSV_L           0
+`define             PT_LOAD_M_CODE_H        5
+`define             PT_LOAD_M_CODE_L        4
+`define             PT_LOAD_N_CODE_H        3
+`define             PT_LOAD_N_CODE_L        2
+`define             PT_LOAD_K_CODE_H        1
+`define             PT_LOAD_K_CODE_L        0
 
 // PT MATMUL raw tile-count encodings
 `define             PT_TILES_1              4'h1

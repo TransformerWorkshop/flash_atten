@@ -102,9 +102,9 @@ async def test_pt_coverage_bslot_c_overwrite_and_export_error(dut) -> None:
 async def test_pt_coverage_wide_load_tail_and_fill_error_matrix(dut) -> None:
 	env = await _prepare_env(dut)
 	try:
-		a_tail_len = env.a_load_lanes + 1
-		b_tail_len = env.b_load_lanes + 1
-		b_wrong_len = max(1, env.b_load_lanes)
+		a_tail_len = env.x_dim * env.x_dim
+		b_tail_len = env.y_dim * env.y_dim
+		b_wrong_len = env.y_dim * env.y_dim
 
 		a_ok_id = 0x902
 		a_ok_matrix = [idx + 1 for idx in range(a_tail_len)]
