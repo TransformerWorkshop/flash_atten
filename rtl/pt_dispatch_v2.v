@@ -37,6 +37,7 @@ module PT_DISPATCH_V2 #(
 	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_REJECT       = 2'd3;
 	localparam [1:0] ACTIVE_NONE = 2'd0;
 	localparam [1:0] ACTIVE_MD   = 2'd1;
+	wire dispatch_unused_inputs = malloc_resp_valid;
 
 	wire [3:0] ctrl_opcode = ctrl_inst[`PT_INST_OPCODE_H:`PT_INST_OPCODE_L];
 	wire [3:0] ctrl_matmul_m_tiles = ctrl_inst[`PT_MATMUL_M_TILES_H:`PT_MATMUL_M_TILES_L];

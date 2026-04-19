@@ -93,6 +93,12 @@ Semantically:
 
 The external byte count does not change when widening these paths; widening reduces beat count and protocol overhead.
 
+Current sideband handling:
+
+- `s_axis_tdata`, `s_axis_tuser`, `s_axis_tvalid`, and `s_axis_tready` are the functionally consumed A/B return-path signals in the active PT/PT_DMA_TOP flow.
+- `s_axis_tstrb`, `s_axis_tkeep`, `s_axis_tlast`, `s_axis_tid`, and `s_axis_tdest` are currently kept for wrapper/interface compatibility and are not consumed by the active PT datapath logic.
+- `dma_done` is still present on the public interface for compatibility, but A/B fill completion is determined from accepted return beats rather than from `dma_done`.
+
 ## 5. Parameters
 
 | Parameter | Meaning |
@@ -274,6 +280,8 @@ These are architectural facts of the current RTL, not just testbench assumptions
 - Underlying SRAM contents are not physically scrubbed; only logical visibility and ownership reset
 
 After `clear`, stale data may still exist in SRAM physically, but PT must treat it as unreachable.
+
+`PT_MEM_BANK` therefore keeps `rstn` and `clear` on its public port list for interface uniformity, but does not physically scrub the underlying SRAM contents on either signal.
 
 ## 10. Related Sources
 

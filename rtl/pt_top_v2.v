@@ -69,6 +69,7 @@ module PT_V2 #(
 	localparam integer B_AW = (B_DEPTH <= 1) ? 1 : $clog2(B_DEPTH);
 	localparam integer M_AW = (M_DEPTH <= 1) ? 1 : $clog2(M_DEPTH);
 	localparam integer MAX_DIM = (GEMM_X_DIM >= GEMM_Y_DIM) ? GEMM_X_DIM : GEMM_Y_DIM;
+	wire pt_v2_unused_compat_inputs = &{1'b0, s_axis_tstrb, s_axis_tlast, s_axis_tkeep, s_axis_tid, s_axis_tdest, dma_done};
 
 	wire                  a_mem_wr_en;
 	wire                  a_mem_wr_buf;

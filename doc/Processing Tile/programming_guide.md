@@ -193,6 +193,8 @@ Current functional significance of `s_axis_*`:
 - used: `tvalid`, `tready`, `tdata`, `tuser`
 - not functionally decoded in current RTL: `tstrb`, `tlast`, `tkeep`, `tid`, `tdest`
 
+These sidebands are retained for wrapper and integration compatibility, but software should not depend on them being interpreted by the active PT datapath.
+
 ### 6.3 M Export Request And Stream
 
 Public export request signals:
@@ -215,6 +217,8 @@ Semantics:
 - `m_axis_tuser = {1'b0, m_buf}`
 - `m_axis_tstrb` reflects valid lanes in the widened beat
 - `m_axis_tlast` is asserted only on the final export beat
+
+On the A/B request side, `dma_done` remains on the interface for compatibility, but current fill completion is driven by accepted return-beat count rather than `dma_done`.
 
 ## 7. Parameterization That Matters To Software / Integration
 

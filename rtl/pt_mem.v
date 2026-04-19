@@ -18,6 +18,7 @@ module PT_MEM_BANK #(
 );
 
 	localparam integer ADDR_W      = (DEPTH <= 1) ? 1 : $clog2(DEPTH);
+	wire unused_bank_ctrl = rstn ^ clear;
 
 	wire [DATA_WIDTH-1:0] lane_rd_ping [0:LANES-1];
 	wire [DATA_WIDTH-1:0] lane_rd_pong [0:LANES-1];
