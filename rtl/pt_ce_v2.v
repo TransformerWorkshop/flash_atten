@@ -269,6 +269,19 @@ module PT_CE_V2 #(
 		macro_wrap_n_after_queue ? {TILE_IDX_W{1'b0}} : (macro_next_n_tile_r + 1'b1);
 	wire [TILE_IDX_W-1:0] macro_after_queue_m_tile =
 		macro_wrap_n_after_queue ? (macro_next_m_tile_r + 1'b1) : macro_next_m_tile_r;
+	wire [31:0] launch_drain_id = shadow_launch_fire ? shadow_id_r : ce_cmd_id;
+	wire launch_drain_m_wr_buf = shadow_launch_fire ? shadow_m_wr_buf_r : ce_m_wr_buf;
+	wire [TILE_IDX_W-1:0] launch_drain_m_tile_idx = shadow_launch_fire ? shadow_m_tile_idx_r : {TILE_IDX_W{1'b0}};
+	wire [TILE_IDX_W-1:0] launch_drain_n_tile_idx = shadow_launch_fire ? shadow_n_tile_idx_r : {TILE_IDX_W{1'b0}};
+	wire [3:0] launch_drain_total_n_tiles = shadow_launch_fire ? shadow_total_n_tiles_r : cmd_matmul_n_tiles;
+	wire launch_drain_single_output = shadow_launch_fire ? shadow_single_output_r : cmd_single_output_tile;
+	wire launch_drain_final_tile = shadow_launch_fire ? shadow_final_tile_r : !cmd_macro_has_more_tiles;
+	wire drain_queue_launch_fire = DRAIN_FULL_WIDTH && (launch_cmd_direct_fire || shadow_launch_fire) && drain_valid_r;
+	wire drain_load_launch_fire = DRAIN_FULL_WIDTH && (launch_cmd_direct_fire || shadow_launch_fire) && !drain_valid_r;
+	wire drain_load_exec_fire = promote_exec_to_drain_fire;
+	wire drain_load_shadow_done_fire = promote_shadow_done_to_drain_fire;
+	wire drain_load_shadow_fire = DRAIN_FULL_WIDTH && drain_complete_fire && drain_shadow_valid_r;
+	wire drain_clear_fire = drain_complete_fire && !drain_load_shadow_fire;
 
 	function is_pow2;
 		input integer value;
@@ -598,8 +611,8 @@ module PT_CE_V2 #(
 				macro_active_r <= 1'b0;
 			end
 
-			if (launch_cmd_direct_fire || shadow_launch_fire) begin
-				exec_valid_r      <= 1'b1;
+				if (launch_cmd_direct_fire || shadow_launch_fire) begin
+					exec_valid_r      <= 1'b1;
 				exec_ctrl_r       <= shadow_launch_fire ? shadow_ctrl_r : ce_cmd_ctrl;
 				exec_id_r         <= shadow_launch_fire ? shadow_id_r : ce_cmd_id;
 				exec_a_buf_r      <= shadow_launch_fire ? shadow_a_buf_r : ce_a_local_base[`PT_LOCAL_BUF_BIT];
@@ -621,30 +634,7 @@ module PT_CE_V2 #(
 				exec_b_addr       <= shadow_launch_fire ? shadow_b_row_base_r : cmd_b_row_base;
 				// In DRAIN_FULL_WIDTH mode, co-launch drain so it can accept
 				// quant results while exec is still feeding A/B rows.
-				if (DRAIN_FULL_WIDTH) begin
-					if (drain_valid_r) begin
-						drain_shadow_valid_r <= 1'b1;
-						drain_shadow_id_r <= shadow_launch_fire ? shadow_id_r : ce_cmd_id;
-						drain_shadow_m_wr_buf_r <= shadow_launch_fire ? shadow_m_wr_buf_r : ce_m_wr_buf;
-						drain_shadow_m_tile_idx_r <= shadow_launch_fire ? shadow_m_tile_idx_r : {TILE_IDX_W{1'b0}};
-						drain_shadow_n_tile_idx_r <= shadow_launch_fire ? shadow_n_tile_idx_r : {TILE_IDX_W{1'b0}};
-						drain_shadow_total_n_tiles_r <= shadow_launch_fire ? shadow_total_n_tiles_r : cmd_matmul_n_tiles;
-						drain_shadow_single_output_r <= shadow_launch_fire ? shadow_single_output_r : cmd_single_output_tile;
-						drain_shadow_final_tile_r <= shadow_launch_fire ? shadow_final_tile_r : !cmd_macro_has_more_tiles;
-					end else begin
-						drain_valid_r     <= 1'b1;
-						drain_id_r        <= shadow_launch_fire ? shadow_id_r : ce_cmd_id;
-						drain_m_wr_buf_r  <= shadow_launch_fire ? shadow_m_wr_buf_r : ce_m_wr_buf;
-						drain_chunking_r  <= 1'b0;
-						drain_m_tile_idx_r <= shadow_launch_fire ? shadow_m_tile_idx_r : {TILE_IDX_W{1'b0}};
-						drain_n_tile_idx_r <= shadow_launch_fire ? shadow_n_tile_idx_r : {TILE_IDX_W{1'b0}};
-						drain_total_n_tiles_r <= shadow_launch_fire ? shadow_total_n_tiles_r : cmd_matmul_n_tiles;
-						drain_single_output_r <= shadow_launch_fire ? shadow_single_output_r : cmd_single_output_tile;
-						drain_final_tile_r <= shadow_launch_fire ? shadow_final_tile_r : !cmd_macro_has_more_tiles;
-						store_chunk_base_r <= {STORE_BASE_W{1'b0}};
-					end
-				end
-			end else if (exec_valid_r) begin
+				end else if (exec_valid_r) begin
 				if (mm_exec_req_fire) begin
 					exec_issue_cnt_r <= exec_issue_cnt_r + 1'b1;
 					if ((exec_issue_cnt_r + 1'b1) < exec_total_accs_r) begin
@@ -660,46 +650,60 @@ module PT_CE_V2 #(
 				end
 			end
 
-			if (promote_exec_to_drain_fire) begin
-				drain_valid_r     <= 1'b1;
-				drain_id_r        <= exec_id_r;
-				drain_m_wr_buf_r  <= exec_m_wr_buf_r;
-				drain_chunking_r  <= 1'b0;
-				drain_m_tile_idx_r <= exec_m_tile_idx_r;
-				drain_n_tile_idx_r <= exec_n_tile_idx_r;
-				drain_total_n_tiles_r <= exec_total_n_tiles_r;
-				drain_single_output_r <= exec_single_output_r;
-				drain_final_tile_r <= exec_final_tile_r;
-				store_chunk_base_r <= {STORE_BASE_W{1'b0}};
-			end else if (promote_shadow_done_to_drain_fire) begin
-				drain_valid_r     <= 1'b1;
-				drain_id_r        <= shadow_id_r;
-				drain_m_wr_buf_r  <= shadow_m_wr_buf_r;
-				drain_chunking_r  <= 1'b0;
-				drain_m_tile_idx_r <= shadow_m_tile_idx_r;
-				drain_n_tile_idx_r <= shadow_n_tile_idx_r;
-				drain_total_n_tiles_r <= shadow_total_n_tiles_r;
-				drain_single_output_r <= shadow_single_output_r;
-				drain_final_tile_r <= shadow_final_tile_r;
-				store_chunk_base_r <= {STORE_BASE_W{1'b0}};
-			end else if (drain_complete_fire) begin
-				if (DRAIN_FULL_WIDTH && drain_shadow_valid_r) begin
-					drain_valid_r     <= 1'b1;
-					drain_id_r        <= drain_shadow_id_r;
-					drain_m_wr_buf_r  <= drain_shadow_m_wr_buf_r;
-					drain_chunking_r  <= 1'b0;
-					drain_m_tile_idx_r <= drain_shadow_m_tile_idx_r;
-					drain_n_tile_idx_r <= drain_shadow_n_tile_idx_r;
-					drain_total_n_tiles_r <= drain_shadow_total_n_tiles_r;
-					drain_single_output_r <= drain_shadow_single_output_r;
-					drain_final_tile_r <= drain_shadow_final_tile_r;
-					store_chunk_base_r <= {STORE_BASE_W{1'b0}};
+				if (drain_queue_launch_fire) begin
+					drain_shadow_valid_r <= 1'b1;
+					drain_shadow_id_r <= launch_drain_id;
+					drain_shadow_m_wr_buf_r <= launch_drain_m_wr_buf;
+					drain_shadow_m_tile_idx_r <= launch_drain_m_tile_idx;
+					drain_shadow_n_tile_idx_r <= launch_drain_n_tile_idx;
+					drain_shadow_total_n_tiles_r <= launch_drain_total_n_tiles;
+					drain_shadow_single_output_r <= launch_drain_single_output;
+					drain_shadow_final_tile_r <= launch_drain_final_tile;
+				end else if (drain_load_shadow_fire) begin
 					drain_shadow_valid_r <= 1'b0;
-				end else begin
-					drain_valid_r    <= 1'b0;
+				end
+
+				if (drain_load_launch_fire || drain_load_exec_fire || drain_load_shadow_done_fire || drain_load_shadow_fire) begin
+					drain_valid_r <= 1'b1;
+					drain_chunking_r <= 1'b0;
+					store_chunk_base_r <= {STORE_BASE_W{1'b0}};
+					if (drain_load_shadow_fire) begin
+						drain_id_r <= drain_shadow_id_r;
+						drain_m_wr_buf_r <= drain_shadow_m_wr_buf_r;
+						drain_m_tile_idx_r <= drain_shadow_m_tile_idx_r;
+						drain_n_tile_idx_r <= drain_shadow_n_tile_idx_r;
+						drain_total_n_tiles_r <= drain_shadow_total_n_tiles_r;
+						drain_single_output_r <= drain_shadow_single_output_r;
+						drain_final_tile_r <= drain_shadow_final_tile_r;
+					end else if (drain_load_shadow_done_fire) begin
+						drain_id_r <= shadow_id_r;
+						drain_m_wr_buf_r <= shadow_m_wr_buf_r;
+						drain_m_tile_idx_r <= shadow_m_tile_idx_r;
+						drain_n_tile_idx_r <= shadow_n_tile_idx_r;
+						drain_total_n_tiles_r <= shadow_total_n_tiles_r;
+						drain_single_output_r <= shadow_single_output_r;
+						drain_final_tile_r <= shadow_final_tile_r;
+					end else if (drain_load_exec_fire) begin
+						drain_id_r <= exec_id_r;
+						drain_m_wr_buf_r <= exec_m_wr_buf_r;
+						drain_m_tile_idx_r <= exec_m_tile_idx_r;
+						drain_n_tile_idx_r <= exec_n_tile_idx_r;
+						drain_total_n_tiles_r <= exec_total_n_tiles_r;
+						drain_single_output_r <= exec_single_output_r;
+						drain_final_tile_r <= exec_final_tile_r;
+					end else begin
+						drain_id_r <= launch_drain_id;
+						drain_m_wr_buf_r <= launch_drain_m_wr_buf;
+						drain_m_tile_idx_r <= launch_drain_m_tile_idx;
+						drain_n_tile_idx_r <= launch_drain_n_tile_idx;
+						drain_total_n_tiles_r <= launch_drain_total_n_tiles;
+						drain_single_output_r <= launch_drain_single_output;
+						drain_final_tile_r <= launch_drain_final_tile;
+					end
+				end else if (drain_clear_fire) begin
+					drain_valid_r <= 1'b0;
 					drain_chunking_r <= 1'b0;
 				end
-			end
 
 			if (drain_valid_r) begin
 				if (DRAIN_FULL_WIDTH) begin
