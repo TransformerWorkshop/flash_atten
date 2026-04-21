@@ -34,6 +34,10 @@ module PT_DMA_AXIL_CSR #(
 	input  wire                       status_resp_overflow,
 	input  wire                       status_desc_miss,
 	input  wire [31:0]                resp_head,
+	input  wire [31:0]                perf_command_push_count,
+	input  wire [31:0]                perf_pt_accept_count,
+	input  wire [31:0]                perf_resp_enqueue_count,
+	input  wire [31:0]                perf_wr_dma_done_count,
 	output reg                        desc_push_pulse,
 	output reg                        resp_pop_pulse,
 	output reg                        soft_clear_pulse,
@@ -60,11 +64,19 @@ module PT_DMA_AXIL_CSR #(
 	localparam [7:0] ADDR_M_ADDR_HI = 8'h2C;
 	localparam [7:0] ADDR_RESP_HEAD = 8'h30;
 	localparam [7:0] ADDR_INFO      = 8'h34;
+	localparam [7:0] ADDR_DESC_STREAM = 8'h38;
+	localparam [7:0] ADDR_AXIL_WRITE_COUNT = 8'h40;
+	localparam [7:0] ADDR_COMMAND_PUSH_COUNT = 8'h44;
+	localparam [7:0] ADDR_PT_ACCEPT_COUNT = 8'h48;
+	localparam [7:0] ADDR_RESP_ENQUEUE_COUNT = 8'h4C;
+	localparam [7:0] ADDR_WR_DMA_DONE_COUNT = 8'h50;
+	localparam [7:0] ADDR_COMPACT_COMMIT_COUNT = 8'h54;
 
 	localparam [1:0] RESP_OKAY = 2'b00;
 	localparam [7:0] CMD_FIFO_DEPTH_U8 = CMD_FIFO_DEPTH;
 	localparam [7:0] RESP_FIFO_DEPTH_U8 = RESP_FIFO_DEPTH;
 	localparam [31:0] INFO_WORD = {8'd1, 8'd0, CMD_FIFO_DEPTH_U8, RESP_FIFO_DEPTH_U8};
+	localparam [2:0] DESC_STREAM_WORDS = 3'd6;
 
 	reg                      axi_awready_r;
 	reg                      axi_wready_r;
@@ -72,6 +84,9 @@ module PT_DMA_AXIL_CSR #(
 	reg                      axi_arready_r;
 	reg                      axi_rvalid_r;
 	reg  [AXIL_ADDR_W-1:0]   rd_addr_r;
+	reg  [2:0]               desc_stream_idx_r;
+	reg  [31:0]              axil_write_count_r;
+	reg  [31:0]              compact_commit_count_r;
 
 	wire write_fire = axi_awready_r && s_axil_awvalid && axi_wready_r && s_axil_wvalid;
 	wire read_fire = axi_arready_r && s_axil_arvalid;
@@ -175,6 +190,12 @@ module PT_DMA_AXIL_CSR #(
 			ADDR_M_ADDR_HI: read_data_r = addr_hi_word(m_addr_reg);
 			ADDR_RESP_HEAD: read_data_r = resp_head;
 			ADDR_INFO:      read_data_r = INFO_WORD;
+			ADDR_AXIL_WRITE_COUNT:    read_data_r = axil_write_count_r;
+			ADDR_COMMAND_PUSH_COUNT:  read_data_r = perf_command_push_count;
+			ADDR_PT_ACCEPT_COUNT:     read_data_r = perf_pt_accept_count;
+			ADDR_RESP_ENQUEUE_COUNT:  read_data_r = perf_resp_enqueue_count;
+			ADDR_WR_DMA_DONE_COUNT:   read_data_r = perf_wr_dma_done_count;
+			ADDR_COMPACT_COMMIT_COUNT: read_data_r = compact_commit_count_r;
 			default:        read_data_r = 32'd0;
 		endcase
 	end
@@ -210,6 +231,9 @@ module PT_DMA_AXIL_CSR #(
 			b_addr_reg        <= {EXT_ADDR_W{1'b0}};
 			c_addr_reg        <= {EXT_ADDR_W{1'b0}};
 			m_addr_reg        <= {EXT_ADDR_W{1'b0}};
+			desc_stream_idx_r <= 3'd0;
+			axil_write_count_r <= 32'd0;
+			compact_commit_count_r <= 32'd0;
 		end else if (clear) begin
 			axi_awready_r     <= 1'b0;
 			axi_wready_r      <= 1'b0;
@@ -227,6 +251,9 @@ module PT_DMA_AXIL_CSR #(
 			b_addr_reg        <= {EXT_ADDR_W{1'b0}};
 			c_addr_reg        <= {EXT_ADDR_W{1'b0}};
 			m_addr_reg        <= {EXT_ADDR_W{1'b0}};
+			desc_stream_idx_r <= 3'd0;
+			axil_write_count_r <= 32'd0;
+			compact_commit_count_r <= 32'd0;
 		end else begin
 			desc_push_pulse   <= 1'b0;
 			resp_pop_pulse    <= 1'b0;
@@ -242,12 +269,16 @@ module PT_DMA_AXIL_CSR #(
 			end
 
 			if (write_fire) begin
+				axil_write_count_r <= axil_write_count_r + 1'b1;
 				case (s_axil_awaddr[7:0])
 					ADDR_CTRL: begin
 						desc_push_pulse   <= s_axil_wstrb[0] && s_axil_wdata[0];
 						resp_pop_pulse    <= s_axil_wstrb[0] && s_axil_wdata[1];
 						soft_clear_pulse  <= s_axil_wstrb[0] && s_axil_wdata[2];
 						clear_flags_pulse <= s_axil_wstrb[0] && s_axil_wdata[3];
+						if ((s_axil_wstrb[0] && s_axil_wdata[2]) || (s_axil_wstrb[0] && s_axil_wdata[4])) begin
+							desc_stream_idx_r <= 3'd0;
+						end
 					end
 					ADDR_CMD_INST: begin
 						cmd_inst_reg <= apply_wstrb32(cmd_inst_reg, s_axil_wdata, s_axil_wstrb);
@@ -278,6 +309,25 @@ module PT_DMA_AXIL_CSR #(
 					end
 					ADDR_M_ADDR_HI: begin
 						m_addr_reg <= merge_addr_hi(m_addr_reg, apply_wstrb32(addr_hi_word(m_addr_reg), s_axil_wdata, s_axil_wstrb));
+					end
+					ADDR_DESC_STREAM: begin
+						case (desc_stream_idx_r)
+							3'd0: cmd_inst_reg <= apply_wstrb32(cmd_inst_reg, s_axil_wdata, s_axil_wstrb);
+							3'd1: cmd_id_reg <= apply_wstrb32(cmd_id_reg, s_axil_wdata, s_axil_wstrb);
+							3'd2: a_addr_reg <= merge_addr_lo({EXT_ADDR_W{1'b0}}, apply_wstrb32(32'd0, s_axil_wdata, s_axil_wstrb));
+							3'd3: b_addr_reg <= merge_addr_lo({EXT_ADDR_W{1'b0}}, apply_wstrb32(32'd0, s_axil_wdata, s_axil_wstrb));
+							3'd4: c_addr_reg <= merge_addr_lo({EXT_ADDR_W{1'b0}}, apply_wstrb32(32'd0, s_axil_wdata, s_axil_wstrb));
+							3'd5: m_addr_reg <= merge_addr_lo({EXT_ADDR_W{1'b0}}, apply_wstrb32(32'd0, s_axil_wdata, s_axil_wstrb));
+							default: begin
+							end
+						endcase
+						if ((desc_stream_idx_r + 1'b1) >= DESC_STREAM_WORDS) begin
+							desc_push_pulse <= 1'b1;
+							desc_stream_idx_r <= 3'd0;
+							compact_commit_count_r <= compact_commit_count_r + 1'b1;
+						end else begin
+							desc_stream_idx_r <= desc_stream_idx_r + 1'b1;
+						end
 					end
 					default: begin
 					end

@@ -24,6 +24,10 @@
   - 支持 `PT` 和 `PT_DMA_TOP` 两个 target；默认现在是 `PT_DMA_TOP`
 - `report`
   - 生成 Markdown 报告，并把 verify 的 measured 数据回灌到推荐结果
+- `multitile`
+  - 扫描软件侧直接发出的 `m/n/k tiles ∈ {1,2,4}` 组合
+  - 统计单条 multitile `MATMUL` 的 `accept->done cycles`、`ops/cycle`、`TOPS@1GHz`
+  - 超出 [`param.vh`](../../rtl/param.vh) `PT_SIZE_W` 编码上限的组合会标记为 `unsupported`
 
 ## CLI
 
@@ -43,6 +47,19 @@ python3 app/pt_tiled_gemm/run.py verify --m 16 --k 32 --n 16 --sim icarus
 python3 app/pt_tiled_gemm/run.py verify --m 16 --k 64 --n 16 --sim icarus
 python3 app/pt_tiled_gemm/run.py verify --m 32 --k 16 --n 32 --sim icarus
 python3 app/pt_tiled_gemm/run.py verify --m 16 --k 16 --n 16 --sim icarus --target pt
+python3 app/pt_tiled_gemm/run.py verify --m 16 --k 32 --n 16 --target pt_dma_top --sim icarus --submission-mode shadow_delta
+python3 app/pt_tiled_gemm/run.py verify --m 16 --k 32 --n 16 --target pt_dma_top --sim icarus --submission-mode compact
+```
+
+运行 multitile 吞吐统计：
+
+```bash
+python3 app/pt_tiled_gemm/run.py multitile --target pt --sim icarus
+python3 app/pt_tiled_gemm/run.py multitile --target pt_dma_top --sim icarus
+python3 app/pt_tiled_gemm/run.py multitile --target pt --sim icarus --m-tiles 1,2 --n-tiles 1,2 --k-tiles 1,2 --json
+python3 app/pt_tiled_gemm/run.py multitile --target pt_dma_top --sim icarus --submission-mode legacy
+python3 app/pt_tiled_gemm/run.py multitile --target pt_dma_top --sim icarus --submission-mode shadow_delta
+python3 app/pt_tiled_gemm/run.py multitile --target pt_dma_top --sim icarus --submission-mode compact
 ```
 
 生成报告：
@@ -51,6 +68,7 @@ python3 app/pt_tiled_gemm/run.py verify --m 16 --k 16 --n 16 --sim icarus --targ
 python3 app/pt_tiled_gemm/run.py report --m 16 --k 32 --n 16 --sim icarus
 python3 app/pt_tiled_gemm/run.py report --m 16 --k 64 --n 16 --sim icarus
 python3 app/pt_tiled_gemm/run.py report --m 16 --k 16 --n 16 --sim icarus --target pt
+python3 app/pt_tiled_gemm/run.py report --m 16 --k 32 --n 16 --target pt_dma_top --sim icarus --submission-mode compact
 ```
 
 target 说明：
@@ -60,6 +78,17 @@ target 说明：
 - `--target pt_dma_top`
   - 对 AXI-Lite + DMA descriptor wrapper `PT_DMA_TOP` 跑同一套 app-level verify
 - 默认 target 是 `pt_dma_top`
+
+submission mode 说明：
+
+- `--submission-mode legacy`
+  - 保持原始 full descriptor writes + `CTRL_DESC_PUSH`
+- `--submission-mode shadow_delta`
+  - 维护软件 shadow，只写变化字段
+  - `EXT_ADDR_W=32` 时不会写 `*_ADDR_HI`
+- `--submission-mode compact`
+  - 使用 wrapper 新增的 compact streaming submit path
+  - 顺序写 `CMD_INST/CMD_ID/A_LO/B_LO/C_LO/M_LO` 共 `6` 个 word
 
 ## 默认输出
 
@@ -74,6 +103,11 @@ target 说明：
 - cocotb build/logs/results
   - 默认 `PT_DMA_TOP`: `app/pt_tiled_gemm/out/cocotb/pt_dma_top/m<M>_k<K>_n<N>/...`
   - 显式 `--target pt`: `app/pt_tiled_gemm/out/cocotb/m<M>_k<K>_n<N>/...`
+- multitile sweep 汇总
+  - `PT`: `app/pt_tiled_gemm/out/multitile_sweep_pt_<sim>_<submission_mode>.json`
+  - `PT_DMA_TOP`: `app/pt_tiled_gemm/out/multitile_sweep_pt_dma_top_<sim>_<submission_mode>.json`
+- multitile per-case cocotb artifacts
+  - `app/pt_tiled_gemm/out/cocotb_multitile/<target>/<sim>/<submission_mode>/m<M>_n<N>_k<K>/...`
 
 ## 候选算法
 

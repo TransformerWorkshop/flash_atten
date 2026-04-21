@@ -6,7 +6,9 @@
       "m_dim": 48,
       "m_tiles": 3,
       "n_dim": 32,
-      "n_tiles": 2
+      "n_tiles": 2,
+      "target": "pt",
+      "target_label": "PT"
     }
   },
   "unsupported_paths": {

@@ -20,6 +20,7 @@ from . import (
 	hdl_toplevel_for_target,
 	normalize_app_target,
 )
+from .submission import SUBMISSION_MODE_LEGACY, normalize_submission_mode
 
 try:
 	from cocotb_tools.runner import get_runner
@@ -122,10 +123,12 @@ def run_verification(
 	sim_name: str = "icarus",
 	waves: bool = False,
 	target: str = DEFAULT_APP_TARGET,
+	submission_mode: str = SUBMISSION_MODE_LEGACY,
 ) -> VerifyResult:
 	problem.validate()
 	normalized_target = normalize_app_target(target)
 	normalized_sim = normalize_sim_name(sim_name)
+	normalized_submission_mode = normalize_submission_mode(submission_mode)
 	base_dir = cocotb_output_root(problem, normalized_target) / normalized_sim
 	build_dir = base_dir / "build"
 	test_dir = base_dir / "test"
@@ -193,6 +196,8 @@ def run_verification(
 		"PT_APP_M_DIM": str(problem.m_dim),
 		"PT_APP_K_DIM": str(problem.k_dim),
 		"PT_APP_N_DIM": str(problem.n_dim),
+		"PT_APP_SUBMISSION_MODE": normalized_submission_mode,
+		"PT_EXT_ADDR_W": str(PT_PARAMS["EXT_ADDR_W"]),
 	}
 
 	failure_message: Optional[str] = None

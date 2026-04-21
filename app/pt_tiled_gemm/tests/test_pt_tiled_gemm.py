@@ -18,6 +18,7 @@ if str(COCOTB_ROOT) not in sys.path:
 	sys.path.insert(0, str(COCOTB_ROOT))
 
 from app.pt_tiled_gemm import ProblemSpec, TILE_DIM, app_target_label, normalize_app_target
+from app.pt_tiled_gemm.submission import CommandSubmitter, normalize_submission_mode
 from tests.pt_model import (
 	PT_SCALE_FULL,
 	build_load_inst,
@@ -29,6 +30,7 @@ from tests.pt_model import (
 )
 
 APP_TARGET = normalize_app_target(os.getenv("PT_APP_TARGET", "pt"))
+SUBMISSION_MODE = normalize_submission_mode(os.getenv("PT_APP_SUBMISSION_MODE", "legacy"))
 if APP_TARGET == "pt_dma_top":
 	from tests.pt_dma_top_env import create_env, setup_bases_and_passthrough_qcfg
 else:
@@ -53,6 +55,8 @@ PT_X_DIM = env_int("PT_X_DIM", TILE_DIM)
 PT_Y_DIM = env_int("PT_Y_DIM", TILE_DIM)
 PT_M_EXPORT_LANES = env_int("PT_M_EXPORT_LANES", TILE_DIM)
 EXPORT_BEATS_PER_TILE = PT_X_DIM * math.ceil(PT_Y_DIM / PT_M_EXPORT_LANES)
+CTRL_ID_POOL_SIZE = env_int("PT_APP_CTRL_ID_POOL_SIZE", env_int("PT_LUT_DEPTH", 8))
+CTRL_ID_POOL_BASE = env_int("PT_APP_CTRL_ID_BASE", 0x500)
 
 
 def cycle_now() -> int:
@@ -74,6 +78,39 @@ def record_metric(section: str, key: str, payload: Dict[str, object]) -> None:
 		data = {}
 	data.setdefault(section, {})[key] = payload
 	path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def build_submitter(env, *, ctrl_id_base: int) -> CommandSubmitter:
+	return CommandSubmitter(
+		env,
+		target=APP_TARGET,
+		submission_mode=SUBMISSION_MODE,
+		ctrl_id_base=ctrl_id_base,
+		ctrl_id_pool_size=CTRL_ID_POOL_SIZE,
+	)
+
+
+async def submission_metrics(env, submitter: CommandSubmitter) -> Dict[str, object]:
+	payload: Dict[str, object] = {
+		"submission_mode": submitter.submission_mode,
+		"command_count": submitter.stats.command_count,
+		"axil_writes_total": submitter.stats.axil_writes_total,
+		"axil_writes_per_command": submitter.stats.axil_writes_per_command,
+		"descriptor_push_count": submitter.stats.descriptor_push_count,
+	}
+	if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters"):
+		counters = await env.read_perf_counters()
+		payload.update(
+			{
+				"perf_axil_write_count": counters.axil_write_count,
+				"perf_command_push_count": counters.command_push_count,
+				"perf_pt_accept_count": counters.pt_accept_count,
+				"perf_resp_enqueue_count": counters.resp_enqueue_count,
+				"perf_wr_dma_done_count": counters.wr_dma_done_count,
+				"perf_compact_commit_count": counters.compact_commit_count,
+			}
+		)
+	return payload
 
 
 def build_problem(problem: ProblemSpec) -> Tuple[List[int], List[int]]:
@@ -130,12 +167,12 @@ def reduce_partials(partials: List[List[int]]) -> List[int]:
 	return result
 
 
-async def run_matmul_tile(env, ctrl_id: int, a_tile: List[int], b_tile: List[int]) -> Tuple[List[int], int, int]:
+async def run_matmul_tile(env, submitter: CommandSubmitter, ctrl_id: int, a_tile: List[int], b_tile: List[int]) -> Tuple[List[int], int, int]:
 	env.register_external_matrix("A", ctrl_id, a_tile)
 	env.register_external_matrix("B", ctrl_id, b_tile)
 	plan = env.plan_matmul(ctrl_id, m_scale=PT_SCALE_FULL, n_scale=PT_SCALE_FULL, k_scale=PT_SCALE_FULL)
 	assert not plan.err
-	await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL), ctrl_id)
+	await submitter.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL), ctrl_id)
 	accept_cycle = cycle_now()
 	resp = await env.wait_ctrl_resp(plan.response_word, 40000)
 	env.model.commit_success(plan)
@@ -144,12 +181,12 @@ async def run_matmul_tile(env, ctrl_id: int, a_tile: List[int], b_tile: List[int
 	return list(plan.result_matrix), (resp >> 30) & 0x1, accept_cycle
 
 
-async def run_matadd_tile(env, ctrl_id: int, m_buf: int, ext_matrix: List[int]) -> List[int]:
+async def run_matadd_tile(env, submitter: CommandSubmitter, ctrl_id: int, m_buf: int, ext_matrix: List[int]) -> List[int]:
 	env.register_external_matrix("C", ctrl_id, ext_matrix)
 	m_off = build_mwin_off(m_buf, 0)
 	plan = env.plan_matadd(ctrl_id, m_off)
 	assert not plan.err
-	await env.send_ctrl(build_matadd_inst(m_off), ctrl_id)
+	await submitter.send_ctrl(build_matadd_inst(m_off), ctrl_id)
 	await env.wait_ctrl_resp(plan.response_word, 40000)
 	env.model.commit_success(plan)
 	await env.wait_export_done(env.export_done_count + 1, 80000)
@@ -168,6 +205,7 @@ async def prepare_env(env) -> Tuple[List[int], List[int], List[int]]:
 		{
 			"target": APP_TARGET,
 			"target_label": app_target_label(APP_TARGET),
+			"submission_mode": SUBMISSION_MODE,
 			"m_dim": PROBLEM.m_dim,
 			"k_dim": PROBLEM.k_dim,
 			"n_dim": PROBLEM.n_dim,
@@ -179,7 +217,7 @@ async def prepare_env(env) -> Tuple[List[int], List[int], List[int]]:
 	return a_full, b_full, golden
 
 
-async def run_host_reduce_direct(env, a_full: List[int], b_full: List[int]) -> Dict[str, object]:
+async def run_host_reduce_direct(env, submitter: CommandSubmitter, a_full: List[int], b_full: List[int]) -> Dict[str, object]:
 	snapshot = env.snapshot()
 	start_cycle = None
 	c_full = [0] * (PROBLEM.m_dim * PROBLEM.n_dim)
@@ -188,10 +226,11 @@ async def run_host_reduce_direct(env, a_full: List[int], b_full: List[int]) -> D
 		for n_tile in range(PROBLEM.n_tiles):
 			partials: List[List[int]] = []
 			for k_tile in range(PROBLEM.k_tiles):
-				ctrl_id = 0x500 + ctrl_seed
+				ctrl_id = submitter.acquire_ctrl_id(0x500 + ctrl_seed)
 				ctrl_seed += 1
 				partial, _, accept_cycle = await run_matmul_tile(
 					env,
+					submitter,
 					ctrl_id,
 					extract_a_tile(PROBLEM, a_full, m_tile, k_tile),
 					extract_b_tile(PROBLEM, b_full, k_tile, n_tile),
@@ -199,6 +238,7 @@ async def run_host_reduce_direct(env, a_full: List[int], b_full: List[int]) -> D
 				if start_cycle is None:
 					start_cycle = accept_cycle
 				partials.append(partial)
+				submitter.release_ctrl_id(ctrl_id)
 			place_c_tile(PROBLEM, c_full, reduce_partials(partials), m_tile, n_tile)
 	assert start_cycle is not None
 	return {
@@ -212,7 +252,7 @@ async def run_host_reduce_direct(env, a_full: List[int], b_full: List[int]) -> D
 	}
 
 
-async def run_host_reduce_direct_pipelined(env, a_full: List[int], b_full: List[int]) -> Dict[str, object]:
+async def run_host_reduce_direct_pipelined(env, submitter: CommandSubmitter, a_full: List[int], b_full: List[int]) -> Dict[str, object]:
 	"""Like run_host_reduce_direct but keeps up to 2 MATMULs in-flight
 	(limited by M_PHYSICAL_COPIES=2).  The next MATMUL is dispatched before
 	draining the previous one, so the DUT can overlap DMA-fill of tile N+1
@@ -231,30 +271,32 @@ async def run_host_reduce_direct_pipelined(env, a_full: List[int], b_full: List[
 			for k_tile in range(PROBLEM.k_tiles):
 				# drain oldest if window is full
 				if len(inflight) >= pipeline_depth:
-					plan_old, exp_target = inflight.pop(0)
+					plan_old, exp_target, done_ctrl_id = inflight.pop(0)
 					await env.wait_ctrl_resp(plan_old.response_word, 80000)
 					env.model.commit_success(plan_old)
 					await env.wait_export_done(exp_target, 80000)
 					assert plan_old.result_matrix is not None
 					partials.append(list(plan_old.result_matrix))
-				ctrl_id = 0xA00 + ctrl_seed
+					submitter.release_ctrl_id(done_ctrl_id)
+				ctrl_id = submitter.acquire_ctrl_id(0xA00 + ctrl_seed)
 				ctrl_seed += 1
 				env.register_external_matrix("A", ctrl_id, extract_a_tile(PROBLEM, a_full, m_tile, k_tile))
 				env.register_external_matrix("B", ctrl_id, extract_b_tile(PROBLEM, b_full, k_tile, n_tile))
 				plan = env.plan_matmul(ctrl_id, m_scale=PT_SCALE_FULL, n_scale=PT_SCALE_FULL, k_scale=PT_SCALE_FULL)
 				assert not plan.err
-				await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL), ctrl_id)
+				await submitter.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL), ctrl_id)
 				if start_cycle is None:
 					start_cycle = cycle_now()
 				n_sent += 1
-				inflight.append((plan, export_base + n_sent))
+				inflight.append((plan, export_base + n_sent, ctrl_id))
 			# drain remaining
-			for plan_rem, exp_target in inflight:
+			for plan_rem, exp_target, done_ctrl_id in inflight:
 				await env.wait_ctrl_resp(plan_rem.response_word, 80000)
 				env.model.commit_success(plan_rem)
 				await env.wait_export_done(exp_target, 80000)
 				assert plan_rem.result_matrix is not None
 				partials.append(list(plan_rem.result_matrix))
+				submitter.release_ctrl_id(done_ctrl_id)
 			place_c_tile(PROBLEM, c_full, reduce_partials(partials), m_tile, n_tile)
 	assert start_cycle is not None
 	return {
@@ -268,7 +310,7 @@ async def run_host_reduce_direct_pipelined(env, a_full: List[int], b_full: List[
 	}
 
 
-async def run_host_reduce_load_then_matmul(env, a_full: List[int], b_full: List[int]) -> Dict[str, object]:
+async def run_host_reduce_load_then_matmul(env, submitter: CommandSubmitter, a_full: List[int], b_full: List[int]) -> Dict[str, object]:
 	snapshot = env.snapshot()
 	start_cycle = None
 	c_full = [0] * (PROBLEM.m_dim * PROBLEM.n_dim)
@@ -277,7 +319,7 @@ async def run_host_reduce_load_then_matmul(env, a_full: List[int], b_full: List[
 		for n_tile in range(PROBLEM.n_tiles):
 			partials: List[List[int]] = []
 			for k_tile in range(PROBLEM.k_tiles):
-				ctrl_id = 0x900 + ctrl_seed
+				ctrl_id = submitter.acquire_ctrl_id(0x900 + ctrl_seed)
 				ctrl_seed += 1
 				a_tile = extract_a_tile(PROBLEM, a_full, m_tile, k_tile)
 				b_tile = extract_b_tile(PROBLEM, b_full, k_tile, n_tile)
@@ -285,7 +327,7 @@ async def run_host_reduce_load_then_matmul(env, a_full: List[int], b_full: List[
 				env.register_external_matrix("B", ctrl_id, b_tile)
 				load_plan = env.plan_load(ctrl_id, len(a_tile), len(b_tile), need_a=True, need_b=True)
 				assert not load_plan.err
-				await env.send_ctrl(build_load_inst(len(a_tile), len(b_tile), need_a=True, need_b=True), ctrl_id)
+				await submitter.send_ctrl(build_load_inst(len(a_tile), len(b_tile), need_a=True, need_b=True), ctrl_id)
 				if start_cycle is None:
 					start_cycle = cycle_now()
 				await env.wait_ctrl_resp(load_plan.response_word, 40000)
@@ -294,12 +336,13 @@ async def run_host_reduce_load_then_matmul(env, a_full: List[int], b_full: List[
 				matmul_plan = env.plan_matmul(ctrl_id, m_scale=PT_SCALE_FULL, n_scale=PT_SCALE_FULL, k_scale=PT_SCALE_FULL)
 				assert not matmul_plan.err
 				assert len(matmul_plan.expected_dma_loads) == 0
-				await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL), ctrl_id)
+				await submitter.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL), ctrl_id)
 				await env.wait_ctrl_resp(matmul_plan.response_word, 40000)
 				env.model.commit_success(matmul_plan)
 				await env.wait_export_done(env.export_done_count + 1, 80000)
 				assert matmul_plan.result_matrix is not None
 				partials.append(list(matmul_plan.result_matrix))
+				submitter.release_ctrl_id(ctrl_id)
 			place_c_tile(PROBLEM, c_full, reduce_partials(partials), m_tile, n_tile)
 	assert start_cycle is not None
 	return {
@@ -313,7 +356,7 @@ async def run_host_reduce_load_then_matmul(env, a_full: List[int], b_full: List[
 	}
 
 
-async def run_pt_matadd_reduce(env, a_full: List[int], b_full: List[int]) -> Dict[str, object]:
+async def run_pt_matadd_reduce(env, submitter: CommandSubmitter, a_full: List[int], b_full: List[int]) -> Dict[str, object]:
 	snapshot = env.snapshot()
 	start_cycle = None
 	c_full = [0] * (PROBLEM.m_dim * PROBLEM.n_dim)
@@ -324,10 +367,11 @@ async def run_pt_matadd_reduce(env, a_full: List[int], b_full: List[int]) -> Dic
 		for n_tile in range(PROBLEM.n_tiles):
 			running_sum: List[int] | None = None
 			for k_tile in range(PROBLEM.k_tiles):
-				ctrl_id = 0xD00 + ctrl_seed
+				ctrl_id = submitter.acquire_ctrl_id(0xD00 + ctrl_seed)
 				ctrl_seed += 1
 				partial, m_buf, accept_cycle = await run_matmul_tile(
 					env,
+					submitter,
 					ctrl_id,
 					extract_a_tile(PROBLEM, a_full, m_tile, k_tile),
 					extract_b_tile(PROBLEM, b_full, k_tile, n_tile),
@@ -336,8 +380,12 @@ async def run_pt_matadd_reduce(env, a_full: List[int], b_full: List[int]) -> Dic
 					start_cycle = accept_cycle
 				if running_sum is None:
 					running_sum = partial
+					submitter.release_ctrl_id(ctrl_id)
 					continue
-				running_sum = await run_matadd_tile(env, 0xE00 + add_seed, m_buf, running_sum)
+				submitter.release_ctrl_id(ctrl_id)
+				add_ctrl_id = submitter.acquire_ctrl_id(0xE00 + add_seed)
+				running_sum = await run_matadd_tile(env, submitter, add_ctrl_id, m_buf, running_sum)
+				submitter.release_ctrl_id(add_ctrl_id)
 				add_seed += 1
 				matadd_count += 1
 			assert running_sum is not None
@@ -358,10 +406,13 @@ async def run_pt_matadd_reduce(env, a_full: List[int], b_full: List[int]) -> Dic
 async def test_numeric_host_reduce_per_tensor(dut) -> None:
 	env = await create_env(dut)
 	try:
+		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE)
 		a_full, b_full, golden = await prepare_env(env)
-		result = await run_host_reduce_direct(env, a_full, b_full)
+		result = await run_host_reduce_direct(env, submitter, a_full, b_full)
 		assert result["final_matrix"] == golden
-		record_metric("tests", "numeric_host_reduce_per_tensor", {"status": "passed", "total_cycles": result["total_cycles"]})
+		metric_payload = {"status": "passed", "total_cycles": result["total_cycles"]}
+		metric_payload.update(await submission_metrics(env, submitter))
+		record_metric("tests", "numeric_host_reduce_per_tensor", metric_payload)
 	finally:
 		env.shutdown()
 
@@ -370,10 +421,13 @@ async def test_numeric_host_reduce_per_tensor(dut) -> None:
 async def test_numeric_host_reduce_pipelined(dut) -> None:
 	env = await create_env(dut)
 	try:
+		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x100)
 		a_full, b_full, golden = await prepare_env(env)
-		result = await run_host_reduce_direct_pipelined(env, a_full, b_full)
+		result = await run_host_reduce_direct_pipelined(env, submitter, a_full, b_full)
 		assert result["final_matrix"] == golden
-		record_metric("tests", "numeric_host_reduce_pipelined", {"status": "passed", "total_cycles": result["total_cycles"]})
+		metric_payload = {"status": "passed", "total_cycles": result["total_cycles"]}
+		metric_payload.update(await submission_metrics(env, submitter))
+		record_metric("tests", "numeric_host_reduce_pipelined", metric_payload)
 	finally:
 		env.shutdown()
 
@@ -382,10 +436,13 @@ async def test_numeric_host_reduce_pipelined(dut) -> None:
 async def test_numeric_pt_matadd_reduce_per_tensor(dut) -> None:
 	env = await create_env(dut)
 	try:
+		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x200)
 		a_full, b_full, golden = await prepare_env(env)
-		result = await run_pt_matadd_reduce(env, a_full, b_full)
+		result = await run_pt_matadd_reduce(env, submitter, a_full, b_full)
 		assert result["final_matrix"] == golden
-		record_metric("tests", "numeric_pt_matadd_reduce_per_tensor", {"status": "passed", "total_cycles": result["total_cycles"]})
+		metric_payload = {"status": "passed", "total_cycles": result["total_cycles"]}
+		metric_payload.update(await submission_metrics(env, submitter))
+		record_metric("tests", "numeric_pt_matadd_reduce_per_tensor", metric_payload)
 	finally:
 		env.shutdown()
 
@@ -394,6 +451,7 @@ async def test_numeric_pt_matadd_reduce_per_tensor(dut) -> None:
 async def test_same_id_cannot_rotate_k_slice_operands(dut) -> None:
 	env = await create_env(dut)
 	try:
+		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x300)
 		a_full, b_full, _ = await prepare_env(env)
 		if not PROBLEM.supports_same_id_swap:
 			record_metric(
@@ -410,7 +468,7 @@ async def test_same_id_cannot_rotate_k_slice_operands(dut) -> None:
 		b_tile1 = extract_b_tile(PROBLEM, b_full, 1, 0)
 
 		expected_slice1 = [to_unsigned(value, 32) for value in matmul_row_major(a_tile1, b_tile1, TILE_DIM, TILE_DIM, TILE_DIM)]
-		first_result, _, _ = await run_matmul_tile(env, ctrl_id, a_tile0, b_tile0)
+		first_result, _, _ = await run_matmul_tile(env, submitter, ctrl_id, a_tile0, b_tile0)
 		assert first_result != expected_slice1
 		dma_after_first = env.dma_req_count
 
@@ -419,7 +477,7 @@ async def test_same_id_cannot_rotate_k_slice_operands(dut) -> None:
 		second_plan = env.plan_matmul(ctrl_id, m_scale=PT_SCALE_FULL, n_scale=PT_SCALE_FULL, k_scale=PT_SCALE_FULL)
 		assert not second_plan.err
 		assert len(second_plan.expected_dma_loads) == 0
-		await env.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL), ctrl_id)
+		await submitter.send_ctrl(build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL), ctrl_id)
 		await env.wait_ctrl_resp(second_plan.response_word, 40000)
 		env.model.commit_success(second_plan)
 		await env.wait_export_done(env.export_done_count + 1, 80000)
@@ -446,8 +504,9 @@ async def test_same_id_cannot_rotate_k_slice_operands(dut) -> None:
 async def test_algorithm_compare_reduction_strategies(dut) -> None:
 	env = await create_env(dut)
 	try:
+		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x400)
 		a_full, b_full, golden = await prepare_env(env)
-		direct = await run_host_reduce_direct(env, a_full, b_full)
+		direct = await run_host_reduce_direct(env, submitter, a_full, b_full)
 		assert direct["final_matrix"] == golden
 		record_metric(
 			"algorithms",
@@ -458,11 +517,13 @@ async def test_algorithm_compare_reduction_strategies(dut) -> None:
 				"export_req_count": direct["export_req_count"],
 				"export_beats": direct["export_beats"],
 				"matadd_count": direct["matadd_count"],
+				**(await submission_metrics(env, submitter)),
 			},
 		)
 
+		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x500)
 		a_full, b_full, golden = await prepare_env(env)
-		load_then = await run_host_reduce_load_then_matmul(env, a_full, b_full)
+		load_then = await run_host_reduce_load_then_matmul(env, submitter, a_full, b_full)
 		assert load_then["final_matrix"] == golden
 		record_metric(
 			"algorithms",
@@ -473,11 +534,13 @@ async def test_algorithm_compare_reduction_strategies(dut) -> None:
 				"export_req_count": load_then["export_req_count"],
 				"export_beats": load_then["export_beats"],
 				"matadd_count": load_then["matadd_count"],
+				**(await submission_metrics(env, submitter)),
 			},
 		)
 
+		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x600)
 		a_full, b_full, golden = await prepare_env(env)
-		pt_reduce = await run_pt_matadd_reduce(env, a_full, b_full)
+		pt_reduce = await run_pt_matadd_reduce(env, submitter, a_full, b_full)
 		assert pt_reduce["final_matrix"] == golden
 		record_metric(
 			"algorithms",
@@ -488,11 +551,13 @@ async def test_algorithm_compare_reduction_strategies(dut) -> None:
 				"export_req_count": pt_reduce["export_req_count"],
 				"export_beats": pt_reduce["export_beats"],
 				"matadd_count": pt_reduce["matadd_count"],
+				**(await submission_metrics(env, submitter)),
 			},
 		)
 
+		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x700)
 		a_full, b_full, golden = await prepare_env(env)
-		pipelined = await run_host_reduce_direct_pipelined(env, a_full, b_full)
+		pipelined = await run_host_reduce_direct_pipelined(env, submitter, a_full, b_full)
 		assert pipelined["final_matrix"] == golden
 		record_metric(
 			"algorithms",
@@ -503,6 +568,7 @@ async def test_algorithm_compare_reduction_strategies(dut) -> None:
 				"export_req_count": pipelined["export_req_count"],
 				"export_beats": pipelined["export_beats"],
 				"matadd_count": pipelined["matadd_count"],
+				**(await submission_metrics(env, submitter)),
 			},
 		)
 

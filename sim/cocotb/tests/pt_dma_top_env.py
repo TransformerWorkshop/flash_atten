@@ -13,6 +13,10 @@ from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, ReadOnly, RisingEdge, Timer
 from cocotb.utils import get_sim_time
 from functional_coverage import FunctionalCoverageRecorder, classify_csr_pattern
+from app.pt_tiled_gemm.submission import (
+	SUBMISSION_MODE_LEGACY,
+	normalize_submission_mode,
+)
 
 from tests.pt_model import (
 	DMA_KIND_A,
@@ -67,6 +71,14 @@ ADDR_C_ADDR_HI = 0x24
 ADDR_M_ADDR_LO = 0x28
 ADDR_M_ADDR_HI = 0x2C
 ADDR_RESP_HEAD = 0x30
+ADDR_INFO = 0x34
+ADDR_DESC_STREAM = 0x38
+ADDR_AXIL_WRITE_COUNT = 0x40
+ADDR_COMMAND_PUSH_COUNT = 0x44
+ADDR_PT_ACCEPT_COUNT = 0x48
+ADDR_RESP_ENQUEUE_COUNT = 0x4C
+ADDR_WR_DMA_DONE_COUNT = 0x50
+ADDR_COMPACT_COMMIT_COUNT = 0x54
 
 DEFAULT_A_BASE = 0x0000_1000
 DEFAULT_B_BASE = 0x0000_2000
@@ -135,6 +147,16 @@ class WriteDmaLog:
 class AxilCounterSnapshot:
 	write_count: int
 	read_count: int
+
+
+@dataclass
+class PerfCounterSnapshot:
+	axil_write_count: int
+	command_push_count: int
+	pt_accept_count: int
+	resp_enqueue_count: int
+	wr_dma_done_count: int
+	compact_commit_count: int
 
 
 @dataclass
@@ -211,6 +233,9 @@ class ExportInjection:
 class CtrlSendTrace:
 	wait_cycles: int
 	ready_low_cycles: int
+	axil_writes: int = 0
+	axil_reads: int = 0
+	mode: str = SUBMISSION_MODE_LEGACY
 
 
 class ConstantPattern:
@@ -270,6 +295,8 @@ class PTDmaTopEnv:
 		self.m_write_lanes = env_int("PT_M_WRITE_LANES", 1)
 		self.m_export_lanes = env_int("PT_M_EXPORT_LANES", 1)
 		self.m_physical_copies = env_int("PT_M_PHYSICAL_COPIES", 3)
+		self.ext_addr_w = env_int("PT_EXT_ADDR_W", 32)
+		self.submission_mode = normalize_submission_mode(os.getenv("PT_APP_SUBMISSION_MODE", SUBMISSION_MODE_LEGACY))
 		self.model = PTBlackBoxModel(self.x_dim, self.y_dim, self.a_bank_depth, self.b_bank_depth, self.data_width, self.lut_depth)
 		self.a_base_shadow = 0
 		self.b_base_shadow = 0
@@ -471,6 +498,16 @@ class PTDmaTopEnv:
 	def snapshot_axil_counters(self) -> AxilCounterSnapshot:
 		return AxilCounterSnapshot(write_count=self.axil_write_count, read_count=self.axil_read_count)
 
+	async def read_perf_counters(self) -> PerfCounterSnapshot:
+		return PerfCounterSnapshot(
+			axil_write_count=await self.axil_read(ADDR_AXIL_WRITE_COUNT),
+			command_push_count=await self.axil_read(ADDR_COMMAND_PUSH_COUNT),
+			pt_accept_count=await self.axil_read(ADDR_PT_ACCEPT_COUNT),
+			resp_enqueue_count=await self.axil_read(ADDR_RESP_ENQUEUE_COUNT),
+			wr_dma_done_count=await self.axil_read(ADDR_WR_DMA_DONE_COUNT),
+			compact_commit_count=await self.axil_read(ADDR_COMPACT_COMMIT_COUNT),
+		)
+
 	def snapshot(self) -> CounterSnapshot:
 		return CounterSnapshot(self.dma_req_count, self.export_req_count, self.export_done_count, self.export_error_count, self.irq_count)
 
@@ -638,7 +675,7 @@ class PTDmaTopEnv:
 				await RisingEdge(self.dut.clk)
 				self.dut.s_axil_bready.value = 0
 				addr8 = addr & 0xFF
-				if addr8 != ADDR_CTRL:
+				if addr8 not in {ADDR_CTRL, ADDR_DESC_STREAM}:
 					self.axil_reg_shadow[addr8] = self._apply_wstrb32(self._shadow_word(addr8), data, wstrb)
 				return resp
 		raise AssertionError(f"AXI-Lite write response timeout at 0x{addr:02x}")
@@ -689,8 +726,9 @@ class PTDmaTopEnv:
 		c_addr: int = 0,
 		m_addr: int = 0,
 		ctrl_write_delay_cycles: int = 0,
-		mode: str = "full",
+		mode: str | None = None,
 	) -> DescCommandTrace:
+		mode = normalize_submission_mode(self.submission_mode if mode is None else mode)
 		self.descriptors[ctrl_id & 0xFFFF_FFFF] = DescriptorAddrs(
 			a_addr=a_addr & 0xFFFF_FFFF_FFFF_FFFF,
 			b_addr=b_addr & 0xFFFF_FFFF_FFFF_FFFF,
@@ -712,7 +750,7 @@ class PTDmaTopEnv:
 			await self.axil_write(addr, data, wstrb=wstrb, write_delay_cycles=write_delay_cycles_local)
 			write_addrs.append(addr & 0xFF)
 
-		if mode == "full":
+		if mode == "legacy":
 			await traced_write(ADDR_CMD_INST, inst & 0xFFFF_FFFF)
 			await traced_write(ADDR_CMD_ID, ctrl_id & 0xFFFF_FFFF)
 			await traced_write(ADDR_A_ADDR_LO, a_addr & 0xFFFF_FFFF)
@@ -724,31 +762,75 @@ class PTDmaTopEnv:
 			await traced_write(ADDR_M_ADDR_LO, m_addr & 0xFFFF_FFFF)
 			await traced_write(ADDR_M_ADDR_HI, (m_addr >> 32) & 0xFFFF_FFFF)
 			await traced_write(ADDR_CTRL, CTRL_DESC_PUSH, write_delay_cycles_local=ctrl_write_delay_cycles)
-		elif mode == "delta":
+			self.axil_reg_shadow[ADDR_CMD_INST] = inst & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_CMD_ID] = ctrl_id & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_A_ADDR_LO] = a_addr & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_A_ADDR_HI] = (a_addr >> 32) & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_B_ADDR_LO] = b_addr & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_B_ADDR_HI] = (b_addr >> 32) & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_C_ADDR_LO] = c_addr & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_C_ADDR_HI] = (c_addr >> 32) & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_M_ADDR_LO] = m_addr & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_M_ADDR_HI] = (m_addr >> 32) & 0xFFFF_FFFF
+		elif mode == "shadow_delta":
 			if self._shadow_word(ADDR_CMD_INST) != (inst & 0xFFFF_FFFF):
 				await traced_write(ADDR_CMD_INST, inst & 0xFFFF_FFFF)
 			if self._shadow_word(ADDR_CMD_ID) != (ctrl_id & 0xFFFF_FFFF):
 				await traced_write(ADDR_CMD_ID, ctrl_id & 0xFFFF_FFFF)
 			if first_write_start_cycle is None and (
 				self._shadow_word(ADDR_A_ADDR_LO) != (a_addr & 0xFFFF_FFFF)
-				or self._shadow_word(ADDR_A_ADDR_HI) != ((a_addr >> 32) & 0xFFFF_FFFF)
 				or self._shadow_word(ADDR_B_ADDR_LO) != (b_addr & 0xFFFF_FFFF)
-				or self._shadow_word(ADDR_B_ADDR_HI) != ((b_addr >> 32) & 0xFFFF_FFFF)
 				or self._shadow_word(ADDR_C_ADDR_LO) != (c_addr & 0xFFFF_FFFF)
-				or self._shadow_word(ADDR_C_ADDR_HI) != ((c_addr >> 32) & 0xFFFF_FFFF)
 				or self._shadow_word(ADDR_M_ADDR_LO) != (m_addr & 0xFFFF_FFFF)
-				or self._shadow_word(ADDR_M_ADDR_HI) != ((m_addr >> 32) & 0xFFFF_FFFF)
+				or ((self.ext_addr_w > 32) and (
+					self._shadow_word(ADDR_A_ADDR_HI) != ((a_addr >> 32) & 0xFFFF_FFFF)
+					or self._shadow_word(ADDR_B_ADDR_HI) != ((b_addr >> 32) & 0xFFFF_FFFF)
+					or self._shadow_word(ADDR_C_ADDR_HI) != ((c_addr >> 32) & 0xFFFF_FFFF)
+					or self._shadow_word(ADDR_M_ADDR_HI) != ((m_addr >> 32) & 0xFFFF_FFFF)
+				))
 			):
 				first_write_start_cycle = self.current_cycle()
-			await self._write_addr64_delta(ADDR_A_ADDR_LO, ADDR_A_ADDR_HI, a_addr, write_addrs)
-			await self._write_addr64_delta(ADDR_B_ADDR_LO, ADDR_B_ADDR_HI, b_addr, write_addrs)
-			await self._write_addr64_delta(ADDR_C_ADDR_LO, ADDR_C_ADDR_HI, c_addr, write_addrs)
-			await self._write_addr64_delta(ADDR_M_ADDR_LO, ADDR_M_ADDR_HI, m_addr, write_addrs)
+			if self._shadow_word(ADDR_A_ADDR_LO) != (a_addr & 0xFFFF_FFFF):
+				await traced_write(ADDR_A_ADDR_LO, a_addr & 0xFFFF_FFFF)
+			if self._shadow_word(ADDR_B_ADDR_LO) != (b_addr & 0xFFFF_FFFF):
+				await traced_write(ADDR_B_ADDR_LO, b_addr & 0xFFFF_FFFF)
+			if self._shadow_word(ADDR_C_ADDR_LO) != (c_addr & 0xFFFF_FFFF):
+				await traced_write(ADDR_C_ADDR_LO, c_addr & 0xFFFF_FFFF)
+			if self._shadow_word(ADDR_M_ADDR_LO) != (m_addr & 0xFFFF_FFFF):
+				await traced_write(ADDR_M_ADDR_LO, m_addr & 0xFFFF_FFFF)
+			if self.ext_addr_w > 32:
+				await self._write_addr64_delta(ADDR_A_ADDR_LO, ADDR_A_ADDR_HI, a_addr, write_addrs)
+				await self._write_addr64_delta(ADDR_B_ADDR_LO, ADDR_B_ADDR_HI, b_addr, write_addrs)
+				await self._write_addr64_delta(ADDR_C_ADDR_LO, ADDR_C_ADDR_HI, c_addr, write_addrs)
+				await self._write_addr64_delta(ADDR_M_ADDR_LO, ADDR_M_ADDR_HI, m_addr, write_addrs)
 			if first_write_start_cycle is None:
 				first_write_start_cycle = self.current_cycle()
 			ctrl_write_start_cycle = self.current_cycle()
 			await self.axil_write(ADDR_CTRL, CTRL_DESC_PUSH, write_delay_cycles=ctrl_write_delay_cycles)
 			write_addrs.append(ADDR_CTRL)
+		elif mode == "compact":
+			stream_words = [
+				inst & 0xFFFF_FFFF,
+				ctrl_id & 0xFFFF_FFFF,
+				a_addr & 0xFFFF_FFFF,
+				b_addr & 0xFFFF_FFFF,
+				c_addr & 0xFFFF_FFFF,
+				m_addr & 0xFFFF_FFFF,
+			]
+			for idx, word in enumerate(stream_words):
+				if idx == (len(stream_words) - 1):
+					ctrl_write_start_cycle = self.current_cycle()
+				await traced_write(ADDR_DESC_STREAM, word)
+			self.axil_reg_shadow[ADDR_CMD_INST] = inst & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_CMD_ID] = ctrl_id & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_A_ADDR_LO] = a_addr & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_A_ADDR_HI] = 0
+			self.axil_reg_shadow[ADDR_B_ADDR_LO] = b_addr & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_B_ADDR_HI] = 0
+			self.axil_reg_shadow[ADDR_C_ADDR_LO] = c_addr & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_C_ADDR_HI] = 0
+			self.axil_reg_shadow[ADDR_M_ADDR_LO] = m_addr & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_M_ADDR_HI] = 0
 		else:
 			raise ValueError(f"unknown desc command mode {mode!r}")
 
@@ -1061,7 +1143,7 @@ class PTDmaTopEnv:
 			self.dut._log.exception("pt_ctrl_accept_monitor crashed")
 			raise
 
-	async def send_ctrl_timed(self, inst: int, ctrl_id: int, timeout_cycles: int = 4000) -> CtrlSendTrace:
+	async def send_ctrl_timed(self, inst: int, ctrl_id: int, timeout_cycles: int = 4000, mode: str | None = None) -> CtrlSendTrace:
 		desc = self.descriptors.get(ctrl_id & 0xFFFF_FFFF, self._auto_descriptor_addrs(ctrl_id))
 		trace = await self.send_desc_command_timed(
 			inst,
@@ -1070,15 +1152,21 @@ class PTDmaTopEnv:
 			b_addr=desc.b_addr,
 			c_addr=desc.c_addr,
 			m_addr=desc.m_addr,
-			mode="delta" if (ctrl_id & 0xFFFF_FFFF) in self.descriptors else "full",
+			mode=mode,
 		)
 		accept = await self.wait_pt_ctrl_accept(ctrl_id, after_cycle=trace.ctrl_write_start_cycle, timeout_cycles=timeout_cycles)
 		wait_cycles = max(1, accept.cycle - trace.ctrl_write_start_cycle)
 		ready_low_cycles = max(0, wait_cycles - 1)
-		return CtrlSendTrace(wait_cycles=wait_cycles, ready_low_cycles=ready_low_cycles)
+		return CtrlSendTrace(
+			wait_cycles=wait_cycles,
+			ready_low_cycles=ready_low_cycles,
+			axil_writes=trace.axil_writes,
+			axil_reads=trace.axil_reads,
+			mode=trace.mode,
+		)
 
-	async def send_ctrl(self, inst: int, ctrl_id: int) -> CtrlSendTrace:
-		return await self.send_ctrl_timed(inst, ctrl_id)
+	async def send_ctrl(self, inst: int, ctrl_id: int, mode: str | None = None) -> CtrlSendTrace:
+		return await self.send_ctrl_timed(inst, ctrl_id, mode=mode)
 
 	async def _irq_monitor(self) -> None:
 		try:

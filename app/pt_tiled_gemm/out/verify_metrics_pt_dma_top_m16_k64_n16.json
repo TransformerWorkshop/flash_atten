@@ -1,18 +1,76 @@
 {
   "algorithms": {
-    "host_reduce_direct_tiled_matmul": {
+    "host_reduce_direct_pipelined": {
+      "axil_writes_per_command": 6.0,
+      "axil_writes_total": 24,
+      "command_count": 4,
+      "descriptor_push_count": 4,
       "dma_req_count": 8,
       "export_beats": 64,
       "export_req_count": 4,
       "matadd_count": 0,
-      "total_cycles": 592
+      "perf_axil_write_count": 99,
+      "perf_command_push_count": 10,
+      "perf_compact_commit_count": 4,
+      "perf_pt_accept_count": 10,
+      "perf_resp_enqueue_count": 9,
+      "perf_wr_dma_done_count": 4,
+      "submission_mode": "compact",
+      "total_cycles": 294
+    },
+    "host_reduce_direct_tiled_matmul": {
+      "axil_writes_per_command": 6.0,
+      "axil_writes_total": 24,
+      "command_count": 4,
+      "descriptor_push_count": 4,
+      "dma_req_count": 8,
+      "export_beats": 64,
+      "export_req_count": 4,
+      "matadd_count": 0,
+      "perf_axil_write_count": 99,
+      "perf_command_push_count": 10,
+      "perf_compact_commit_count": 4,
+      "perf_pt_accept_count": 10,
+      "perf_resp_enqueue_count": 9,
+      "perf_wr_dma_done_count": 4,
+      "submission_mode": "compact",
+      "total_cycles": 532
     },
     "host_reduce_load_then_matmul": {
+      "axil_writes_per_command": 6.0,
+      "axil_writes_total": 48,
+      "command_count": 8,
+      "descriptor_push_count": 8,
       "dma_req_count": 8,
       "export_beats": 64,
       "export_req_count": 4,
       "matadd_count": 0,
-      "total_cycles": 668
+      "perf_axil_write_count": 127,
+      "perf_command_push_count": 14,
+      "perf_compact_commit_count": 8,
+      "perf_pt_accept_count": 14,
+      "perf_resp_enqueue_count": 13,
+      "perf_wr_dma_done_count": 4,
+      "submission_mode": "compact",
+      "total_cycles": 672
+    },
+    "pt_matadd_reduce": {
+      "axil_writes_per_command": 6.0,
+      "axil_writes_total": 42,
+      "command_count": 7,
+      "descriptor_push_count": 7,
+      "dma_req_count": 11,
+      "export_beats": 112,
+      "export_req_count": 7,
+      "matadd_count": 3,
+      "perf_axil_write_count": 120,
+      "perf_command_push_count": 13,
+      "perf_compact_commit_count": 7,
+      "perf_pt_accept_count": 13,
+      "perf_resp_enqueue_count": 12,
+      "perf_wr_dma_done_count": 7,
+      "submission_mode": "compact",
+      "total_cycles": 1066
     }
   },
   "metadata": {
@@ -23,18 +81,60 @@
       "m_tiles": 1,
       "n_dim": 16,
       "n_tiles": 1,
+      "submission_mode": "compact",
       "target": "pt_dma_top",
       "target_label": "PT_DMA_TOP"
     }
   },
   "tests": {
-    "numeric_host_reduce_per_tensor": {
+    "algorithm_compare_reduction_strategies": {
       "status": "passed",
-      "total_cycles": 592
+      "winner": "host_reduce_direct_pipelined"
+    },
+    "numeric_host_reduce_per_tensor": {
+      "axil_writes_per_command": 6.0,
+      "axil_writes_total": 24,
+      "command_count": 4,
+      "descriptor_push_count": 4,
+      "perf_axil_write_count": 99,
+      "perf_command_push_count": 10,
+      "perf_compact_commit_count": 4,
+      "perf_pt_accept_count": 10,
+      "perf_resp_enqueue_count": 9,
+      "perf_wr_dma_done_count": 4,
+      "status": "passed",
+      "submission_mode": "compact",
+      "total_cycles": 532
     },
     "numeric_host_reduce_pipelined": {
+      "axil_writes_per_command": 6.0,
+      "axil_writes_total": 24,
+      "command_count": 4,
+      "descriptor_push_count": 4,
+      "perf_axil_write_count": 99,
+      "perf_command_push_count": 10,
+      "perf_compact_commit_count": 4,
+      "perf_pt_accept_count": 10,
+      "perf_resp_enqueue_count": 9,
+      "perf_wr_dma_done_count": 4,
       "status": "passed",
-      "total_cycles": 324
+      "submission_mode": "compact",
+      "total_cycles": 294
+    },
+    "numeric_pt_matadd_reduce_per_tensor": {
+      "axil_writes_per_command": 6.0,
+      "axil_writes_total": 42,
+      "command_count": 7,
+      "descriptor_push_count": 7,
+      "perf_axil_write_count": 120,
+      "perf_command_push_count": 13,
+      "perf_compact_commit_count": 7,
+      "perf_pt_accept_count": 13,
+      "perf_resp_enqueue_count": 12,
+      "perf_wr_dma_done_count": 7,
+      "status": "passed",
+      "submission_mode": "compact",
+      "total_cycles": 1066
     }
   },
   "unsupported_paths": {

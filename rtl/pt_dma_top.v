@@ -138,12 +138,27 @@ module PT_DMA_TOP #(
 	reg  [DESC_AW-1:0]         rd_desc_idx;
 	reg                        wr_desc_found;
 	reg  [DESC_AW-1:0]         wr_desc_idx;
+	reg                        resp_desc_found;
+	reg  [DESC_AW-1:0]         resp_desc_idx;
+	reg                        wr_slot_valid_r;
+	reg  [DESC_AW-1:0]         wr_slot_idx_r;
+	reg  [31:0]                perf_command_push_count_r;
+	reg  [31:0]                perf_pt_accept_count_r;
+	reg  [31:0]                perf_resp_enqueue_count_r;
+	reg  [31:0]                perf_wr_dma_done_count_r;
 
 	wire desc_push_commit = csr_desc_push_pulse && (push_found || push_free_found);
 	wire cmd_push_fire = desc_push_commit && cmd_fifo_ready_in;
 	wire cmd_fifo_clear = clear || csr_soft_clear_pulse;
 	wire resp_fifo_clear = clear || csr_soft_clear_pulse;
 	wire runtime_clear = clear || csr_soft_clear_pulse;
+	wire resp_enqueue_fire = pt_ctrl_resp_valid && resp_fifo_ready_in;
+	wire wr_desc_fire = wr_dma_desc_valid && wr_dma_desc_ready;
+	wire pt_accept_fire = pt_ctrl_valid && pt_ctrl_ready;
+	wire resp_is_load = resp_desc_found &&
+		(desc_cmd_inst_r[resp_desc_idx][`PT_INST_OPCODE_H:`PT_INST_OPCODE_L] == `PT_OP_LOAD);
+	wire retire_resp_slot = resp_enqueue_fire && resp_desc_found && (pt_ctrl_resp[31] || resp_is_load);
+	wire retire_wr_slot = wr_slot_valid_r && (wr_dma_done || wr_dma_error);
 
 	assign pt_clear = runtime_clear;
 	assign pt_ctrl_valid = cmd_fifo_valid_out;
@@ -246,6 +261,10 @@ module PT_DMA_TOP #(
 		.status_resp_overflow   (resp_overflow_r),
 		.status_desc_miss       (desc_miss_r),
 		.resp_head              (resp_fifo_valid_out ? resp_fifo_data_out : 32'd0),
+		.perf_command_push_count(perf_command_push_count_r),
+		.perf_pt_accept_count   (perf_pt_accept_count_r),
+		.perf_resp_enqueue_count(perf_resp_enqueue_count_r),
+		.perf_wr_dma_done_count (perf_wr_dma_done_count_r),
 		.desc_push_pulse        (csr_desc_push_pulse),
 		.resp_pop_pulse         (csr_resp_pop_pulse),
 		.soft_clear_pulse       (csr_soft_clear_pulse),
@@ -357,6 +376,8 @@ module PT_DMA_TOP #(
 		rd_desc_idx = {DESC_AW{1'b0}};
 		wr_desc_found = 1'b0;
 		wr_desc_idx = {DESC_AW{1'b0}};
+		resp_desc_found = 1'b0;
+		resp_desc_idx = {DESC_AW{1'b0}};
 		for (di = 0; di < LUT_DEPTH; di = di + 1) begin
 			if (!push_found && desc_valid_r[di] && (desc_id_r[di] == csr_cmd_id)) begin
 				push_found = 1'b1;
@@ -374,6 +395,10 @@ module PT_DMA_TOP #(
 				wr_desc_found = 1'b1;
 				wr_desc_idx = di[DESC_AW-1:0];
 			end
+			if (!resp_desc_found && desc_valid_r[di] && (desc_id_r[di][29:0] == pt_ctrl_resp[29:0])) begin
+				resp_desc_found = 1'b1;
+				resp_desc_idx = di[DESC_AW-1:0];
+			end
 		end
 	end
 
@@ -384,6 +409,12 @@ module PT_DMA_TOP #(
 			desc_overflow_r <= 1'b0;
 			resp_overflow_r <= 1'b0;
 			desc_miss_r     <= 1'b0;
+			wr_slot_valid_r <= 1'b0;
+			wr_slot_idx_r   <= {DESC_AW{1'b0}};
+			perf_command_push_count_r <= 32'd0;
+			perf_pt_accept_count_r <= 32'd0;
+			perf_resp_enqueue_count_r <= 32'd0;
+			perf_wr_dma_done_count_r <= 32'd0;
 			for (li = 0; li < LUT_DEPTH; li = li + 1) begin
 				desc_valid_r[li]    <= 1'b0;
 				desc_id_r[li]       <= 32'd0;
@@ -398,6 +429,12 @@ module PT_DMA_TOP #(
 			desc_overflow_r <= 1'b0;
 			resp_overflow_r <= 1'b0;
 			desc_miss_r     <= 1'b0;
+			wr_slot_valid_r <= 1'b0;
+			wr_slot_idx_r   <= {DESC_AW{1'b0}};
+			perf_command_push_count_r <= 32'd0;
+			perf_pt_accept_count_r <= 32'd0;
+			perf_resp_enqueue_count_r <= 32'd0;
+			perf_wr_dma_done_count_r <= 32'd0;
 			for (li = 0; li < LUT_DEPTH; li = li + 1) begin
 				desc_valid_r[li]    <= 1'b0;
 				desc_id_r[li]       <= 32'd0;
@@ -412,6 +449,33 @@ module PT_DMA_TOP #(
 				cmd_overflow_r  <= 1'b0;
 				desc_overflow_r <= 1'b0;
 				resp_overflow_r <= 1'b0;
+			end
+
+			if (cmd_push_fire) begin
+				perf_command_push_count_r <= perf_command_push_count_r + 1'b1;
+			end
+			if (pt_accept_fire) begin
+				perf_pt_accept_count_r <= perf_pt_accept_count_r + 1'b1;
+			end
+			if (resp_enqueue_fire) begin
+				perf_resp_enqueue_count_r <= perf_resp_enqueue_count_r + 1'b1;
+			end
+			if (wr_dma_done) begin
+				perf_wr_dma_done_count_r <= perf_wr_dma_done_count_r + 1'b1;
+			end
+
+			if (wr_desc_fire) begin
+				wr_slot_valid_r <= wr_desc_found;
+				wr_slot_idx_r   <= wr_desc_idx;
+			end
+
+			if (retire_resp_slot) begin
+				desc_valid_r[resp_desc_idx] <= 1'b0;
+			end
+
+			if (retire_wr_slot) begin
+				desc_valid_r[wr_slot_idx_r] <= 1'b0;
+				wr_slot_valid_r <= 1'b0;
 			end
 
 			if (csr_desc_push_pulse) begin

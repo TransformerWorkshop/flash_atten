@@ -26,7 +26,7 @@
       "export_beats": 48,
       "export_req_count": 3,
       "matadd_count": 1,
-      "total_cycles": 376
+      "total_cycles": 391
     }
   },
   "metadata": {
@@ -36,7 +36,9 @@
       "m_dim": 16,
       "m_tiles": 1,
       "n_dim": 16,
-      "n_tiles": 1
+      "n_tiles": 1,
+      "target": "pt",
+      "target_label": "PT"
     }
   },
   "tests": {
@@ -54,7 +56,7 @@
     },
     "numeric_pt_matadd_reduce_per_tensor": {
       "status": "passed",
-      "total_cycles": 376
+      "total_cycles": 391
     }
   },
   "unsupported_paths": {

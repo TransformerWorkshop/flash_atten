@@ -1,4 +1,42 @@
 {
+  "algorithms": {
+    "host_reduce_direct_tiled_matmul": {
+      "axil_writes_per_command": 6.0,
+      "axil_writes_total": 48,
+      "command_count": 8,
+      "descriptor_push_count": 8,
+      "dma_req_count": 16,
+      "export_beats": 128,
+      "export_req_count": 8,
+      "matadd_count": 0,
+      "perf_axil_write_count": 127,
+      "perf_command_push_count": 14,
+      "perf_compact_commit_count": 8,
+      "perf_pt_accept_count": 14,
+      "perf_resp_enqueue_count": 13,
+      "perf_wr_dma_done_count": 8,
+      "submission_mode": "compact",
+      "total_cycles": 1088
+    },
+    "host_reduce_load_then_matmul": {
+      "axil_writes_per_command": 6.0,
+      "axil_writes_total": 96,
+      "command_count": 16,
+      "descriptor_push_count": 16,
+      "dma_req_count": 16,
+      "export_beats": 128,
+      "export_req_count": 8,
+      "matadd_count": 0,
+      "perf_axil_write_count": 183,
+      "perf_command_push_count": 22,
+      "perf_compact_commit_count": 16,
+      "perf_pt_accept_count": 22,
+      "perf_resp_enqueue_count": 21,
+      "perf_wr_dma_done_count": 8,
+      "submission_mode": "compact",
+      "total_cycles": 1368
+    }
+  },
   "metadata": {
     "problem": {
       "k_dim": 32,
@@ -7,8 +45,41 @@
       "m_tiles": 2,
       "n_dim": 32,
       "n_tiles": 2,
+      "submission_mode": "compact",
       "target": "pt_dma_top",
       "target_label": "PT_DMA_TOP"
+    }
+  },
+  "tests": {
+    "numeric_host_reduce_per_tensor": {
+      "axil_writes_per_command": 6.0,
+      "axil_writes_total": 48,
+      "command_count": 8,
+      "descriptor_push_count": 8,
+      "perf_axil_write_count": 127,
+      "perf_command_push_count": 14,
+      "perf_compact_commit_count": 8,
+      "perf_pt_accept_count": 14,
+      "perf_resp_enqueue_count": 13,
+      "perf_wr_dma_done_count": 8,
+      "status": "passed",
+      "submission_mode": "compact",
+      "total_cycles": 1088
+    },
+    "numeric_host_reduce_pipelined": {
+      "axil_writes_per_command": 6.0,
+      "axil_writes_total": 48,
+      "command_count": 8,
+      "descriptor_push_count": 8,
+      "perf_axil_write_count": 127,
+      "perf_command_push_count": 14,
+      "perf_compact_commit_count": 8,
+      "perf_pt_accept_count": 14,
+      "perf_resp_enqueue_count": 13,
+      "perf_wr_dma_done_count": 8,
+      "status": "passed",
+      "submission_mode": "compact",
+      "total_cycles": 692
     }
   },
   "unsupported_paths": {

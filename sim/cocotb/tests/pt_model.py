@@ -391,6 +391,14 @@ class PTBlackBoxModel:
 		self.a_alloc_next = 0
 		self.b_alloc_next = 0
 
+	def _evict_oldest_if_needed(self, incoming_ctrl_id: int) -> None:
+		if incoming_ctrl_id in self.cache_by_id:
+			return
+		if len(self.cache_by_id) < self.lut_depth:
+			return
+		oldest_ctrl_id = next(iter(self.cache_by_id))
+		del self.cache_by_id[oldest_ctrl_id]
+
 	def set_base(self, kind: str, value: int) -> None:
 		if kind == "A":
 			self.a_base = value & 0xFFFF_FFFF
@@ -524,9 +532,6 @@ class PTBlackBoxModel:
 		):
 			return self._make_exec_error(ctrl_id, coverage_tags, "reject:illegal_matmul")
 
-		if ctrl_id not in self.cache_by_id and len(self.cache_by_id) >= self.lut_depth:
-			return self._make_exec_error(ctrl_id, coverage_tags, "reject:lut_full_miss")
-
 		expected_a_len = self.a_tile_len * m_tiles * k_tiles
 		expected_b_len = self.b_tile_len * k_tiles * n_tiles
 		if self.x_dim != self.y_dim and ((m_tiles != PT_TILES_1) or (n_tiles != PT_TILES_1)):
@@ -631,9 +636,6 @@ class PTBlackBoxModel:
 			return self._make_exec_error(ctrl_id, coverage_tags, "reject:illegal_matadd", b_is_c=True)
 		if not ((m_off >> 9) & 0x1) or (m_off & 0xFF) != 0:
 			return self._make_exec_error(ctrl_id, coverage_tags, "reject:illegal_matadd", b_is_c=True)
-		if ctrl_id not in self.cache_by_id and len(self.cache_by_id) >= self.lut_depth:
-			return self._make_exec_error(ctrl_id, coverage_tags, "reject:lut_full_miss", b_is_c=True)
-
 		m_matrix = self.m_buffers.get(m_buffer)
 		if m_matrix is None:
 			return self._make_exec_error(ctrl_id, coverage_tags, "reject:mwindow_empty", b_is_c=True)
@@ -720,9 +722,6 @@ class PTBlackBoxModel:
 			return self._make_load_error(ctrl_id, a_size, b_size, need_a, need_b, coverage_tags, "reject:a_size_mismatch")
 		if need_b and b_size != expected_b_size:
 			return self._make_load_error(ctrl_id, a_size, b_size, need_a, need_b, coverage_tags, "reject:b_size_mismatch")
-		if ctrl_id not in self.cache_by_id and len(self.cache_by_id) >= self.lut_depth:
-			return self._make_load_error(ctrl_id, a_size, b_size, need_a, need_b, coverage_tags, "reject:lut_full_miss")
-
 		entry = self.cache_by_id.get(ctrl_id, ResidencyEntry())
 		expected_dma: List[DmaLoadExpectation] = []
 		a_base = entry.a_base

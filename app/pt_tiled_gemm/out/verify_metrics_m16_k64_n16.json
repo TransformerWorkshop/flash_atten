@@ -26,7 +26,7 @@
       "export_beats": 112,
       "export_req_count": 7,
       "matadd_count": 3,
-      "total_cycles": 894
+      "total_cycles": 939
     }
   },
   "metadata": {
@@ -56,7 +56,7 @@
     },
     "numeric_pt_matadd_reduce_per_tensor": {
       "status": "passed",
-      "total_cycles": 894
+      "total_cycles": 939
     }
   },
   "unsupported_paths": {

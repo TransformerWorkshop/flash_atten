@@ -22,7 +22,9 @@
       "m_dim": 32,
       "m_tiles": 2,
       "n_dim": 32,
-      "n_tiles": 2
+      "n_tiles": 2,
+      "target": "pt",
+      "target_label": "PT"
     }
   },
   "tests": {
