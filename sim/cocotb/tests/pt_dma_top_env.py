@@ -217,6 +217,52 @@ class RespVisibleLog:
 
 
 @dataclass
+class MallocIssueLog:
+	ctrl_id: int
+	kind: int
+	cycle: int
+
+
+@dataclass
+class FillReqLog:
+	ctrl_id: int
+	kind: int
+	cycle: int
+
+
+@dataclass
+class FillDoneLog:
+	ctrl_id: int
+	kind: int
+	err: bool
+	cycle: int
+
+
+@dataclass
+class CeCmdLog:
+	ctrl_id: int
+	cycle: int
+
+
+@dataclass
+class CeRespLog:
+	word: int
+	cycle: int
+
+
+@dataclass
+class MdCmdRespLog:
+	word: int
+	cycle: int
+
+
+@dataclass
+class MallocRespLog:
+	word: int
+	cycle: int
+
+
+@dataclass
 class RdTransferTrace:
 	ctrl_id: int
 	kind: int
@@ -387,6 +433,13 @@ class PTDmaTopEnv:
 		self.axil_reg_shadow: Dict[int, int] = {}
 		self.pt_accept_log: Deque[PtCtrlAcceptLog] = deque()
 		self.resp_visible_log: Deque[RespVisibleLog] = deque()
+		self.malloc_issue_log: Deque[MallocIssueLog] = deque()
+		self.fill_req_log: Deque[FillReqLog] = deque()
+		self.fill_done_log: Deque[FillDoneLog] = deque()
+		self.ce_cmd_log: Deque[CeCmdLog] = deque()
+		self.ce_resp_log: Deque[CeRespLog] = deque()
+		self.md_cmd_resp_log: Deque[MdCmdRespLog] = deque()
+		self.malloc_resp_log: Deque[MallocRespLog] = deque()
 		self.rd_transfer_log: Deque[RdTransferTrace] = deque()
 		self.wr_transfer_log: Deque[WrTransferTrace] = deque()
 		self._started = False
@@ -417,6 +470,7 @@ class PTDmaTopEnv:
 			cocotb.start_soon(self._ready_driver()),
 			cocotb.start_soon(self._resp_fifo_monitor()),
 			cocotb.start_soon(self._pt_ctrl_accept_monitor()),
+			cocotb.start_soon(self._pt_internal_stage_monitor()),
 			cocotb.start_soon(self._irq_monitor()),
 			cocotb.start_soon(self._backpressure_monitor()),
 			cocotb.start_soon(self._rd_dma_agent()),
@@ -500,6 +554,13 @@ class PTDmaTopEnv:
 		self.axil_read_count = 0
 		self.pt_accept_log.clear()
 		self.resp_visible_log.clear()
+		self.malloc_issue_log.clear()
+		self.fill_req_log.clear()
+		self.fill_done_log.clear()
+		self.ce_cmd_log.clear()
+		self.ce_resp_log.clear()
+		self.md_cmd_resp_log.clear()
+		self.malloc_resp_log.clear()
 		self.rd_transfer_log.clear()
 		self.wr_transfer_log.clear()
 		self._seen_long_backpressure = False
@@ -991,6 +1052,58 @@ class PTDmaTopEnv:
 			timeout_cycles,
 		)
 
+	async def wait_malloc_issue(self, ctrl_id: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> MallocIssueLog:
+		return await self._wait_for_logged_event(
+			self.malloc_issue_log,
+			f"malloc issue id=0x{ctrl_id & 0xFFFF_FFFF:08x}",
+			lambda item: isinstance(item, MallocIssueLog)
+			and item.ctrl_id == (ctrl_id & 0xFFFF_FFFF)
+			and item.cycle >= after_cycle,
+			timeout_cycles,
+		)
+
+	async def wait_fill_req(self, ctrl_id: int, kind: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> FillReqLog:
+		return await self._wait_for_logged_event(
+			self.fill_req_log,
+			f"fill req id=0x{ctrl_id & 0xFFFF_FFFF:08x} kind={kind}",
+			lambda item: isinstance(item, FillReqLog)
+			and item.ctrl_id == (ctrl_id & 0xFFFF_FFFF)
+			and item.kind == kind
+			and item.cycle >= after_cycle,
+			timeout_cycles,
+		)
+
+	async def wait_fill_done(self, ctrl_id: int, kind: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> FillDoneLog:
+		return await self._wait_for_logged_event(
+			self.fill_done_log,
+			f"fill done id=0x{ctrl_id & 0xFFFF_FFFF:08x} kind={kind}",
+			lambda item: isinstance(item, FillDoneLog)
+			and item.ctrl_id == (ctrl_id & 0xFFFF_FFFF)
+			and item.kind == kind
+			and item.cycle >= after_cycle,
+			timeout_cycles,
+		)
+
+	async def wait_ce_cmd(self, ctrl_id: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> CeCmdLog:
+		return await self._wait_for_logged_event(
+			self.ce_cmd_log,
+			f"ce cmd id=0x{ctrl_id & 0xFFFF_FFFF:08x}",
+			lambda item: isinstance(item, CeCmdLog)
+			and item.ctrl_id == (ctrl_id & 0xFFFF_FFFF)
+			and item.cycle >= after_cycle,
+			timeout_cycles,
+		)
+
+	async def wait_ce_resp(self, expected_word: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> CeRespLog:
+		return await self._wait_for_logged_event(
+			self.ce_resp_log,
+			f"ce resp 0x{expected_word:08x}",
+			lambda item: isinstance(item, CeRespLog)
+			and item.word == (expected_word & 0xFFFF_FFFF)
+			and item.cycle >= after_cycle,
+			timeout_cycles,
+		)
+
 	async def wait_resp_visible(self, expected_word: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> RespVisibleLog:
 		return await self._wait_for_logged_event(
 			self.resp_visible_log,
@@ -1172,6 +1285,70 @@ class PTDmaTopEnv:
 					)
 		except Exception:
 			self.dut._log.exception("pt_ctrl_accept_monitor crashed")
+			raise
+
+	async def _pt_internal_stage_monitor(self) -> None:
+		root = self._pt_root_prefix()
+		try:
+			while True:
+				await RisingEdge(self.dut.clk)
+				await ReadOnly()
+				cycle = self.current_cycle()
+				if self._signal_value(f"{root}.malloc_cmd_valid") and self._signal_value(f"{root}.malloc_cmd_ready"):
+					self.malloc_issue_log.append(
+						MallocIssueLog(
+							ctrl_id=self._signal_value(f"{root}.malloc_cmd_id"),
+							kind=self._signal_value(f"{root}.malloc_cmd_kind"),
+							cycle=cycle,
+						)
+					)
+				if self._signal_value(f"{root}.fill_req_valid") and self._signal_value(f"{root}.fill_req_ready"):
+					self.fill_req_log.append(
+						FillReqLog(
+							ctrl_id=self._signal_value(f"{root}.fill_req_id"),
+							kind=self._signal_value(f"{root}.fill_req_kind"),
+							cycle=cycle,
+						)
+					)
+				if self._signal_value(f"{root}.fill_done_valid"):
+					self.fill_done_log.append(
+						FillDoneLog(
+							ctrl_id=self._signal_value(f"{root}.fill_done_id"),
+							kind=self._signal_value(f"{root}.fill_done_kind"),
+							err=bool(self._signal_value(f"{root}.fill_done_err")),
+							cycle=cycle,
+						)
+					)
+				if self._signal_value(f"{root}.ce_cmd_valid") and self._signal_value(f"{root}.ce_cmd_ready"):
+					self.ce_cmd_log.append(
+						CeCmdLog(
+							ctrl_id=self._signal_value(f"{root}.ce_cmd_id"),
+							cycle=cycle,
+						)
+					)
+				if self._signal_value(f"{root}.ce_resp_valid"):
+					self.ce_resp_log.append(
+						CeRespLog(
+							word=self._signal_value(f"{root}.ce_resp"),
+							cycle=cycle,
+						)
+					)
+				if self._signal_value(f"{root}.md_cmd_resp_valid"):
+					self.md_cmd_resp_log.append(
+						MdCmdRespLog(
+							word=self._signal_value(f"{root}.md_cmd_resp"),
+							cycle=cycle,
+						)
+					)
+				if self._signal_value(f"{root}.malloc_resp_valid"):
+					self.malloc_resp_log.append(
+						MallocRespLog(
+							word=self._signal_value(f"{root}.malloc_resp"),
+							cycle=cycle,
+						)
+					)
+		except Exception:
+			self.dut._log.exception("pt_internal_stage_monitor crashed")
 			raise
 
 	async def send_ctrl_timed(self, inst: int, ctrl_id: int, timeout_cycles: int = 4000, mode: str | None = None) -> CtrlSendTrace:
