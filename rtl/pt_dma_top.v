@@ -100,7 +100,6 @@ module PT_DMA_TOP #(
 	wire                       resp_fifo_valid_out;
 	wire                       resp_fifo_ready_in;
 
-	wire                       pt_clear;
 	wire                       pt_ctrl_valid;
 	wire                       pt_ctrl_ready;
 	wire [31:0]                pt_ctrl_inst;
@@ -175,7 +174,6 @@ module PT_DMA_TOP #(
 	wire retire_resp_slot = resp_enqueue_fire && resp_desc_found && (pt_ctrl_resp[31] || resp_is_load);
 	wire retire_wr_slot = wr_slot_valid_r && (wr_dma_done || wr_dma_error);
 
-	assign pt_clear = runtime_clear;
 	assign pt_ctrl_valid = cmd_fifo_valid_out;
 	assign pt_ctrl_inst = cmd_fifo_data_out[63:32];
 	assign pt_ctrl_id = cmd_fifo_data_out[31:0];
@@ -343,7 +341,8 @@ module PT_DMA_TOP #(
 	) u_pt (
 		.clk            (clk),
 		.rstn           (rstn),
-		.clear          (pt_clear),
+		.clear          (clear),
+		.soft_clear     (csr_soft_clear_pulse),
 		.s_axis_tvalid  (s_axis_tvalid),
 		.s_axis_tready  (s_axis_tready),
 		.s_axis_tdata   (s_axis_tdata),

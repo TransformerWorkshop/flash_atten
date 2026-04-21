@@ -358,6 +358,8 @@ class PTBlackBoxEnv:
 		self.dut.m_axis_tready.value = 1
 		self.dut.clk.value = 0
 		self.dut.clear.value = 0
+		if hasattr(self.dut, "soft_clear"):
+			self.dut.soft_clear.value = 0
 		self.dut.rstn.value = 0
 		self._tasks = [
 			cocotb.start_soon(self._clock_driver()),
@@ -404,6 +406,8 @@ class PTBlackBoxEnv:
 	async def reset(self, cycles: int = 5) -> None:
 		self.dut.rstn.value = 0
 		self.dut.clear.value = 0
+		if hasattr(self.dut, "soft_clear"):
+			self.dut.soft_clear.value = 0
 		await ClockCycles(self.dut.clk, cycles)
 		self.dut.rstn.value = 1
 		await RisingEdge(self.dut.clk)
@@ -454,6 +458,8 @@ class PTBlackBoxEnv:
 		if phase:
 			self.coverage.hit(f"clear:{phase}")
 		self.dut.clear.value = 1
+		if hasattr(self.dut, "soft_clear"):
+			self.dut.soft_clear.value = 0
 		self.dut.ctrl_valid.value = 0
 		self.dut.s_axis_tvalid.value = 0
 		self.dut.s_axis_tlast.value = 0
@@ -463,6 +469,8 @@ class PTBlackBoxEnv:
 		self.dut.m_dma_error.value = 0
 		await ClockCycles(self.dut.clk, cycles)
 		self.dut.clear.value = 0
+		if hasattr(self.dut, "soft_clear"):
+			self.dut.soft_clear.value = 0
 		await RisingEdge(self.dut.clk)
 		self._apply_soft_clear_to_env()
 

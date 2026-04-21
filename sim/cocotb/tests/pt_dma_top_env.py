@@ -476,7 +476,7 @@ class PTDmaTopEnv:
 		export_done_count = self.export_done_count
 		export_error_count = self.export_error_count
 		irq_count = self.irq_count
-		self.model.reset_runtime_state()
+		self.model.reset_runtime_state(preserve_cfg=True)
 		self.expected_rd_dma.clear()
 		self.pending_resp_plans.clear()
 		self.descriptors.clear()
@@ -503,10 +503,6 @@ class PTDmaTopEnv:
 		self.rd_transfer_log.clear()
 		self.wr_transfer_log.clear()
 		self._seen_long_backpressure = False
-		self.a_base_shadow = 0
-		self.b_base_shadow = 0
-		self.model.set_base("A", 0)
-		self.model.set_base("B", 0)
 		self._reset_axil_shadow()
 
 	def _reset_axil_shadow(self) -> None:

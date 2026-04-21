@@ -59,6 +59,7 @@ class MultitileCaseResult:
 	reason: Optional[str]
 	submission_mode: str
 	command_count: Optional[int]
+	clear_count: Optional[int]
 	accept_to_resp_cycles: Optional[int]
 	accept_to_done_cycles: Optional[int]
 	axil_writes_total: Optional[int]
@@ -76,6 +77,7 @@ class MultitileCaseResult:
 	perf_push_to_accept_cycles: Optional[int]
 	perf_accept_to_resp_cycles: Optional[int]
 	perf_resp_to_done_cycles: Optional[int]
+	perf_other_cycles: Optional[int]
 	macs: int
 	ops: int
 	macs_per_cycle: Optional[float]
@@ -359,6 +361,7 @@ def run_multitile_sweep(
 				reason=case_reason or reason,
 				submission_mode=normalized_submission_mode,
 				command_count=payload.get("case", {}).get("command_count"),
+				clear_count=payload.get("case", {}).get("clear_count"),
 				accept_to_resp_cycles=measurement.get("accept_to_resp_cycles"),
 				accept_to_done_cycles=measurement.get("accept_to_done_cycles"),
 				axil_writes_total=measurement.get("axil_writes_total"),
@@ -376,6 +379,7 @@ def run_multitile_sweep(
 				perf_push_to_accept_cycles=measurement.get("perf_push_to_accept_cycles"),
 				perf_accept_to_resp_cycles=measurement.get("perf_accept_to_resp_cycles"),
 				perf_resp_to_done_cycles=measurement.get("perf_resp_to_done_cycles"),
+				perf_other_cycles=measurement.get("perf_other_cycles"),
 				macs=macs,
 				ops=ops,
 				macs_per_cycle=measurement.get("macs_per_cycle"),

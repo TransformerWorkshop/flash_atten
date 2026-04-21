@@ -379,8 +379,9 @@ class PTBlackBoxModel:
 		self.a_alloc_next = 0
 		self.b_alloc_next = 0
 
-	def reset_runtime_state(self) -> None:
-		self.quant_cfg = QuantConfig(PT_QGRAN_PER_TENSOR, [0x0001_0000] * self.max_dim)
+	def reset_runtime_state(self, preserve_cfg: bool = False) -> None:
+		if not preserve_cfg:
+			self.quant_cfg = QuantConfig(PT_QGRAN_PER_TENSOR, [0x0001_0000] * self.max_dim)
 		self.cache_by_id.clear()
 		self.m_buffers = {0: None, 1: None}
 		self.m_buffer_ctrl_id = {0: None, 1: None}

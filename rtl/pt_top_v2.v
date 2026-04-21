@@ -19,6 +19,7 @@ module PT_V2 #(
 	input  wire                       clk,
 	input  wire                       rstn,
 	input  wire                       clear,
+	input  wire                       soft_clear,
 	input  wire                       s_axis_tvalid,
 	output wire                       s_axis_tready,
 	input  wire [(((A_LOAD_LANES >= B_LOAD_LANES) ? A_LOAD_LANES : B_LOAD_LANES)*DATA_WIDTH)-1:0]      s_axis_tdata,
@@ -193,6 +194,7 @@ module PT_V2 #(
 	wire                  ce_irq;
 	reg  [31:0]           ctrl_resp_r;
 	reg                   ctrl_resp_valid_r;
+	wire                  runtime_clear = clear || soft_clear;
 	assign ctrl_resp = ctrl_resp_r;
 	assign ctrl_resp_valid = ctrl_resp_valid_r;
 	assign irq = md_cmd_irq | md_async_irq | malloc_irq | ce_irq;
@@ -213,7 +215,7 @@ module PT_V2 #(
 	) u_dispatch (
 		.clk            (clk),
 		.rstn           (rstn),
-		.clear          (clear),
+		.clear          (runtime_clear),
 		.ctrl_valid     (ctrl_valid),
 		.ctrl_ready     (ctrl_ready),
 		.ctrl_inst      (ctrl_inst),
@@ -243,7 +245,7 @@ module PT_V2 #(
 	) u_malloc (
 		.clk            (clk),
 		.rstn           (rstn),
-		.clear          (clear),
+		.clear          (runtime_clear),
 		.malloc_cmd_valid(malloc_cmd_valid),
 		.malloc_cmd_ready(malloc_cmd_ready),
 		.malloc_cmd_kind(malloc_cmd_kind),
@@ -297,7 +299,7 @@ module PT_V2 #(
 	) u_md (
 		.clk            (clk),
 		.rstn           (rstn),
-		.clear          (clear),
+		.clear          (runtime_clear),
 		.md_cmd_valid   (md_cmd_valid),
 		.md_cmd_ready   (md_cmd_ready),
 		.md_cmd_kind    (md_cmd_kind),
@@ -414,7 +416,7 @@ module PT_V2 #(
 	) u_ce (
 		.clk            (clk),
 		.rstn           (rstn),
-		.clear          (clear),
+		.clear          (runtime_clear),
 		.ce_cmd_valid   (ce_cmd_valid),
 		.ce_cmd_ready   (ce_cmd_ready),
 		.ce_cmd_ctrl    (ce_cmd_ctrl),
@@ -477,7 +479,7 @@ module PT_V2 #(
 	) u_a_bank (
 		.clk    (clk),
 		.rstn   (rstn),
-		.clear  (clear),
+		.clear  (runtime_clear),
 		.wr_en  (a_mem_wr_en),
 		.wr_buf (a_mem_wr_buf),
 		.wr_mask(a_mem_wr_mask),
@@ -496,7 +498,7 @@ module PT_V2 #(
 	) u_b_bank (
 		.clk    (clk),
 		.rstn   (rstn),
-		.clear  (clear),
+		.clear  (runtime_clear),
 		.wr_en  (b_mem_wr_en),
 		.wr_buf (b_mem_wr_buf),
 		.wr_mask(b_mem_wr_mask),
@@ -516,7 +518,7 @@ module PT_V2 #(
 	) u_m_mem (
 		.clk      (clk),
 		.rstn     (rstn),
-		.clear    (clear),
+		.clear    (runtime_clear),
 		.wr_en    (m_mem_wr_en),
 		.wr_buf   (m_mem_wr_buf),
 		.wr_mask  (m_mem_wr_mask),
@@ -540,7 +542,7 @@ module PT_V2 #(
 	) gemm_inst (
 		.clk          (clk),
 		.rstn         (rstn),
-		.clear        (clear),
+		.clear        (runtime_clear),
 		.start        (gemm_start),
 		.num_acc      (gemm_num_acc),
 		.a_valid      (gemm_a_valid),
@@ -564,7 +566,7 @@ module PT_V2 #(
 	) u_quant (
 		.clk            (clk),
 		.rstn           (rstn),
-		.clear          (clear),
+		.clear          (runtime_clear),
 		.in_valid       (gemm_m_valid),
 		.in_ready       (gemm_m_ready),
 		.in_data        (gemm_m_data),
@@ -585,7 +587,7 @@ module PT_V2 #(
 	) u_gema (
 		.clk      (clk),
 		.rstn     (rstn),
-		.clear    (clear),
+		.clear    (runtime_clear),
 		.in_valid (gema_in_valid),
 		.in_ready (gema_in_ready),
 		.lhs_data (gema_lhs_data),
@@ -603,7 +605,7 @@ module PT_V2 #(
 		if (!rstn) begin
 			ctrl_resp_r       <= 32'd0;
 			ctrl_resp_valid_r <= 1'b0;
-		end else if (clear) begin
+		end else if (runtime_clear) begin
 			ctrl_resp_r       <= 32'd0;
 			ctrl_resp_valid_r <= 1'b0;
 		end else begin

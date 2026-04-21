@@ -197,7 +197,7 @@ async def test_pt_multitile_single_case(dut) -> None:
 					await env.soft_clear()
 				else:
 					await env.pulse_clear(phase="multitile_bench")
-				await setup_bases_and_passthrough_qcfg(env)
+					await setup_bases_and_passthrough_qcfg(env)
 				perf_counter_base = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
 
 			ctrl_id = submitter.acquire_ctrl_id(ctrl_id_base + (command_idx % recycle_interval))
@@ -307,6 +307,11 @@ async def test_pt_multitile_single_case(dut) -> None:
 			},
 		}
 		if perf_counters is not None:
+			perf_other_cycles = total_cycles - (
+				perf_counters.push_to_accept_cycles
+				+ perf_counters.accept_to_resp_cycles
+				+ perf_counters.resp_to_done_cycles
+			)
 			metrics["measurement"].update(
 				{
 					"perf_axil_write_count": perf_counters.axil_write_count,
@@ -318,6 +323,7 @@ async def test_pt_multitile_single_case(dut) -> None:
 					"perf_push_to_accept_cycles": perf_counters.push_to_accept_cycles,
 					"perf_accept_to_resp_cycles": perf_counters.accept_to_resp_cycles,
 					"perf_resp_to_done_cycles": perf_counters.resp_to_done_cycles,
+					"perf_other_cycles": perf_other_cycles,
 				}
 			)
 		write_metrics(metrics)
