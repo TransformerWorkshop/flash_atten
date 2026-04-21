@@ -152,6 +152,8 @@ async def test_pt_multitile_single_case(dut) -> None:
 		await env.reset()
 		await setup_bases_and_passthrough_qcfg(env)
 		snapshot = env.snapshot()
+		perf_counter_base = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
+		perf_counter_accum = None
 		submitter = CommandSubmitter(
 			env,
 			target=APP_TARGET,
@@ -187,12 +189,16 @@ async def test_pt_multitile_single_case(dut) -> None:
 
 		for command_idx, command in enumerate(schedule):
 			if command_idx != 0 and (command_idx % recycle_interval) == 0:
+				if perf_counter_base is not None:
+					segment_counters = (await env.read_perf_counters()).delta(perf_counter_base)
+					perf_counter_accum = segment_counters if perf_counter_accum is None else perf_counter_accum.add(segment_counters)
 				clear_count += 1
 				if APP_TARGET == "pt_dma_top":
 					await env.soft_clear()
 				else:
 					await env.pulse_clear(phase="multitile_bench")
 				await setup_bases_and_passthrough_qcfg(env)
+				perf_counter_base = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
 
 			ctrl_id = submitter.acquire_ctrl_id(ctrl_id_base + (command_idx % recycle_interval))
 			a_sub = extract_a_submatrix(
@@ -251,6 +257,9 @@ async def test_pt_multitile_single_case(dut) -> None:
 		resp_cycles = last_resp_cycle - first_accept_cycle
 		export_beats = sum((command.m_tiles * x_dim) * ((command.n_tiles * y_dim + export_lanes - 1) // export_lanes) for command in schedule)
 		perf_counters = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
+		if perf_counters is not None and perf_counter_base is not None:
+			perf_counters = perf_counters.delta(perf_counter_base)
+			perf_counters = perf_counters if perf_counter_accum is None else perf_counter_accum.add(perf_counters)
 		metrics = {
 			"case": {
 				"target": APP_TARGET,
@@ -306,6 +315,9 @@ async def test_pt_multitile_single_case(dut) -> None:
 					"perf_resp_enqueue_count": perf_counters.resp_enqueue_count,
 					"perf_wr_dma_done_count": perf_counters.wr_dma_done_count,
 					"perf_compact_commit_count": perf_counters.compact_commit_count,
+					"perf_push_to_accept_cycles": perf_counters.push_to_accept_cycles,
+					"perf_accept_to_resp_cycles": perf_counters.accept_to_resp_cycles,
+					"perf_resp_to_done_cycles": perf_counters.resp_to_done_cycles,
 				}
 			)
 		write_metrics(metrics)

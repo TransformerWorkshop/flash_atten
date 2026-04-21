@@ -38,6 +38,9 @@ module PT_DMA_AXIL_CSR #(
 	input  wire [31:0]                perf_pt_accept_count,
 	input  wire [31:0]                perf_resp_enqueue_count,
 	input  wire [31:0]                perf_wr_dma_done_count,
+	input  wire [31:0]                perf_push_to_accept_cycles,
+	input  wire [31:0]                perf_accept_to_resp_cycles,
+	input  wire [31:0]                perf_resp_to_done_cycles,
 	output reg                        desc_push_pulse,
 	output reg                        resp_pop_pulse,
 	output reg                        soft_clear_pulse,
@@ -71,6 +74,9 @@ module PT_DMA_AXIL_CSR #(
 	localparam [7:0] ADDR_RESP_ENQUEUE_COUNT = 8'h4C;
 	localparam [7:0] ADDR_WR_DMA_DONE_COUNT = 8'h50;
 	localparam [7:0] ADDR_COMPACT_COMMIT_COUNT = 8'h54;
+	localparam [7:0] ADDR_PUSH_TO_ACCEPT_CYCLES = 8'h58;
+	localparam [7:0] ADDR_ACCEPT_TO_RESP_CYCLES = 8'h5C;
+	localparam [7:0] ADDR_RESP_TO_DONE_CYCLES = 8'h60;
 
 	localparam [1:0] RESP_OKAY = 2'b00;
 	localparam [7:0] CMD_FIFO_DEPTH_U8 = CMD_FIFO_DEPTH;
@@ -196,6 +202,9 @@ module PT_DMA_AXIL_CSR #(
 			ADDR_RESP_ENQUEUE_COUNT:  read_data_r = perf_resp_enqueue_count;
 			ADDR_WR_DMA_DONE_COUNT:   read_data_r = perf_wr_dma_done_count;
 			ADDR_COMPACT_COMMIT_COUNT: read_data_r = compact_commit_count_r;
+			ADDR_PUSH_TO_ACCEPT_CYCLES: read_data_r = perf_push_to_accept_cycles;
+			ADDR_ACCEPT_TO_RESP_CYCLES: read_data_r = perf_accept_to_resp_cycles;
+			ADDR_RESP_TO_DONE_CYCLES: read_data_r = perf_resp_to_done_cycles;
 			default:        read_data_r = 32'd0;
 		endcase
 	end

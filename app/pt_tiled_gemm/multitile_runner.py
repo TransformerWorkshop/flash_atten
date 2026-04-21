@@ -67,6 +67,15 @@ class MultitileCaseResult:
 	dma_req_count: Optional[int]
 	export_req_count: Optional[int]
 	export_beats: Optional[int]
+	perf_axil_write_count: Optional[int]
+	perf_command_push_count: Optional[int]
+	perf_pt_accept_count: Optional[int]
+	perf_resp_enqueue_count: Optional[int]
+	perf_wr_dma_done_count: Optional[int]
+	perf_compact_commit_count: Optional[int]
+	perf_push_to_accept_cycles: Optional[int]
+	perf_accept_to_resp_cycles: Optional[int]
+	perf_resp_to_done_cycles: Optional[int]
 	macs: int
 	ops: int
 	macs_per_cycle: Optional[float]
@@ -358,6 +367,15 @@ def run_multitile_sweep(
 				dma_req_count=measurement.get("dma_req_count"),
 				export_req_count=measurement.get("export_req_count"),
 				export_beats=measurement.get("export_beats"),
+				perf_axil_write_count=measurement.get("perf_axil_write_count"),
+				perf_command_push_count=measurement.get("perf_command_push_count"),
+				perf_pt_accept_count=measurement.get("perf_pt_accept_count"),
+				perf_resp_enqueue_count=measurement.get("perf_resp_enqueue_count"),
+				perf_wr_dma_done_count=measurement.get("perf_wr_dma_done_count"),
+				perf_compact_commit_count=measurement.get("perf_compact_commit_count"),
+				perf_push_to_accept_cycles=measurement.get("perf_push_to_accept_cycles"),
+				perf_accept_to_resp_cycles=measurement.get("perf_accept_to_resp_cycles"),
+				perf_resp_to_done_cycles=measurement.get("perf_resp_to_done_cycles"),
 				macs=macs,
 				ops=ops,
 				macs_per_cycle=measurement.get("macs_per_cycle"),

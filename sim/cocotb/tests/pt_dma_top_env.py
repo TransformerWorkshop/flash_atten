@@ -79,6 +79,9 @@ ADDR_PT_ACCEPT_COUNT = 0x48
 ADDR_RESP_ENQUEUE_COUNT = 0x4C
 ADDR_WR_DMA_DONE_COUNT = 0x50
 ADDR_COMPACT_COMMIT_COUNT = 0x54
+ADDR_PUSH_TO_ACCEPT_CYCLES = 0x58
+ADDR_ACCEPT_TO_RESP_CYCLES = 0x5C
+ADDR_RESP_TO_DONE_CYCLES = 0x60
 
 DEFAULT_A_BASE = 0x0000_1000
 DEFAULT_B_BASE = 0x0000_2000
@@ -157,6 +160,35 @@ class PerfCounterSnapshot:
 	resp_enqueue_count: int
 	wr_dma_done_count: int
 	compact_commit_count: int
+	push_to_accept_cycles: int
+	accept_to_resp_cycles: int
+	resp_to_done_cycles: int
+
+	def delta(self, base: "PerfCounterSnapshot") -> "PerfCounterSnapshot":
+		return PerfCounterSnapshot(
+			axil_write_count=self.axil_write_count - base.axil_write_count,
+			command_push_count=self.command_push_count - base.command_push_count,
+			pt_accept_count=self.pt_accept_count - base.pt_accept_count,
+			resp_enqueue_count=self.resp_enqueue_count - base.resp_enqueue_count,
+			wr_dma_done_count=self.wr_dma_done_count - base.wr_dma_done_count,
+			compact_commit_count=self.compact_commit_count - base.compact_commit_count,
+			push_to_accept_cycles=self.push_to_accept_cycles - base.push_to_accept_cycles,
+			accept_to_resp_cycles=self.accept_to_resp_cycles - base.accept_to_resp_cycles,
+			resp_to_done_cycles=self.resp_to_done_cycles - base.resp_to_done_cycles,
+		)
+
+	def add(self, other: "PerfCounterSnapshot") -> "PerfCounterSnapshot":
+		return PerfCounterSnapshot(
+			axil_write_count=self.axil_write_count + other.axil_write_count,
+			command_push_count=self.command_push_count + other.command_push_count,
+			pt_accept_count=self.pt_accept_count + other.pt_accept_count,
+			resp_enqueue_count=self.resp_enqueue_count + other.resp_enqueue_count,
+			wr_dma_done_count=self.wr_dma_done_count + other.wr_dma_done_count,
+			compact_commit_count=self.compact_commit_count + other.compact_commit_count,
+			push_to_accept_cycles=self.push_to_accept_cycles + other.push_to_accept_cycles,
+			accept_to_resp_cycles=self.accept_to_resp_cycles + other.accept_to_resp_cycles,
+			resp_to_done_cycles=self.resp_to_done_cycles + other.resp_to_done_cycles,
+		)
 
 
 @dataclass
@@ -506,6 +538,9 @@ class PTDmaTopEnv:
 			resp_enqueue_count=await self.axil_read(ADDR_RESP_ENQUEUE_COUNT),
 			wr_dma_done_count=await self.axil_read(ADDR_WR_DMA_DONE_COUNT),
 			compact_commit_count=await self.axil_read(ADDR_COMPACT_COMMIT_COUNT),
+			push_to_accept_cycles=await self.axil_read(ADDR_PUSH_TO_ACCEPT_CYCLES),
+			accept_to_resp_cycles=await self.axil_read(ADDR_ACCEPT_TO_RESP_CYCLES),
+			resp_to_done_cycles=await self.axil_read(ADDR_RESP_TO_DONE_CYCLES),
 		)
 
 	def snapshot(self) -> CounterSnapshot:

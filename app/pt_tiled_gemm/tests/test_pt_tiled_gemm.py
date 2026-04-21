@@ -90,7 +90,7 @@ def build_submitter(env, *, ctrl_id_base: int) -> CommandSubmitter:
 	)
 
 
-async def submission_metrics(env, submitter: CommandSubmitter) -> Dict[str, object]:
+async def submission_metrics(env, submitter: CommandSubmitter, perf_counter_base=None) -> Dict[str, object]:
 	payload: Dict[str, object] = {
 		"submission_mode": submitter.submission_mode,
 		"command_count": submitter.stats.command_count,
@@ -100,6 +100,8 @@ async def submission_metrics(env, submitter: CommandSubmitter) -> Dict[str, obje
 	}
 	if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters"):
 		counters = await env.read_perf_counters()
+		if perf_counter_base is not None:
+			counters = counters.delta(perf_counter_base)
 		payload.update(
 			{
 				"perf_axil_write_count": counters.axil_write_count,
@@ -108,6 +110,9 @@ async def submission_metrics(env, submitter: CommandSubmitter) -> Dict[str, obje
 				"perf_resp_enqueue_count": counters.resp_enqueue_count,
 				"perf_wr_dma_done_count": counters.wr_dma_done_count,
 				"perf_compact_commit_count": counters.compact_commit_count,
+				"perf_push_to_accept_cycles": counters.push_to_accept_cycles,
+				"perf_accept_to_resp_cycles": counters.accept_to_resp_cycles,
+				"perf_resp_to_done_cycles": counters.resp_to_done_cycles,
 			}
 		)
 	return payload
@@ -408,10 +413,11 @@ async def test_numeric_host_reduce_per_tensor(dut) -> None:
 	try:
 		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE)
 		a_full, b_full, golden = await prepare_env(env)
+		perf_counter_base = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
 		result = await run_host_reduce_direct(env, submitter, a_full, b_full)
 		assert result["final_matrix"] == golden
 		metric_payload = {"status": "passed", "total_cycles": result["total_cycles"]}
-		metric_payload.update(await submission_metrics(env, submitter))
+		metric_payload.update(await submission_metrics(env, submitter, perf_counter_base))
 		record_metric("tests", "numeric_host_reduce_per_tensor", metric_payload)
 	finally:
 		env.shutdown()
@@ -423,10 +429,11 @@ async def test_numeric_host_reduce_pipelined(dut) -> None:
 	try:
 		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x100)
 		a_full, b_full, golden = await prepare_env(env)
+		perf_counter_base = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
 		result = await run_host_reduce_direct_pipelined(env, submitter, a_full, b_full)
 		assert result["final_matrix"] == golden
 		metric_payload = {"status": "passed", "total_cycles": result["total_cycles"]}
-		metric_payload.update(await submission_metrics(env, submitter))
+		metric_payload.update(await submission_metrics(env, submitter, perf_counter_base))
 		record_metric("tests", "numeric_host_reduce_pipelined", metric_payload)
 	finally:
 		env.shutdown()
@@ -438,10 +445,11 @@ async def test_numeric_pt_matadd_reduce_per_tensor(dut) -> None:
 	try:
 		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x200)
 		a_full, b_full, golden = await prepare_env(env)
+		perf_counter_base = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
 		result = await run_pt_matadd_reduce(env, submitter, a_full, b_full)
 		assert result["final_matrix"] == golden
 		metric_payload = {"status": "passed", "total_cycles": result["total_cycles"]}
-		metric_payload.update(await submission_metrics(env, submitter))
+		metric_payload.update(await submission_metrics(env, submitter, perf_counter_base))
 		record_metric("tests", "numeric_pt_matadd_reduce_per_tensor", metric_payload)
 	finally:
 		env.shutdown()
@@ -506,6 +514,7 @@ async def test_algorithm_compare_reduction_strategies(dut) -> None:
 	try:
 		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x400)
 		a_full, b_full, golden = await prepare_env(env)
+		perf_counter_base = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
 		direct = await run_host_reduce_direct(env, submitter, a_full, b_full)
 		assert direct["final_matrix"] == golden
 		record_metric(
@@ -517,12 +526,13 @@ async def test_algorithm_compare_reduction_strategies(dut) -> None:
 				"export_req_count": direct["export_req_count"],
 				"export_beats": direct["export_beats"],
 				"matadd_count": direct["matadd_count"],
-				**(await submission_metrics(env, submitter)),
+				**(await submission_metrics(env, submitter, perf_counter_base)),
 			},
 		)
 
 		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x500)
 		a_full, b_full, golden = await prepare_env(env)
+		perf_counter_base = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
 		load_then = await run_host_reduce_load_then_matmul(env, submitter, a_full, b_full)
 		assert load_then["final_matrix"] == golden
 		record_metric(
@@ -534,12 +544,13 @@ async def test_algorithm_compare_reduction_strategies(dut) -> None:
 				"export_req_count": load_then["export_req_count"],
 				"export_beats": load_then["export_beats"],
 				"matadd_count": load_then["matadd_count"],
-				**(await submission_metrics(env, submitter)),
+				**(await submission_metrics(env, submitter, perf_counter_base)),
 			},
 		)
 
 		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x600)
 		a_full, b_full, golden = await prepare_env(env)
+		perf_counter_base = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
 		pt_reduce = await run_pt_matadd_reduce(env, submitter, a_full, b_full)
 		assert pt_reduce["final_matrix"] == golden
 		record_metric(
@@ -551,12 +562,13 @@ async def test_algorithm_compare_reduction_strategies(dut) -> None:
 				"export_req_count": pt_reduce["export_req_count"],
 				"export_beats": pt_reduce["export_beats"],
 				"matadd_count": pt_reduce["matadd_count"],
-				**(await submission_metrics(env, submitter)),
+				**(await submission_metrics(env, submitter, perf_counter_base)),
 			},
 		)
 
 		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x700)
 		a_full, b_full, golden = await prepare_env(env)
+		perf_counter_base = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
 		pipelined = await run_host_reduce_direct_pipelined(env, submitter, a_full, b_full)
 		assert pipelined["final_matrix"] == golden
 		record_metric(
@@ -568,7 +580,7 @@ async def test_algorithm_compare_reduction_strategies(dut) -> None:
 				"export_req_count": pipelined["export_req_count"],
 				"export_beats": pipelined["export_beats"],
 				"matadd_count": pipelined["matadd_count"],
-				**(await submission_metrics(env, submitter)),
+				**(await submission_metrics(env, submitter, perf_counter_base)),
 			},
 		)
 
