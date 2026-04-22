@@ -262,7 +262,7 @@ module PT_CE_V3 #(
 	wire [31:0] macro_next_a_row_base_calc =
 		macro_a_row_base_u32 + (macro_next_m_tile_u32 * (macro_k_tiles_u32 * K_WORDS_PER_TILE_U32));
 	wire [31:0] macro_next_b_row_base_calc =
-		macro_b_row_base_u32 + (macro_next_n_tile_u32 * (macro_k_tiles_u32 * K_WORDS_PER_TILE_U32 * GEMM_Y_DIM));
+		macro_b_row_base_u32 + (macro_next_n_tile_u32 * (macro_k_tiles_u32 * K_WORDS_PER_TILE_U32));
 	wire [31:0] macro_total_row_chunks_u32 = ({28'd0, macro_m_tiles_r} * {28'd0, macro_n_tiles_r}) * GEMM_X_DIM;
 	wire [`PT_SIZE_W-1:0] macro_total_row_chunks = macro_total_row_chunks_u32[`PT_SIZE_W-1:0];
 	wire macro_queued_final_tile =

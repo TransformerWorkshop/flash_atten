@@ -59,6 +59,7 @@ class MultitileCaseResult:
 	reason: Optional[str]
 	submission_mode: str
 	command_count: Optional[int]
+	issued_command_count: Optional[int]
 	clear_count: Optional[int]
 	accept_to_resp_cycles: Optional[int]
 	accept_to_done_cycles: Optional[int]
@@ -281,6 +282,7 @@ def run_multitile_sweep(
 			max_encoded_elems=params.max_encoded_elems,
 			x_dim=rtl_params["GEMM_X_DIM"],
 			y_dim=rtl_params["GEMM_Y_DIM"],
+			pack_lanes=rtl_params.get("PACK_LANES", 1),
 		)
 		schedule = build_command_schedule(m_parts=m_parts, n_parts=n_parts, k_parts=k_parts)
 		reason = None
@@ -367,7 +369,8 @@ def run_multitile_sweep(
 				status=case_status,
 				reason=case_reason or reason,
 				submission_mode=normalized_submission_mode,
-				command_count=payload.get("case", {}).get("command_count"),
+				command_count=payload.get("case", {}).get("logical_command_count", payload.get("case", {}).get("command_count")),
+				issued_command_count=payload.get("case", {}).get("issued_command_count"),
 				clear_count=payload.get("case", {}).get("clear_count"),
 				accept_to_resp_cycles=measurement.get("accept_to_resp_cycles"),
 				accept_to_done_cycles=measurement.get("accept_to_done_cycles"),

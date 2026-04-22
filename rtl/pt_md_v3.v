@@ -301,7 +301,7 @@ module PT_MD_V3 #(
 	wire [31:0] fill_a_m_tile_row_offset = fill_a_m_tile * (fill_k_tiles_r * K_WORDS_PER_TILE);
 	wire [31:0] fill_b_n_tile_row_offset =
 		fill_is_c ? (fill_b_n_tile * GEMM_Y_DIM) :
-		            (fill_b_n_tile * (fill_k_tiles_r * K_WORDS_PER_TILE * GEMM_Y_DIM));
+		            (fill_b_n_tile * (fill_k_tiles_r * K_WORDS_PER_TILE));
 	wire [31:0] fill_a_valid_elems = (fill_remaining_u32 < A_LOAD_LANES_U32) ? fill_remaining_u32 : A_LOAD_LANES_U32;
 	wire [31:0] fill_b_valid_elems = (fill_remaining_u32 < B_LOAD_LANES_U32) ? fill_remaining_u32 : B_LOAD_LANES_U32;
 	wire [31:0] fill_beat_elems = fill_is_a ? fill_a_valid_elems : fill_b_valid_elems;
