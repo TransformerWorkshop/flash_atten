@@ -1135,15 +1135,19 @@ class PTDmaTopEnv:
 			timeout_cycles,
 		)
 
-	async def wait_ctrl_resp(self, expected_word: int, timeout_cycles: int = 4000) -> int:
+	async def wait_next_ctrl_resp(self, timeout_cycles: int = 4000) -> int:
 		for _ in range(timeout_cycles):
 			if self.ctrl_resp_queue:
 				actual = self.ctrl_resp_queue.popleft()
-				assert actual == expected_word, f"ctrl_resp mismatch exp=0x{expected_word:08x} got=0x{actual:08x}"
 				await self.pop_resp()
 				return actual
 			await RisingEdge(self.dut.clk)
-		raise AssertionError(f"ctrl_resp timeout waiting for 0x{expected_word:08x}")
+		raise AssertionError("ctrl_resp timeout waiting for next response")
+
+	async def wait_ctrl_resp(self, expected_word: int, timeout_cycles: int = 4000) -> int:
+		actual = await self.wait_next_ctrl_resp(timeout_cycles)
+		assert actual == expected_word, f"ctrl_resp mismatch exp=0x{expected_word:08x} got=0x{actual:08x}"
+		return actual
 
 	async def expect_no_ctrl_resp(self, wait_cycles: int) -> None:
 		for _ in range(wait_cycles):
@@ -1642,14 +1646,14 @@ class PTDmaTopEnv:
 					desc_cycle = self.current_cycle()
 					self.wr_desc_count += 1
 					self.export_req_count += 1
-					expected = await self._await_expected_export()
-					desc = self.descriptors[expected.ctrl_id]
-					expected_beats = self._pack_export_beats(expected.matrix)
-					injection = self.export_injections.popleft() if self.export_injections else ExportInjection()
 					actual_addr = value_to_int(self.dut.wr_dma_desc_addr.value)
 					actual_id = value_to_int(self.dut.wr_dma_desc_id.value)
 					actual_buf = value_to_int(self.dut.wr_dma_desc_buf.value)
 					actual_beats = value_to_int(self.dut.wr_dma_desc_beats.value)
+					expected = await self._await_expected_export()
+					desc = self.descriptors[expected.ctrl_id]
+					expected_beats = self._pack_export_beats(expected.matrix)
+					injection = self.export_injections.popleft() if self.export_injections else ExportInjection()
 					assert actual_addr == desc.m_addr
 					assert actual_id == (expected.ctrl_id & 0xFFFF_FFFF)
 					assert actual_buf == expected.buffer

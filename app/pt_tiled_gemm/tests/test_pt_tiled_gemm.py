@@ -57,6 +57,7 @@ PT_M_EXPORT_LANES = env_int("PT_M_EXPORT_LANES", TILE_DIM)
 EXPORT_BEATS_PER_TILE = PT_X_DIM * math.ceil(PT_Y_DIM / PT_M_EXPORT_LANES)
 CTRL_ID_POOL_SIZE = env_int("PT_APP_CTRL_ID_POOL_SIZE", env_int("PT_LUT_DEPTH", 8))
 CTRL_ID_POOL_BASE = env_int("PT_APP_CTRL_ID_BASE", 0x500)
+RECYCLE_INTERVAL = env_int("PT_VERIFY_RECYCLE_INTERVAL", env_int("PT_LUT_DEPTH", 8))
 
 
 def cycle_now() -> int:
@@ -88,6 +89,17 @@ def build_submitter(env, *, ctrl_id_base: int) -> CommandSubmitter:
 		ctrl_id_base=ctrl_id_base,
 		ctrl_id_pool_size=CTRL_ID_POOL_SIZE,
 	)
+
+
+async def recycle_runtime_if_needed(env, commands_in_window: int, commands_needed: int, *, phase: str) -> int:
+	if (commands_in_window != 0) and ((commands_in_window + commands_needed) > RECYCLE_INTERVAL):
+		if APP_TARGET == "pt_dma_top":
+			await env.soft_clear()
+		else:
+			await env.pulse_clear(phase=phase)
+			await setup_bases_and_passthrough_qcfg(env)
+		return 0
+	return commands_in_window
 
 
 async def submission_metrics(env, submitter: CommandSubmitter, perf_counter_base=None) -> Dict[str, object]:
@@ -227,8 +239,15 @@ async def run_host_reduce_direct(env, submitter: CommandSubmitter, a_full: List[
 	start_cycle = None
 	c_full = [0] * (PROBLEM.m_dim * PROBLEM.n_dim)
 	ctrl_seed = 0
+	commands_in_window = 0
 	for m_tile in range(PROBLEM.m_tiles):
 		for n_tile in range(PROBLEM.n_tiles):
+			commands_in_window = await recycle_runtime_if_needed(
+				env,
+				commands_in_window,
+				PROBLEM.k_tiles,
+				phase="verify_host_reduce_direct",
+			)
 			partials: List[List[int]] = []
 			for k_tile in range(PROBLEM.k_tiles):
 				ctrl_id = submitter.acquire_ctrl_id(0x500 + ctrl_seed)
@@ -245,6 +264,7 @@ async def run_host_reduce_direct(env, submitter: CommandSubmitter, a_full: List[
 				partials.append(partial)
 				submitter.release_ctrl_id(ctrl_id)
 			place_c_tile(PROBLEM, c_full, reduce_partials(partials), m_tile, n_tile)
+			commands_in_window += PROBLEM.k_tiles
 	assert start_cycle is not None
 	return {
 		"name": "host_reduce_direct_tiled_matmul",
@@ -267,8 +287,15 @@ async def run_host_reduce_direct_pipelined(env, submitter: CommandSubmitter, a_f
 	c_full = [0] * (PROBLEM.m_dim * PROBLEM.n_dim)
 	ctrl_seed = 0
 	pipeline_depth = 2
+	commands_in_window = 0
 	for m_tile in range(PROBLEM.m_tiles):
 		for n_tile in range(PROBLEM.n_tiles):
+			commands_in_window = await recycle_runtime_if_needed(
+				env,
+				commands_in_window,
+				PROBLEM.k_tiles,
+				phase="verify_host_reduce_direct_pipelined",
+			)
 			inflight: List[Tuple] = []
 			partials: List[List[int]] = []
 			export_base = env.export_done_count
@@ -303,6 +330,7 @@ async def run_host_reduce_direct_pipelined(env, submitter: CommandSubmitter, a_f
 				partials.append(list(plan_rem.result_matrix))
 				submitter.release_ctrl_id(done_ctrl_id)
 			place_c_tile(PROBLEM, c_full, reduce_partials(partials), m_tile, n_tile)
+			commands_in_window += PROBLEM.k_tiles
 	assert start_cycle is not None
 	return {
 		"name": "host_reduce_direct_pipelined",
@@ -320,8 +348,15 @@ async def run_host_reduce_load_then_matmul(env, submitter: CommandSubmitter, a_f
 	start_cycle = None
 	c_full = [0] * (PROBLEM.m_dim * PROBLEM.n_dim)
 	ctrl_seed = 0
+	commands_in_window = 0
 	for m_tile in range(PROBLEM.m_tiles):
 		for n_tile in range(PROBLEM.n_tiles):
+			commands_in_window = await recycle_runtime_if_needed(
+				env,
+				commands_in_window,
+				2 * PROBLEM.k_tiles,
+				phase="verify_load_then_matmul",
+			)
 			partials: List[List[int]] = []
 			for k_tile in range(PROBLEM.k_tiles):
 				ctrl_id = submitter.acquire_ctrl_id(0x900 + ctrl_seed)
@@ -349,6 +384,7 @@ async def run_host_reduce_load_then_matmul(env, submitter: CommandSubmitter, a_f
 				partials.append(list(matmul_plan.result_matrix))
 				submitter.release_ctrl_id(ctrl_id)
 			place_c_tile(PROBLEM, c_full, reduce_partials(partials), m_tile, n_tile)
+			commands_in_window += 2 * PROBLEM.k_tiles
 	assert start_cycle is not None
 	return {
 		"name": "host_reduce_load_then_matmul",
@@ -368,8 +404,15 @@ async def run_pt_matadd_reduce(env, submitter: CommandSubmitter, a_full: List[in
 	ctrl_seed = 0
 	add_seed = 0
 	matadd_count = 0
+	commands_in_window = 0
 	for m_tile in range(PROBLEM.m_tiles):
 		for n_tile in range(PROBLEM.n_tiles):
+			commands_in_window = await recycle_runtime_if_needed(
+				env,
+				commands_in_window,
+				PROBLEM.k_tiles + max(0, PROBLEM.k_tiles - 1),
+				phase="verify_pt_matadd_reduce",
+			)
 			running_sum: List[int] | None = None
 			for k_tile in range(PROBLEM.k_tiles):
 				ctrl_id = submitter.acquire_ctrl_id(0xD00 + ctrl_seed)
@@ -395,6 +438,7 @@ async def run_pt_matadd_reduce(env, submitter: CommandSubmitter, a_full: List[in
 				matadd_count += 1
 			assert running_sum is not None
 			place_c_tile(PROBLEM, c_full, running_sum, m_tile, n_tile)
+			commands_in_window += PROBLEM.k_tiles + max(0, PROBLEM.k_tiles - 1)
 	assert start_cycle is not None
 	return {
 		"name": "pt_matadd_reduce",

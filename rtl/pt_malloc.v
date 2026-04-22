@@ -189,10 +189,10 @@ module PT_MALLOC #(
 	wire                        matadd_enqueue_fire;
 	wire                        matmul_resp_fire;
 	wire [1:0]                  matmul_queue_count_after_resp;
-	wire                        matmul_a_buf0_busy;
-	wire                        matmul_a_buf1_busy;
-	wire                        matmul_b_buf0_busy;
-	wire                        matmul_b_buf1_busy;
+	wire                        a_buf0_busy;
+	wire                        a_buf1_busy;
+	wire                        b_buf0_busy;
+	wire                        b_buf1_busy;
 
 	wire [3:0] cmd_opcode = malloc_cmd_inst[`PT_INST_OPCODE_H:`PT_INST_OPCODE_L];
 	wire [3:0] cmd_matmul_m_tiles = malloc_cmd_inst[`PT_MATMUL_M_TILES_H:`PT_MATMUL_M_TILES_L];
@@ -246,8 +246,8 @@ module PT_MALLOC #(
 	                        (cmd_c_field == 10'd0) &&
 	                        cmd_m_off[9] &&
 	                        (cmd_m_off[7:0] == 8'd0);
-	wire alloc_a_busy_en = (malloc_cmd_kind == `PT_MALLOC_KIND_MATMUL) && exec_busy;
-	wire alloc_b_busy_en = (malloc_cmd_kind == `PT_MALLOC_KIND_MATMUL) && exec_busy;
+	wire alloc_a_busy_en = exec_busy && dec_need_a;
+	wire alloc_b_busy_en = exec_busy && dec_need_b;
 
 	function [31:0] pack_resp;
 		input err;
@@ -333,14 +333,14 @@ module PT_MALLOC #(
 		a_base1_int = align_up({{(32-A_PTR_W){1'b0}}, a_alloc_next_buf1_r}, GEMM_X_DIM);
 		if ((dec_a_len != {`PT_SIZE_W{1'b0}}) &&
 		    ((a_base0_int + a_len_int) <= A_BUF_CAPACITY) &&
-		    (!alloc_a_busy_en || !matmul_a_buf0_busy)) begin
+		    (!alloc_a_busy_en || !a_buf0_busy)) begin
 			a_alloc_ok = 1'b1;
 			a_alloc_base = make_local_base(0, a_base0_int);
 			a_next_int = a_base0_int + a_len_int;
 			a_alloc_next_after = a_next_int[A_PTR_W-1:0];
 		end else if ((dec_a_len != {`PT_SIZE_W{1'b0}}) &&
 		           ((a_base1_int + a_len_int) <= A_BUF_CAPACITY) &&
-		           (!alloc_a_busy_en || !matmul_a_buf1_busy)) begin
+		           (!alloc_a_busy_en || !a_buf1_busy)) begin
 			a_alloc_ok = 1'b1;
 			a_alloc_buf_sel = 1'b1;
 			a_alloc_base = make_local_base(1, a_base1_int);
@@ -370,14 +370,14 @@ module PT_MALLOC #(
 		b_base1_int = align_up({{(32-B_PTR_W){1'b0}}, b_alloc_next_buf1_r}, GEMM_Y_DIM);
 		if ((dec_b_len != {`PT_SIZE_W{1'b0}}) &&
 		    ((b_base0_int + b_len_int) <= B_BUF_CAPACITY) &&
-		    (!alloc_b_busy_en || !matmul_b_buf0_busy)) begin
+		    (!alloc_b_busy_en || !b_buf0_busy)) begin
 			b_alloc_ok = 1'b1;
 			b_alloc_base = make_local_base(0, b_base0_int);
 			b_next_int = b_base0_int + b_len_int;
 			b_alloc_next_after = b_next_int[B_PTR_W-1:0];
 		end else if ((dec_b_len != {`PT_SIZE_W{1'b0}}) &&
 		           ((b_base1_int + b_len_int) <= B_BUF_CAPACITY) &&
-		           (!alloc_b_busy_en || !matmul_b_buf1_busy)) begin
+		           (!alloc_b_busy_en || !b_buf1_busy)) begin
 			b_alloc_ok = 1'b1;
 			b_alloc_buf_sel = 1'b1;
 			b_alloc_base = make_local_base(1, b_base1_int);
@@ -648,18 +648,10 @@ module PT_MALLOC #(
 	assign serial_exec_busy    = serial_exec_busy_r;
 	assign matmul_queue_count_after_resp =
 		matmul_inflight_count_r - (matmul_resp_fire ? 2'b01 : 2'b00);
-	assign matmul_a_buf0_busy =
-		((matmul_inflight_count_r != 2'd0) && !matmul_a_buf_slot0_r) ||
-		((matmul_inflight_count_r == 2'd2) && !matmul_a_buf_slot1_r);
-	assign matmul_a_buf1_busy =
-		((matmul_inflight_count_r != 2'd0) && matmul_a_buf_slot0_r) ||
-		((matmul_inflight_count_r == 2'd2) && matmul_a_buf_slot1_r);
-	assign matmul_b_buf0_busy =
-		((matmul_inflight_count_r != 2'd0) && !matmul_b_buf_slot0_r) ||
-		((matmul_inflight_count_r == 2'd2) && !matmul_b_buf_slot1_r);
-	assign matmul_b_buf1_busy =
-		((matmul_inflight_count_r != 2'd0) && matmul_b_buf_slot0_r) ||
-		((matmul_inflight_count_r == 2'd2) && matmul_b_buf_slot1_r);
+	assign a_buf0_busy = (a_buf_busy0_r != 2'd0);
+	assign a_buf1_busy = (a_buf_busy1_r != 2'd0);
+	assign b_buf0_busy = (b_buf_busy0_r != 2'd0);
+	assign b_buf1_busy = (b_buf_busy1_r != 2'd0);
 
 	always @(posedge clk or negedge rstn) begin
 		if (!rstn) begin

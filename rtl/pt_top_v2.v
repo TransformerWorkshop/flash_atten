@@ -277,7 +277,7 @@ module PT_V2 #(
 		.m_buf0_single_output(m_buf0_single_output),
 		.m_buf1_single_output(m_buf1_single_output),
 		.ce_resp_valid  (ce_resp_valid),
-		.ce_resp        (32'd0),
+		.ce_resp        (ce_resp),
 		.malloc_resp_valid(malloc_resp_valid),
 		.malloc_resp    (malloc_resp),
 		.malloc_irq     (malloc_irq),

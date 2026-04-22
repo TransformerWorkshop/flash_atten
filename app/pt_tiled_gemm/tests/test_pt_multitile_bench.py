@@ -18,7 +18,7 @@ if str(COCOTB_ROOT) not in sys.path:
 from app.pt_tiled_gemm import TILE_DIM, app_target_label, normalize_app_target
 from app.pt_tiled_gemm.multitile_utils import build_command_schedule, choose_partition_plan
 from app.pt_tiled_gemm.submission import CommandSubmitter, normalize_submission_mode
-from tests.pt_model import build_matmul_inst, matmul_row_major, to_unsigned
+from tests.pt_model import build_load_inst, build_matmul_inst, matmul_row_major, to_unsigned
 
 APP_TARGET = normalize_app_target(os.getenv("PT_APP_TARGET", "pt"))
 SUBMISSION_MODE = normalize_submission_mode(os.getenv("PT_APP_SUBMISSION_MODE", "legacy"))
@@ -186,20 +186,16 @@ async def test_pt_multitile_single_case(dut) -> None:
 		first_accept_cycle = None
 		last_resp_cycle = None
 		clear_count = 0
+		use_load_prefetch = (
+			(APP_TARGET == "pt_dma_top")
+			and (len(schedule) > 1)
+			and (ctrl_id_pool_size >= 2)
+			and (env_int("PT_MT_LOAD_PREFETCH", 1) != 0)
+		)
+		load_prefetch_count = 0
 
-		for command_idx, command in enumerate(schedule):
-			if command_idx != 0 and (command_idx % recycle_interval) == 0:
-				if perf_counter_base is not None:
-					segment_counters = (await env.read_perf_counters()).delta(perf_counter_base)
-					perf_counter_accum = segment_counters if perf_counter_accum is None else perf_counter_accum.add(segment_counters)
-				clear_count += 1
-				if APP_TARGET == "pt_dma_top":
-					await env.soft_clear()
-				else:
-					await env.pulse_clear(phase="multitile_bench")
-					await setup_bases_and_passthrough_qcfg(env)
-				perf_counter_base = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
-
+		def build_prefetch_item(command_idx: int) -> dict[str, object]:
+			command = schedule[command_idx]
 			ctrl_id = submitter.acquire_ctrl_id(ctrl_id_base + (command_idx % recycle_interval))
 			a_sub = extract_a_submatrix(
 				a_matrix=a_matrix,
@@ -221,30 +217,168 @@ async def test_pt_multitile_single_case(dut) -> None:
 			)
 			env.register_external_matrix("A", ctrl_id, a_sub)
 			env.register_external_matrix("B", ctrl_id, b_sub)
-			plan = env.plan_matmul(ctrl_id, m_scale=command.m_tiles, n_scale=command.n_tiles, k_scale=command.k_tiles)
-			assert not plan.err
-			await submitter.send_ctrl(build_matmul_inst(command.m_tiles, command.n_tiles, command.k_tiles), ctrl_id)
-			accept_cycle = cycle_now()
-			if first_accept_cycle is None:
-				first_accept_cycle = accept_cycle
-			resp = await env.wait_ctrl_resp(plan.response_word, 80000)
-			last_resp_cycle = cycle_now()
-			env.model.commit_success(plan)
-			await env.wait_export_done(env.export_done_count + 1, 80000)
-			assert plan.result_matrix is not None
-			accumulate_partial(
-				c_matrix=c_matrix,
-				full_n_dim=n_dim,
-				partial=list(plan.result_matrix),
-				x_dim=x_dim,
-				y_dim=y_dim,
-				m_tile_off=command.m_tile_off,
-				n_tile_off=command.n_tile_off,
+			load_inst = build_load_inst(
+				len(a_sub),
+				len(b_sub),
+				need_a=True,
+				need_b=True,
 				m_tiles=command.m_tiles,
 				n_tiles=command.n_tiles,
+				k_tiles=command.k_tiles,
 			)
-			_ = resp
-			submitter.release_ctrl_id(ctrl_id)
+			load_plan = env.plan_load(
+				ctrl_id,
+				len(a_sub),
+				len(b_sub),
+				need_a=True,
+				need_b=True,
+				reserved_lo=load_inst & 0x3F,
+			)
+			assert not load_plan.err
+			return {
+				"command": command,
+				"ctrl_id": ctrl_id,
+				"load_inst": load_inst,
+				"load_plan": load_plan,
+				"load_done": False,
+			}
+
+		async def issue_load(item: dict[str, object]) -> None:
+			nonlocal first_accept_cycle, load_prefetch_count
+			await submitter.send_ctrl(int(item["load_inst"]), int(item["ctrl_id"]))
+			if first_accept_cycle is None:
+				first_accept_cycle = cycle_now()
+			load_prefetch_count += 1
+
+		segment_start = 0
+		while segment_start < len(schedule):
+			if segment_start != 0:
+				if perf_counter_base is not None:
+					segment_counters = (await env.read_perf_counters()).delta(perf_counter_base)
+					perf_counter_accum = segment_counters if perf_counter_accum is None else perf_counter_accum.add(segment_counters)
+				clear_count += 1
+				if APP_TARGET == "pt_dma_top":
+					await env.soft_clear()
+				else:
+					await env.pulse_clear(phase="multitile_bench")
+					await setup_bases_and_passthrough_qcfg(env)
+				perf_counter_base = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
+
+			segment_end = min(segment_start + recycle_interval, len(schedule))
+			if use_load_prefetch:
+				current_item = build_prefetch_item(segment_start)
+				await issue_load(current_item)
+				current_idx = segment_start
+				while True:
+					while not bool(current_item["load_done"]):
+						resp_word = await env.wait_next_ctrl_resp(80000)
+						last_resp_cycle = cycle_now()
+						assert resp_word == current_item["load_plan"].response_word
+						env.model.commit_load_success(current_item["load_plan"])
+						current_item["load_done"] = True
+
+					command = current_item["command"]
+					matmul_plan = env.plan_matmul(
+						int(current_item["ctrl_id"]),
+						m_scale=command.m_tiles,
+						n_scale=command.n_tiles,
+						k_scale=command.k_tiles,
+					)
+					assert not matmul_plan.err
+					assert len(matmul_plan.expected_dma_loads) == 0
+					await submitter.send_ctrl(
+						build_matmul_inst(command.m_tiles, command.n_tiles, command.k_tiles),
+						int(current_item["ctrl_id"]),
+					)
+					export_target = env.export_done_count + 1
+
+					next_item = None
+					next_idx = current_idx + 1
+					if next_idx < segment_end:
+						next_item = build_prefetch_item(next_idx)
+						await issue_load(next_item)
+
+					matmul_done = False
+					while not matmul_done:
+						resp_word = await env.wait_next_ctrl_resp(80000)
+						last_resp_cycle = cycle_now()
+						if resp_word == matmul_plan.response_word:
+							env.model.commit_success(matmul_plan)
+							matmul_done = True
+						elif next_item is not None and resp_word == next_item["load_plan"].response_word:
+							env.model.commit_load_success(next_item["load_plan"])
+							next_item["load_done"] = True
+						else:
+							raise AssertionError(f"unexpected ctrl_resp 0x{resp_word:08x} in prefetch pipeline")
+
+					await env.wait_export_done(export_target, 80000)
+					assert matmul_plan.result_matrix is not None
+					accumulate_partial(
+						c_matrix=c_matrix,
+						full_n_dim=n_dim,
+						partial=list(matmul_plan.result_matrix),
+						x_dim=x_dim,
+						y_dim=y_dim,
+						m_tile_off=command.m_tile_off,
+						n_tile_off=command.n_tile_off,
+						m_tiles=command.m_tiles,
+						n_tiles=command.n_tiles,
+					)
+					submitter.release_ctrl_id(int(current_item["ctrl_id"]))
+					if next_item is None:
+						break
+					current_item = next_item
+					current_idx = next_idx
+			else:
+				for command_idx in range(segment_start, segment_end):
+					command = schedule[command_idx]
+					ctrl_id = submitter.acquire_ctrl_id(ctrl_id_base + (command_idx % recycle_interval))
+					a_sub = extract_a_submatrix(
+						a_matrix=a_matrix,
+						full_k_dim=k_dim,
+						x_dim=x_dim,
+						m_tile_off=command.m_tile_off,
+						k_tile_off=command.k_tile_off,
+						m_tiles=command.m_tiles,
+						k_tiles=command.k_tiles,
+					)
+					b_sub = extract_b_submatrix(
+						b_matrix=b_matrix,
+						full_n_dim=n_dim,
+						y_dim=y_dim,
+						k_tile_off=command.k_tile_off,
+						n_tile_off=command.n_tile_off,
+						k_tiles=command.k_tiles,
+						n_tiles=command.n_tiles,
+					)
+					env.register_external_matrix("A", ctrl_id, a_sub)
+					env.register_external_matrix("B", ctrl_id, b_sub)
+					plan = env.plan_matmul(ctrl_id, m_scale=command.m_tiles, n_scale=command.n_tiles, k_scale=command.k_tiles)
+					assert not plan.err
+					await submitter.send_ctrl(build_matmul_inst(command.m_tiles, command.n_tiles, command.k_tiles), ctrl_id)
+					accept_cycle = cycle_now()
+					if first_accept_cycle is None:
+						first_accept_cycle = accept_cycle
+					resp = await env.wait_ctrl_resp(plan.response_word, 80000)
+					last_resp_cycle = cycle_now()
+					env.model.commit_success(plan)
+					await env.wait_export_done(env.export_done_count + 1, 80000)
+					assert plan.result_matrix is not None
+					accumulate_partial(
+						c_matrix=c_matrix,
+						full_n_dim=n_dim,
+						partial=list(plan.result_matrix),
+						x_dim=x_dim,
+						y_dim=y_dim,
+						m_tile_off=command.m_tile_off,
+						n_tile_off=command.n_tile_off,
+						m_tiles=command.m_tiles,
+						n_tiles=command.n_tiles,
+					)
+					_ = resp
+					submitter.release_ctrl_id(ctrl_id)
+
+			segment_start = segment_end
 
 		assert first_accept_cycle is not None
 		assert last_resp_cycle is not None
@@ -274,6 +408,10 @@ async def test_pt_multitile_single_case(dut) -> None:
 				"n_partitions": list(n_parts),
 				"k_partitions": list(k_parts),
 				"submission_mode": submitter.submission_mode,
+				"load_prefetch_enabled": use_load_prefetch,
+				"logical_command_count": len(schedule),
+				"issued_command_count": submitter.stats.command_count,
+				"load_prefetch_count": load_prefetch_count,
 				"software_adapted": (tuple(m_parts), tuple(n_parts), tuple(k_parts)) != ((full_m_tiles,), (full_n_tiles,), (full_k_tiles,)),
 				"command_count": len(schedule),
 				"clear_count": clear_count,
@@ -284,6 +422,7 @@ async def test_pt_multitile_single_case(dut) -> None:
 				"accept_to_done_cycles": total_cycles,
 				"axil_writes_total": submitter.stats.axil_writes_total,
 				"axil_writes_per_command": submitter.stats.axil_writes_per_command,
+				"axil_writes_per_logical_command": (0.0 if len(schedule) == 0 else (submitter.stats.axil_writes_total / len(schedule))),
 				"descriptor_push_count": submitter.stats.descriptor_push_count,
 				"dma_req_count": env.dma_req_count - snapshot.dma_req_count,
 				"export_req_count": env.export_req_count - snapshot.export_req_count,
