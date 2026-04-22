@@ -35,7 +35,7 @@ from tests.pt_model import (
 
 APP_TARGET = normalize_app_target(os.getenv("PT_APP_TARGET", "pt"))
 SUBMISSION_MODE = normalize_submission_mode(os.getenv("PT_APP_SUBMISSION_MODE", "legacy"))
-if APP_TARGET == "pt_dma_top":
+if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"}:
 	from tests.pt_dma_top_env import create_env, setup_bases_and_passthrough_qcfg
 else:
 	from tests.pt_blackbox_env import create_env, setup_bases_and_passthrough_qcfg
@@ -97,7 +97,7 @@ def build_submitter(env, *, ctrl_id_base: int) -> CommandSubmitter:
 
 async def recycle_runtime_if_needed(env, commands_in_window: int, commands_needed: int, *, phase: str) -> int:
 	if (commands_in_window != 0) and ((commands_in_window + commands_needed) > RECYCLE_INTERVAL):
-		if APP_TARGET == "pt_dma_top":
+		if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"}:
 			await env.soft_clear()
 		else:
 			await env.pulse_clear(phase=phase)
@@ -114,7 +114,7 @@ async def submission_metrics(env, submitter: CommandSubmitter, perf_counter_base
 		"axil_writes_per_command": submitter.stats.axil_writes_per_command,
 		"descriptor_push_count": submitter.stats.descriptor_push_count,
 	}
-	if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters"):
+	if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters"):
 		counters = await env.read_perf_counters()
 		if perf_counter_base is not None:
 			counters = counters.delta(perf_counter_base)
@@ -481,7 +481,7 @@ async def test_numeric_host_reduce_per_tensor(dut) -> None:
 	try:
 		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE)
 		a_full, b_full, golden = await prepare_env(env)
-		perf_counter_base = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
+		perf_counter_base = await env.read_perf_counters() if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters") else None
 		result = await run_host_reduce_direct(env, submitter, a_full, b_full)
 		assert result["final_matrix"] == golden
 		metric_payload = {"status": "passed", "total_cycles": result["total_cycles"]}
@@ -497,7 +497,7 @@ async def test_numeric_host_reduce_pipelined(dut) -> None:
 	try:
 		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x100)
 		a_full, b_full, golden = await prepare_env(env)
-		perf_counter_base = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
+		perf_counter_base = await env.read_perf_counters() if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters") else None
 		result = await run_host_reduce_direct_pipelined(env, submitter, a_full, b_full)
 		assert result["final_matrix"] == golden
 		metric_payload = {"status": "passed", "total_cycles": result["total_cycles"]}
@@ -513,7 +513,7 @@ async def test_numeric_pt_matadd_reduce_per_tensor(dut) -> None:
 	try:
 		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x200)
 		a_full, b_full, golden = await prepare_env(env)
-		perf_counter_base = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
+		perf_counter_base = await env.read_perf_counters() if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters") else None
 		result = await run_pt_matadd_reduce(env, submitter, a_full, b_full)
 		assert result["final_matrix"] == golden
 		metric_payload = {"status": "passed", "total_cycles": result["total_cycles"]}
@@ -582,7 +582,7 @@ async def test_algorithm_compare_reduction_strategies(dut) -> None:
 	try:
 		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x400)
 		a_full, b_full, golden = await prepare_env(env)
-		perf_counter_base = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
+		perf_counter_base = await env.read_perf_counters() if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters") else None
 		direct = await run_host_reduce_direct(env, submitter, a_full, b_full)
 		assert direct["final_matrix"] == golden
 		record_metric(
@@ -600,7 +600,7 @@ async def test_algorithm_compare_reduction_strategies(dut) -> None:
 
 		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x500)
 		a_full, b_full, golden = await prepare_env(env)
-		perf_counter_base = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
+		perf_counter_base = await env.read_perf_counters() if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters") else None
 		load_then = await run_host_reduce_load_then_matmul(env, submitter, a_full, b_full)
 		assert load_then["final_matrix"] == golden
 		record_metric(
@@ -618,7 +618,7 @@ async def test_algorithm_compare_reduction_strategies(dut) -> None:
 
 		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x600)
 		a_full, b_full, golden = await prepare_env(env)
-		perf_counter_base = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
+		perf_counter_base = await env.read_perf_counters() if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters") else None
 		pt_reduce = await run_pt_matadd_reduce(env, submitter, a_full, b_full)
 		assert pt_reduce["final_matrix"] == golden
 		record_metric(
@@ -636,7 +636,7 @@ async def test_algorithm_compare_reduction_strategies(dut) -> None:
 
 		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x700)
 		a_full, b_full, golden = await prepare_env(env)
-		perf_counter_base = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
+		perf_counter_base = await env.read_perf_counters() if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters") else None
 		pipelined = await run_host_reduce_direct_pipelined(env, submitter, a_full, b_full)
 		assert pipelined["final_matrix"] == golden
 		record_metric(
@@ -663,7 +663,7 @@ async def test_algorithm_compare_reduction_strategies(dut) -> None:
 
 @cocotb.test()
 async def test_pt_dma_top_ce_md_block_breakdown(dut) -> None:
-	if APP_TARGET != "pt_dma_top":
+	if APP_TARGET not in {"pt_dma_top", "pt_dma_top_v3"}:
 		record_metric(
 			"diagnostics",
 			"pt_ce_md_block_breakdown",

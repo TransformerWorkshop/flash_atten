@@ -697,7 +697,7 @@ class PTDmaTopEnv:
 		raise AssertionError(f"{label} timeout")
 
 	def _pt_root_prefix(self) -> str:
-		return "u_pt.u_pt_v2"
+		return "u_pt.u_pt_v3" if os.getenv("PT_APP_TARGET", "").strip().lower() == "pt_dma_top_v3" else "u_pt.u_pt_v2"
 
 	def _auto_descriptor_addrs(self, ctrl_id: int) -> DescriptorAddrs:
 		base_id = ctrl_id & 0xFFFF_FFFF

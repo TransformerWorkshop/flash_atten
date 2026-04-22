@@ -10,7 +10,6 @@ from typing import Any, Dict, Optional
 from . import (
 	COCOTB_ROOT,
 	DEFAULT_APP_TARGET,
-	PT_PARAMS,
 	ProblemSpec,
 	REPO_ROOT,
 	RTL_DIR,
@@ -19,6 +18,7 @@ from . import (
 	default_metrics_path,
 	hdl_toplevel_for_target,
 	normalize_app_target,
+	rtl_params_for_target,
 )
 from .submission import SUBMISSION_MODE_LEGACY, normalize_submission_mode
 
@@ -129,6 +129,7 @@ def run_verification(
 	normalized_target = normalize_app_target(target)
 	normalized_sim = normalize_sim_name(sim_name)
 	normalized_submission_mode = normalize_submission_mode(submission_mode)
+	rtl_params = rtl_params_for_target(normalized_target)
 	base_dir = cocotb_output_root(problem, normalized_target) / normalized_sim
 	build_dir = base_dir / "build"
 	test_dir = base_dir / "test"
@@ -174,20 +175,20 @@ def run_verification(
 	extra_env = {
 		"PYTHONPATH": os.pathsep.join(pythonpath_entries),
 		"PT_APP_TARGET": normalized_target,
-		"PT_X_DIM": str(PT_PARAMS["GEMM_X_DIM"]),
-		"PT_Y_DIM": str(PT_PARAMS["GEMM_Y_DIM"]),
-		"PT_DATA_WIDTH": str(PT_PARAMS["DATA_WIDTH"]),
+		"PT_X_DIM": str(rtl_params["GEMM_X_DIM"]),
+		"PT_Y_DIM": str(rtl_params["GEMM_Y_DIM"]),
+		"PT_DATA_WIDTH": str(rtl_params["DATA_WIDTH"]),
 		"PT_A_BASE": str(0x0000_1000),
 		"PT_B_BASE": str(0x0000_2000),
-		"PT_LUT_DEPTH": str(PT_PARAMS["LUT_DEPTH"]),
-		"PT_A_BANK_DEPTH": str(PT_PARAMS["A_BANK_DEPTH"]),
-		"PT_B_BANK_DEPTH": str(PT_PARAMS["B_BANK_DEPTH"]),
-		"PT_M_BANK_DEPTH": str(PT_PARAMS["M_BANK_DEPTH"]),
-		"PT_A_LOAD_LANES": str(PT_PARAMS["A_LOAD_LANES"]),
-		"PT_B_LOAD_LANES": str(PT_PARAMS["B_LOAD_LANES"]),
-		"PT_M_WRITE_LANES": str(PT_PARAMS["M_WRITE_LANES"]),
-		"PT_M_EXPORT_LANES": str(PT_PARAMS["M_EXPORT_LANES"]),
-		"PT_M_PHYSICAL_COPIES": str(PT_PARAMS["M_PHYSICAL_COPIES"]),
+		"PT_LUT_DEPTH": str(rtl_params["LUT_DEPTH"]),
+		"PT_A_BANK_DEPTH": str(rtl_params["A_BANK_DEPTH"]),
+		"PT_B_BANK_DEPTH": str(rtl_params["B_BANK_DEPTH"]),
+		"PT_M_BANK_DEPTH": str(rtl_params["M_BANK_DEPTH"]),
+		"PT_A_LOAD_LANES": str(rtl_params["A_LOAD_LANES"]),
+		"PT_B_LOAD_LANES": str(rtl_params["B_LOAD_LANES"]),
+		"PT_M_WRITE_LANES": str(rtl_params["M_WRITE_LANES"]),
+		"PT_M_EXPORT_LANES": str(rtl_params["M_EXPORT_LANES"]),
+		"PT_M_PHYSICAL_COPIES": str(rtl_params["M_PHYSICAL_COPIES"]),
 		"PT_TEST_SEED": "10",
 		"PT_SUITE_NAME": "app_verify",
 		"PT_RUN_NAME": problem.tag,
@@ -197,8 +198,13 @@ def run_verification(
 		"PT_APP_K_DIM": str(problem.k_dim),
 		"PT_APP_N_DIM": str(problem.n_dim),
 		"PT_APP_SUBMISSION_MODE": normalized_submission_mode,
-		"PT_EXT_ADDR_W": str(PT_PARAMS["EXT_ADDR_W"]),
+		"PT_EXT_ADDR_W": str(rtl_params["EXT_ADDR_W"]),
 	}
+	if "WORD_WIDTH" in rtl_params:
+		extra_env["PT_WORD_WIDTH"] = str(rtl_params["WORD_WIDTH"])
+		extra_env["PT_ELEM_WIDTH"] = str(rtl_params["ELEM_WIDTH"])
+		extra_env["PT_PACK_LANES"] = str(rtl_params["PACK_LANES"])
+		extra_env["PT_ACC_WIDTH"] = str(rtl_params["ACC_WIDTH"])
 
 	failure_message: Optional[str] = None
 	try:
@@ -206,7 +212,7 @@ def run_verification(
 			sources=_rtl_sources(),
 			includes=[RTL_DIR],
 			hdl_toplevel=hdl_toplevel,
-			parameters=PT_PARAMS,
+			parameters=rtl_params,
 			build_args=["-Wall"],
 			build_dir=build_dir,
 			always=True,

@@ -22,7 +22,7 @@ from tests.pt_model import build_load_inst, build_matmul_inst, matmul_row_major,
 
 APP_TARGET = normalize_app_target(os.getenv("PT_APP_TARGET", "pt"))
 SUBMISSION_MODE = normalize_submission_mode(os.getenv("PT_APP_SUBMISSION_MODE", "legacy"))
-if APP_TARGET == "pt_dma_top":
+if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"}:
 	from tests.pt_dma_top_env import create_env, setup_bases_and_passthrough_qcfg
 else:
 	from tests.pt_blackbox_env import create_env, setup_bases_and_passthrough_qcfg
@@ -152,7 +152,7 @@ async def test_pt_multitile_single_case(dut) -> None:
 		await env.reset()
 		await setup_bases_and_passthrough_qcfg(env)
 		snapshot = env.snapshot()
-		perf_counter_base = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
+		perf_counter_base = await env.read_perf_counters() if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters") else None
 		perf_counter_accum = None
 		submitter = CommandSubmitter(
 			env,
@@ -187,7 +187,7 @@ async def test_pt_multitile_single_case(dut) -> None:
 		last_resp_cycle = None
 		clear_count = 0
 		use_load_prefetch = (
-			(APP_TARGET == "pt_dma_top")
+			(APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"})
 			and (len(schedule) > 1)
 			and (ctrl_id_pool_size >= 2)
 			and (env_int("PT_MT_LOAD_PREFETCH", 1) != 0)
@@ -257,12 +257,12 @@ async def test_pt_multitile_single_case(dut) -> None:
 					segment_counters = (await env.read_perf_counters()).delta(perf_counter_base)
 					perf_counter_accum = segment_counters if perf_counter_accum is None else perf_counter_accum.add(segment_counters)
 				clear_count += 1
-				if APP_TARGET == "pt_dma_top":
+				if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"}:
 					await env.soft_clear()
 				else:
 					await env.pulse_clear(phase="multitile_bench")
 					await setup_bases_and_passthrough_qcfg(env)
-				perf_counter_base = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
+				perf_counter_base = await env.read_perf_counters() if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters") else None
 
 			segment_end = min(segment_start + recycle_interval, len(schedule))
 			if use_load_prefetch:
@@ -390,7 +390,7 @@ async def test_pt_multitile_single_case(dut) -> None:
 		total_cycles = done_cycle - first_accept_cycle
 		resp_cycles = last_resp_cycle - first_accept_cycle
 		export_beats = sum((command.m_tiles * x_dim) * ((command.n_tiles * y_dim + export_lanes - 1) // export_lanes) for command in schedule)
-		perf_counters = await env.read_perf_counters() if APP_TARGET == "pt_dma_top" and hasattr(env, "read_perf_counters") else None
+		perf_counters = await env.read_perf_counters() if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters") else None
 		if perf_counters is not None and perf_counter_base is not None:
 			perf_counters = perf_counters.delta(perf_counter_base)
 			perf_counters = perf_counters if perf_counter_accum is None else perf_counter_accum.add(perf_counters)

@@ -323,7 +323,7 @@ class PTBlackBoxEnv:
 		self.export_injections.append(injection)
 
 	def _pt_root_prefix(self) -> str:
-		return "u_pt_v2"
+		return "u_pt_v3" if os.getenv("PT_APP_TARGET", "").strip().lower() == "pt_v3" else "u_pt_v2"
 
 	def _resolve_path(self, path: str):
 		handle = self.dut
@@ -777,15 +777,16 @@ class PTBlackBoxEnv:
 		raise AssertionError(f"{signal_name} timeout exp={expected_value} got={value_to_int(signal.value)}")
 
 	async def wait_malloc_slot_scan(self, ctrl_id: int, timeout_cycles: int = 4000) -> Dict[str, int]:
+		root = self._resolve_path(self._pt_root_prefix())
 		for cycle in range(timeout_cycles):
 			await ReadOnly()
-			if value_to_int(self.dut.u_pt_v2.malloc_cmd_valid.value) and value_to_int(self.dut.u_pt_v2.malloc_cmd_id.value) == (ctrl_id & 0xFFFF_FFFF):
+			if value_to_int(root.malloc_cmd_valid.value) and value_to_int(root.malloc_cmd_id.value) == (ctrl_id & 0xFFFF_FFFF):
 				snapshot = {
-					"slot_found": value_to_int(self.dut.u_pt_v2.u_malloc.slot_found.value),
-					"slot_idx": value_to_int(self.dut.u_pt_v2.u_malloc.slot_idx.value),
-					"free_found": value_to_int(self.dut.u_pt_v2.u_malloc.free_found.value),
-					"free_idx": value_to_int(self.dut.u_pt_v2.u_malloc.free_idx.value),
-					"cmd_slot_idx": value_to_int(self.dut.u_pt_v2.u_malloc.cmd_slot_idx.value),
+					"slot_found": value_to_int(root.u_malloc.slot_found.value),
+					"slot_idx": value_to_int(root.u_malloc.slot_idx.value),
+					"free_found": value_to_int(root.u_malloc.free_found.value),
+					"free_idx": value_to_int(root.u_malloc.free_idx.value),
+					"cmd_slot_idx": value_to_int(root.u_malloc.cmd_slot_idx.value),
 				}
 				if snapshot["slot_found"] and snapshot["slot_idx"] != 0:
 					self.coverage.hit("slot_scan:hit_nonzero")
@@ -814,9 +815,10 @@ class PTBlackBoxEnv:
 			self.model.set_base("B", self.b_base_shadow)
 
 	def read_csr_bases(self) -> Tuple[int, int]:
+		root = self._resolve_path(self._pt_root_prefix())
 		return (
-			value_to_int(self.dut.u_pt_v2.pcsr_a_base.value),
-			value_to_int(self.dut.u_pt_v2.pcsr_b_base.value),
+			value_to_int(root.pcsr_a_base.value),
+			value_to_int(root.pcsr_b_base.value),
 		)
 
 	async def cfg_selector16(self, selector: int, value16: int, ctrl_id: int) -> None:

@@ -13,17 +13,46 @@ DEFAULT_OUT_DIR = APP_ROOT / "out"
 
 TILE_DIM = 16
 DATA_WIDTH = 32
+WORD_WIDTH = 32
+ELEM_WIDTH_V3 = 8
+PACK_LANES_V3 = 4
+ACC_WIDTH_V3 = 32
 INV_SCALE_WORD = 0x0001_0000
 APP_TARGET_PT = "pt"
 APP_TARGET_PT_DMA_TOP = "pt_dma_top"
+APP_TARGET_PT_V3 = "pt_v3"
+APP_TARGET_PT_DMA_TOP_V3 = "pt_dma_top_v3"
 DEFAULT_APP_TARGET = APP_TARGET_PT_DMA_TOP
 SUPPORTED_APP_TARGETS = (
 	APP_TARGET_PT,
 	APP_TARGET_PT_DMA_TOP,
+	APP_TARGET_PT_V3,
+	APP_TARGET_PT_DMA_TOP_V3,
 )
 
 PT_PARAMS = {
 	"DATA_WIDTH": DATA_WIDTH,
+	"GEMM_X_DIM": TILE_DIM,
+	"GEMM_Y_DIM": TILE_DIM,
+	"EXT_ADDR_W": 32,
+	"DMA_BEATS_W": 16,
+	"LUT_DEPTH": 8,
+	"A_BANK_DEPTH": 16,
+	"B_BANK_DEPTH": 16,
+	"M_BANK_DEPTH": 16,
+	"A_LOAD_LANES": TILE_DIM,
+	"B_LOAD_LANES": TILE_DIM,
+	"M_WRITE_LANES": TILE_DIM,
+	"M_EXPORT_LANES": TILE_DIM,
+	"M_PHYSICAL_COPIES": 2,
+}
+
+PT_V3_PARAMS = {
+	"DATA_WIDTH": WORD_WIDTH,
+	"WORD_WIDTH": WORD_WIDTH,
+	"ELEM_WIDTH": ELEM_WIDTH_V3,
+	"PACK_LANES": PACK_LANES_V3,
+	"ACC_WIDTH": ACC_WIDTH_V3,
 	"GEMM_X_DIM": TILE_DIM,
 	"GEMM_Y_DIM": TILE_DIM,
 	"EXT_ADDR_W": 32,
@@ -112,6 +141,13 @@ def normalize_app_target(target: str | None) -> str:
 		"pt-dma-top": APP_TARGET_PT_DMA_TOP,
 		"dma_top": APP_TARGET_PT_DMA_TOP,
 		"wrapper": APP_TARGET_PT_DMA_TOP,
+		"pt_v3": APP_TARGET_PT_V3,
+		"pt-v3": APP_TARGET_PT_V3,
+		"native_v3": APP_TARGET_PT_V3,
+		"pt_dma_top_v3": APP_TARGET_PT_DMA_TOP_V3,
+		"pt-dma-top-v3": APP_TARGET_PT_DMA_TOP_V3,
+		"dma_top_v3": APP_TARGET_PT_DMA_TOP_V3,
+		"wrapper_v3": APP_TARGET_PT_DMA_TOP_V3,
 	}
 	try:
 		return alias_map[name]
@@ -125,6 +161,10 @@ def app_target_label(target: str) -> str:
 		return "PT"
 	if normalized_target == APP_TARGET_PT_DMA_TOP:
 		return "PT_DMA_TOP"
+	if normalized_target == APP_TARGET_PT_V3:
+		return "PT_V3"
+	if normalized_target == APP_TARGET_PT_DMA_TOP_V3:
+		return "PT_DMA_TOP_V3"
 	raise ValueError(f"unsupported app target {target!r}")
 
 
@@ -155,4 +195,17 @@ def hdl_toplevel_for_target(target: str) -> str:
 		return "PT"
 	if normalized_target == APP_TARGET_PT_DMA_TOP:
 		return "PT_DMA_TOP"
+	if normalized_target == APP_TARGET_PT_V3:
+		return "PT_V3"
+	if normalized_target == APP_TARGET_PT_DMA_TOP_V3:
+		return "PT_DMA_TOP_V3"
+	raise ValueError(f"unsupported app target {target!r}")
+
+
+def rtl_params_for_target(target: str) -> dict[str, int]:
+	normalized_target = normalize_app_target(target)
+	if normalized_target in {APP_TARGET_PT, APP_TARGET_PT_DMA_TOP}:
+		return dict(PT_PARAMS)
+	if normalized_target in {APP_TARGET_PT_V3, APP_TARGET_PT_DMA_TOP_V3}:
+		return dict(PT_V3_PARAMS)
 	raise ValueError(f"unsupported app target {target!r}")

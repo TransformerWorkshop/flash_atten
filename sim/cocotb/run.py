@@ -38,6 +38,8 @@ DEFAULT_B_BANK_DEPTH = 16
 DEFAULT_M_BANK_DEPTH = 16
 APP_TARGET_PT = "pt"
 APP_TARGET_PT_DMA_TOP = "pt_dma_top"
+APP_TARGET_PT_V3 = "pt_v3"
+APP_TARGET_PT_DMA_TOP_V3 = "pt_dma_top_v3"
 DEFAULT_RUN_TARGET = APP_TARGET_PT_DMA_TOP
 EXTENDED_SEEDS = [10, 110, 210]
 SOAK_RANDOM_CASES = 100
@@ -165,17 +167,27 @@ def normalize_target(target: str) -> str:
 		"pt-dma-top": APP_TARGET_PT_DMA_TOP,
 		"dma_top": APP_TARGET_PT_DMA_TOP,
 		"wrapper": APP_TARGET_PT_DMA_TOP,
+		"pt_v3": APP_TARGET_PT_V3,
+		"pt-v3": APP_TARGET_PT_V3,
+		"pt_dma_top_v3": APP_TARGET_PT_DMA_TOP_V3,
+		"pt-dma-top-v3": APP_TARGET_PT_DMA_TOP_V3,
+		"dma_top_v3": APP_TARGET_PT_DMA_TOP_V3,
+		"wrapper_v3": APP_TARGET_PT_DMA_TOP_V3,
 	}
 	try:
 		return alias_map[name]
 	except KeyError as exc:
-		raise SystemExit(f"unsupported target {target!r}; expected one of: pt, pt_dma_top") from exc
+		raise SystemExit(f"unsupported target {target!r}; expected one of: pt, pt_dma_top, pt_v3, pt_dma_top_v3") from exc
 
 
 def hdl_toplevel_for_target(target: str) -> str:
 	normalized_target = normalize_target(target)
 	if normalized_target == APP_TARGET_PT:
 		return "PT"
+	if normalized_target == APP_TARGET_PT_V3:
+		return "PT_V3"
+	if normalized_target == APP_TARGET_PT_DMA_TOP_V3:
+		return "PT_DMA_TOP_V3"
 	return "PT_DMA_TOP"
 
 
@@ -187,8 +199,8 @@ def config_suffix_for_target(target: str) -> str:
 def apply_target_to_config(config: RunConfig, target: str) -> RunConfig:
 	normalized_target = normalize_target(target)
 	default_toplevel = hdl_toplevel_for_target(normalized_target)
-	if config.hdl_toplevel == "PT_DMA_TOP":
-		if normalized_target != APP_TARGET_PT_DMA_TOP:
+	if config.hdl_toplevel in {"PT_DMA_TOP", "PT_DMA_TOP_V3"}:
+		if normalized_target not in {APP_TARGET_PT_DMA_TOP, APP_TARGET_PT_DMA_TOP_V3}:
 			raise SystemExit(f"suite {config.name!r} is wrapper-only and does not support --target {normalized_target}")
 		return config
 	if default_toplevel == config.hdl_toplevel:
@@ -436,8 +448,8 @@ def suite_configs(suite: str, seed_override: Optional[int], target: str) -> List
 		return [apply_target_to_config(config, normalized_target) for config in configs]
 
 	if suite == "axil":
-		if normalized_target != APP_TARGET_PT_DMA_TOP:
-			raise SystemExit("suite 'axil' is wrapper-only; use --target pt_dma_top")
+		if normalized_target not in {APP_TARGET_PT_DMA_TOP, APP_TARGET_PT_DMA_TOP_V3}:
+			raise SystemExit("suite 'axil' is wrapper-only; use --target pt_dma_top or pt_dma_top_v3")
 		return [
 			RunConfig(
 				name="axil_pt_dma_top_4x4",
@@ -460,8 +472,8 @@ def suite_configs(suite: str, seed_override: Optional[int], target: str) -> List
 		]
 
 	if suite == "axil_perf":
-		if normalized_target != APP_TARGET_PT_DMA_TOP:
-			raise SystemExit("suite 'axil_perf' is wrapper-only; use --target pt_dma_top")
+		if normalized_target not in {APP_TARGET_PT_DMA_TOP, APP_TARGET_PT_DMA_TOP_V3}:
+			raise SystemExit("suite 'axil_perf' is wrapper-only; use --target pt_dma_top or pt_dma_top_v3")
 		return [
 			RunConfig(
 				name="axil_perf_legacy_4x4",
