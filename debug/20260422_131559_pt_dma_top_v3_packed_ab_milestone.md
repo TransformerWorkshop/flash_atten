@@ -1,5 +1,7 @@
 # PT_DMA_TOP V3 Packed-AB Milestone
 
+- Status: superseded by `debug/20260422_144233_pt_dma_top_v3_packed_export_iteration.md`
+- Historical note: the performance and “packed export pending” statements below were accurate at this milestone, but are no longer the latest v3 state
 - Timestamp: `2026-04-22 13:15:59 +0800`
 - Branch: `codex-app`
 - Working base commit: `dd2db59`

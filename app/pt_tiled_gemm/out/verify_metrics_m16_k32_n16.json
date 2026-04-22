@@ -9,7 +9,7 @@
       "export_beats": 32,
       "export_req_count": 2,
       "matadd_count": 0,
-      "submission_mode": "shadow_delta",
+      "submission_mode": "legacy",
       "total_cycles": 159
     },
     "host_reduce_direct_tiled_matmul": {
@@ -21,7 +21,7 @@
       "export_beats": 32,
       "export_req_count": 2,
       "matadd_count": 0,
-      "submission_mode": "shadow_delta",
+      "submission_mode": "legacy",
       "total_cycles": 235
     },
     "host_reduce_load_then_matmul": {
@@ -33,7 +33,7 @@
       "export_beats": 32,
       "export_req_count": 2,
       "matadd_count": 0,
-      "submission_mode": "shadow_delta",
+      "submission_mode": "legacy",
       "total_cycles": 245
     },
     "pt_matadd_reduce": {
@@ -45,8 +45,14 @@
       "export_beats": 48,
       "export_req_count": 3,
       "matadd_count": 1,
-      "submission_mode": "shadow_delta",
+      "submission_mode": "legacy",
       "total_cycles": 391
+    }
+  },
+  "diagnostics": {
+    "pt_ce_md_block_breakdown": {
+      "reason": "PT_DMA_TOP only",
+      "status": "skipped"
     }
   },
   "metadata": {
@@ -57,7 +63,7 @@
       "m_tiles": 1,
       "n_dim": 16,
       "n_tiles": 1,
-      "submission_mode": "shadow_delta",
+      "submission_mode": "legacy",
       "target": "pt",
       "target_label": "PT"
     }
@@ -73,7 +79,7 @@
       "command_count": 2,
       "descriptor_push_count": 0,
       "status": "passed",
-      "submission_mode": "shadow_delta",
+      "submission_mode": "legacy",
       "total_cycles": 235
     },
     "numeric_host_reduce_pipelined": {
@@ -82,7 +88,7 @@
       "command_count": 2,
       "descriptor_push_count": 0,
       "status": "passed",
-      "submission_mode": "shadow_delta",
+      "submission_mode": "legacy",
       "total_cycles": 159
     },
     "numeric_pt_matadd_reduce_per_tensor": {
@@ -91,7 +97,7 @@
       "command_count": 3,
       "descriptor_push_count": 0,
       "status": "passed",
-      "submission_mode": "shadow_delta",
+      "submission_mode": "legacy",
       "total_cycles": 391
     }
   },

@@ -1,5 +1,7 @@
 # PT_DMA_TOP V3 Packed-AB Vertical Slice
 
+- Status: superseded by `debug/20260422_131559_pt_dma_top_v3_packed_ab_milestone.md`, then by `debug/20260422_144233_pt_dma_top_v3_packed_export_iteration.md`
+- Historical note: this file captures the first packed-`A/B` bring-up point only; current v3 status is materially better than what is recorded below
 - Timestamp: `2026-04-22 12:48:01 +0800`
 - Branch: `codex-app`
 - Base scaffold commit: `dab0343`

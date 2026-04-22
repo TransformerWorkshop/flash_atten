@@ -6,11 +6,11 @@
       "command_count": 4,
       "descriptor_push_count": 0,
       "dma_req_count": 8,
-      "export_beats": 64,
+      "export_beats": 16,
       "export_req_count": 4,
       "matadd_count": 0,
       "submission_mode": "legacy",
-      "total_cycles": 277
+      "total_cycles": 172
     },
     "host_reduce_direct_tiled_matmul": {
       "axil_writes_per_command": 0.0,
@@ -18,11 +18,11 @@
       "command_count": 4,
       "descriptor_push_count": 0,
       "dma_req_count": 8,
-      "export_beats": 64,
+      "export_beats": 16,
       "export_req_count": 4,
       "matadd_count": 0,
       "submission_mode": "legacy",
-      "total_cycles": 471
+      "total_cycles": 291
     },
     "host_reduce_load_then_matmul": {
       "axil_writes_per_command": 0.0,
@@ -30,11 +30,11 @@
       "command_count": 8,
       "descriptor_push_count": 0,
       "dma_req_count": 8,
-      "export_beats": 64,
+      "export_beats": 16,
       "export_req_count": 4,
       "matadd_count": 0,
       "submission_mode": "legacy",
-      "total_cycles": 491
+      "total_cycles": 311
     },
     "pt_matadd_reduce": {
       "axil_writes_per_command": 0.0,
@@ -42,11 +42,11 @@
       "command_count": 7,
       "descriptor_push_count": 0,
       "dma_req_count": 11,
-      "export_beats": 112,
+      "export_beats": 28,
       "export_req_count": 7,
       "matadd_count": 3,
       "submission_mode": "legacy",
-      "total_cycles": 939
+      "total_cycles": 732
     }
   },
   "diagnostics": {
@@ -64,8 +64,8 @@
       "n_dim": 16,
       "n_tiles": 1,
       "submission_mode": "legacy",
-      "target": "pt",
-      "target_label": "PT"
+      "target": "pt_v3",
+      "target_label": "PT_V3"
     }
   },
   "tests": {
@@ -80,7 +80,7 @@
       "descriptor_push_count": 0,
       "status": "passed",
       "submission_mode": "legacy",
-      "total_cycles": 471
+      "total_cycles": 291
     },
     "numeric_host_reduce_pipelined": {
       "axil_writes_per_command": 0.0,
@@ -89,7 +89,7 @@
       "descriptor_push_count": 0,
       "status": "passed",
       "submission_mode": "legacy",
-      "total_cycles": 277
+      "total_cycles": 172
     },
     "numeric_pt_matadd_reduce_per_tensor": {
       "axil_writes_per_command": 0.0,
@@ -98,7 +98,7 @@
       "descriptor_push_count": 0,
       "status": "passed",
       "submission_mode": "legacy",
-      "total_cycles": 939
+      "total_cycles": 732
     }
   },
   "unsupported_paths": {
