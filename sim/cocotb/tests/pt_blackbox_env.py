@@ -33,8 +33,10 @@ from tests.pt_model import (
 	PT_QTYPE_SYMMETRIC,
 	build_cfg_inst,
 	build_qcfg_header,
+	packed_word_count,
 	pack_resp,
 	qcfg_payload_count,
+	to_signed,
 	to_unsigned,
 )
 
@@ -150,6 +152,8 @@ class PTBlackBoxEnv:
 		self.x_dim = env_int("PT_X_DIM", 4)
 		self.y_dim = env_int("PT_Y_DIM", 4)
 		self.data_width = env_int("PT_DATA_WIDTH", 32)
+		self.elem_width = env_int("PT_ELEM_WIDTH", self.data_width)
+		self.pack_lanes = env_int("PT_PACK_LANES", 1)
 		self.a_base = env_int("PT_A_BASE", DEFAULT_A_BASE)
 		self.b_base = env_int("PT_B_BASE", DEFAULT_B_BASE)
 		self.a_bank_depth = env_int("PT_A_BANK_DEPTH", 16)
@@ -173,7 +177,16 @@ class PTBlackBoxEnv:
 		self.a_capacity_elems = self.a_bank_depth * self.x_dim * self.x_dim
 		self.b_capacity_elems = self.b_bank_depth * self.y_dim * self.y_dim
 		self.m_capacity_rows = self.m_bank_depth * self.x_dim
-		self.model = PTBlackBoxModel(self.x_dim, self.y_dim, self.a_bank_depth, self.b_bank_depth, self.data_width, self.lut_depth)
+		self.model = PTBlackBoxModel(
+			self.x_dim,
+			self.y_dim,
+			self.a_bank_depth,
+			self.b_bank_depth,
+			self.data_width,
+			self.lut_depth,
+			pack_lanes=self.pack_lanes,
+			elem_width=self.elem_width,
+		)
 		self.a_base_shadow = 0
 		self.b_base_shadow = 0
 		self.coverage = FunctionalCoverageRecorder(
@@ -225,20 +238,46 @@ class PTBlackBoxEnv:
 	def _pack_ab_beats(self, kind: str, matrix: Sequence[int], expectation: Optional[DmaLoadExpectation] = None) -> List[Tuple[int, int]]:
 		beats: List[Tuple[int, int]] = []
 		byte_mask = (1 << (self.data_width // 8)) - 1
+		def pack_word(values: Sequence[int]) -> int:
+			word = 0
+			for lane_idx, value in enumerate(values):
+				word |= to_unsigned(to_signed(int(value), self.data_width), self.elem_width) << (lane_idx * self.elem_width)
+			return word & 0xFFFF_FFFF
 		if kind == "A":
 			if expectation is not None:
 				k_dim = self.x_dim * expectation.k_tiles
 				m_dim = self.x_dim * expectation.m_tiles
 				assert len(matrix) == m_dim * k_dim
-				stream_words = [
-					int(matrix[((m_tile * self.x_dim) + row) * k_dim + col])
-					for m_tile in range(expectation.m_tiles)
-					for col in range(k_dim)
-					for row in range(self.x_dim)
-				]
+				if self.pack_lanes > 1:
+					stream_words = [
+						pack_word(
+							int(matrix[((m_tile * self.x_dim) + row) * k_dim + ((col_word * self.pack_lanes) + pack_idx)])
+							for pack_idx in range(self.pack_lanes)
+						)
+						for m_tile in range(expectation.m_tiles)
+						for col_word in range(packed_word_count(k_dim, self.pack_lanes))
+						for row in range(self.x_dim)
+					]
+				else:
+					stream_words = [
+						int(matrix[((m_tile * self.x_dim) + row) * k_dim + col])
+						for m_tile in range(expectation.m_tiles)
+						for col in range(k_dim)
+						for row in range(self.x_dim)
+					]
 			elif len(matrix) % self.x_dim == 0:
 				k_dim = len(matrix) // self.x_dim
-				stream_words = [int(matrix[row * k_dim + col]) for col in range(k_dim) for row in range(self.x_dim)]
+				if self.pack_lanes > 1:
+					stream_words = [
+						pack_word(
+							int(matrix[row * k_dim + ((col_word * self.pack_lanes) + pack_idx)])
+							for pack_idx in range(self.pack_lanes)
+						)
+						for col_word in range(packed_word_count(k_dim, self.pack_lanes))
+						for row in range(self.x_dim)
+					]
+				else:
+					stream_words = [int(matrix[row * k_dim + col]) for col in range(k_dim) for row in range(self.x_dim)]
 			else:
 				stream_words = [int(word) for word in matrix]
 			for start in range(0, len(stream_words), self.a_load_lanes):
@@ -255,12 +294,23 @@ class PTBlackBoxEnv:
 				k_dim = self.y_dim * expectation.k_tiles
 				n_dim = self.y_dim * expectation.n_tiles
 				assert len(matrix) == k_dim * n_dim
-				stream_words = [
-					int(matrix[row * n_dim + (n_tile * self.y_dim) + col])
-					for n_tile in range(expectation.n_tiles)
-					for row in range(k_dim)
-					for col in range(self.y_dim)
-				]
+				if self.pack_lanes > 1:
+					stream_words = [
+						pack_word(
+							int(matrix[((row_word * self.pack_lanes) + pack_idx) * n_dim + (n_tile * self.y_dim) + col])
+							for pack_idx in range(self.pack_lanes)
+						)
+						for n_tile in range(expectation.n_tiles)
+						for row_word in range(packed_word_count(k_dim, self.pack_lanes))
+						for col in range(self.y_dim)
+					]
+				else:
+					stream_words = [
+						int(matrix[row * n_dim + (n_tile * self.y_dim) + col])
+						for n_tile in range(expectation.n_tiles)
+						for row in range(k_dim)
+						for col in range(self.y_dim)
+					]
 			else:
 				stream_words = [int(word) for word in matrix]
 			for start in range(0, len(stream_words), self.b_load_lanes):
@@ -422,7 +472,16 @@ class PTBlackBoxEnv:
 		self.dma_stream_busy = False
 		self.export_busy = False
 		self._seen_long_backpressure = False
-		self.model = PTBlackBoxModel(self.x_dim, self.y_dim, self.a_bank_depth, self.b_bank_depth, self.data_width, self.lut_depth)
+		self.model = PTBlackBoxModel(
+			self.x_dim,
+			self.y_dim,
+			self.a_bank_depth,
+			self.b_bank_depth,
+			self.data_width,
+			self.lut_depth,
+			pack_lanes=self.pack_lanes,
+			elem_width=self.elem_width,
+		)
 		self.external_a_tiles.clear()
 		self.external_b_tiles.clear()
 		self.external_c_tiles.clear()

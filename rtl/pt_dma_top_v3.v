@@ -82,8 +82,10 @@ module PT_DMA_TOP_V3 #(
 	localparam integer CMD_TRACK_AW = (CMD_FIFO_DEPTH <= 1) ? 1 : $clog2(CMD_FIFO_DEPTH);
 	localparam integer LOAD_STREAM_LANES = (A_LOAD_LANES >= B_LOAD_LANES) ? A_LOAD_LANES : B_LOAD_LANES;
 	localparam integer LOAD_STREAM_STRB_W = LOAD_STREAM_LANES * DATA_WIDTH / 8;
-	localparam integer A_TILE_LEN = GEMM_X_DIM * GEMM_X_DIM;
-	localparam integer B_TILE_LEN = GEMM_Y_DIM * GEMM_Y_DIM;
+	localparam integer K_WORDS_PER_TILE = (PACK_LANES <= 1) ? GEMM_X_DIM : (GEMM_X_DIM / PACK_LANES);
+	localparam integer A_TILE_LEN = GEMM_X_DIM * K_WORDS_PER_TILE;
+	localparam integer B_TILE_LEN = GEMM_Y_DIM * K_WORDS_PER_TILE;
+	localparam integer C_TILE_LEN = GEMM_Y_DIM * GEMM_Y_DIM;
 
 	wire                       csr_desc_push_pulse;
 	wire                       csr_resp_pop_pulse;
@@ -233,7 +235,7 @@ module PT_DMA_TOP_V3 #(
 				end
 				`PT_OP_MATADD: begin
 					if (req_kind == `PT_DMA_KIND_C) begin
-						elems32 = B_TILE_LEN;
+						elems32 = C_TILE_LEN;
 					end
 				end
 				default: begin end

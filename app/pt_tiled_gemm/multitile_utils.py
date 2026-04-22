@@ -22,9 +22,11 @@ def command_fits(
 	max_encoded_elems: int,
 	x_dim: int,
 	y_dim: int,
+	pack_lanes: int = 1,
 ) -> bool:
-	a_elems = x_dim * x_dim * m_tiles * k_tiles
-	b_elems = y_dim * y_dim * k_tiles * n_tiles
+	k_words_per_tile = x_dim if pack_lanes <= 1 else (x_dim // pack_lanes)
+	a_elems = x_dim * k_words_per_tile * m_tiles * k_tiles
+	b_elems = y_dim * k_words_per_tile * k_tiles * n_tiles
 	return max(a_elems, b_elems) <= max_encoded_elems
 
 
@@ -54,6 +56,7 @@ def choose_partition_plan(
 	max_encoded_elems: int,
 	x_dim: int,
 	y_dim: int,
+	pack_lanes: int = 1,
 ) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
 	m_partitions = enumerate_partitions(m_tiles, valid_tile_counts)
 	n_partitions = enumerate_partitions(n_tiles, valid_tile_counts)
@@ -69,6 +72,7 @@ def choose_partition_plan(
 				max_encoded_elems=max_encoded_elems,
 				x_dim=x_dim,
 				y_dim=y_dim,
+				pack_lanes=pack_lanes,
 			)
 			for m_part, n_part, k_part in product(m_parts, n_parts, k_parts)
 		):

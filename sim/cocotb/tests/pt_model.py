@@ -55,6 +55,14 @@ def to_unsigned(value: int, bits: int) -> int:
 	return value & ((1 << bits) - 1)
 
 
+def packed_word_count(logical_elems: int, pack_lanes: int) -> int:
+	if pack_lanes <= 1:
+		return logical_elems
+	if logical_elems % pack_lanes:
+		raise ValueError(f"logical element count {logical_elems} is not divisible by pack_lanes={pack_lanes}")
+	return logical_elems // pack_lanes
+
+
 def pack_resp(err: bool, m_buf: int, ctrl_id: int) -> int:
 	return ((1 if err else 0) << 31) | ((m_buf & 0x1) << 30) | (ctrl_id & 0x3FFF_FFFF)
 
@@ -354,16 +362,35 @@ class LoadPlan:
 
 
 class PTBlackBoxModel:
-	def __init__(self, x_dim: int, y_dim: int, a_bank_depth: int = 8, b_bank_depth: int = 16, data_width: int = 32, lut_depth: int = 8):
+	def __init__(
+		self,
+		x_dim: int,
+		y_dim: int,
+		a_bank_depth: int = 8,
+		b_bank_depth: int = 16,
+		data_width: int = 32,
+		lut_depth: int = 8,
+		*,
+		pack_lanes: int = 1,
+		elem_width: int | None = None,
+	):
 		self.x_dim = x_dim
 		self.y_dim = y_dim
 		self.a_bank_depth = a_bank_depth
 		self.b_bank_depth = b_bank_depth
 		self.data_width = data_width
+		self.pack_lanes = pack_lanes
+		self.elem_width = data_width if elem_width is None else elem_width
 		self.lut_depth = lut_depth
 		self.max_dim = max(x_dim, y_dim)
-		self.a_tile_len = x_dim * x_dim
-		self.b_tile_len = y_dim * y_dim
+		if self.pack_lanes <= 0:
+			raise ValueError(f"pack_lanes must be > 0, got {self.pack_lanes}")
+		if (self.x_dim % self.pack_lanes) != 0:
+			raise ValueError(f"x_dim={self.x_dim} must be divisible by pack_lanes={self.pack_lanes}")
+		self.k_words_per_tile = self.x_dim // self.pack_lanes
+		self.a_tile_len = self.x_dim * self.k_words_per_tile
+		self.b_tile_len = self.y_dim * self.k_words_per_tile
+		self.c_tile_len = y_dim * y_dim
 		self.a_capacity = a_bank_depth * self.a_tile_len
 		self.b_capacity = b_bank_depth * self.b_tile_len
 		self.a_base = 0
@@ -535,6 +562,8 @@ class PTBlackBoxModel:
 
 		expected_a_len = self.a_tile_len * m_tiles * k_tiles
 		expected_b_len = self.b_tile_len * k_tiles * n_tiles
+		expected_a_scalar_len = (self.x_dim * m_tiles) * (self.x_dim * k_tiles)
+		expected_b_scalar_len = (self.x_dim * k_tiles) * (self.y_dim * n_tiles)
 		if self.x_dim != self.y_dim and ((m_tiles != PT_TILES_1) or (n_tiles != PT_TILES_1)):
 			return self._make_exec_error(ctrl_id, coverage_tags, "reject:multitile_requires_square")
 		k_dim = self.x_dim * k_tiles
@@ -556,7 +585,7 @@ class PTBlackBoxModel:
 				return self._make_exec_error(ctrl_id, coverage_tags, "reject:a_capacity")
 			a_alloc_next = next_ptr
 			a_matrix = self._get_external(external_a_tiles, ctrl_id, "A")
-			if len(a_matrix) != expected_a_len:
+			if len(a_matrix) != expected_a_scalar_len:
 				return self._make_exec_error(ctrl_id, coverage_tags, "reject:a_size_mismatch")
 			expected_dma.append(DmaLoadExpectation(ctrl_id, "A", m_tiles=m_tiles, n_tiles=n_tiles, k_tiles=k_tiles))
 		else:
@@ -571,13 +600,13 @@ class PTBlackBoxModel:
 				return self._make_exec_error(ctrl_id, coverage_tags, "reject:b_capacity")
 			b_alloc_next = next_ptr
 			b_matrix = self._get_external(external_b_tiles, ctrl_id, "B")
-			if len(b_matrix) != expected_b_len:
+			if len(b_matrix) != expected_b_scalar_len:
 				return self._make_exec_error(ctrl_id, coverage_tags, "reject:b_size_mismatch")
 			expected_dma.append(DmaLoadExpectation(ctrl_id, "B", m_tiles=m_tiles, n_tiles=n_tiles, k_tiles=k_tiles))
 		elif entry.b_is_c:
 			coverage_tags.extend(["cache:b_miss", "reuse:b_reload_after_c"])
 			b_matrix = self._get_external(external_b_tiles, ctrl_id, "B")
-			if len(b_matrix) != expected_b_len:
+			if len(b_matrix) != expected_b_scalar_len:
 				return self._make_exec_error(ctrl_id, coverage_tags, "reject:b_size_mismatch")
 			expected_dma.append(DmaLoadExpectation(ctrl_id, "B", m_tiles=m_tiles, n_tiles=n_tiles, k_tiles=k_tiles))
 		else:
@@ -588,7 +617,7 @@ class PTBlackBoxModel:
 		assert a_matrix is not None
 		assert b_matrix is not None
 		result_matrix = self._quantize_matrix(
-			matmul_row_major(a_matrix, b_matrix, m_dim, n_dim, k_dim, bits=self.data_width),
+			matmul_row_major(a_matrix, b_matrix, m_dim, n_dim, k_dim, bits=self.elem_width),
 			m_dim,
 			n_dim,
 		)
@@ -650,11 +679,11 @@ class PTBlackBoxModel:
 		b_alloc_next = self.b_alloc_next
 		if entry.b_valid and entry.b_is_c:
 			coverage_tags.append("cache:c_hit")
-			if entry.b_len != self.b_tile_len:
+			if entry.b_len != self.c_tile_len:
 				return self._make_exec_error(ctrl_id, coverage_tags, "reject:b_size_mismatch", b_is_c=True)
 		else:
 			coverage_tags.append("cache:c_miss")
-			b_base, next_ptr = self._alloc_base(self.b_alloc_next, self.b_capacity, self.y_dim, self.b_tile_len)
+			b_base, next_ptr = self._alloc_base(self.b_alloc_next, self.b_capacity, self.y_dim, self.c_tile_len)
 			if b_base is None:
 				return self._make_exec_error(ctrl_id, coverage_tags, "reject:b_capacity", b_is_c=True)
 			b_alloc_next = next_ptr
@@ -679,7 +708,7 @@ class PTBlackBoxModel:
 			a_base=0,
 			b_base=b_base,
 			a_len=0,
-			b_len=self.b_tile_len,
+			b_len=self.c_tile_len,
 			a_m_tiles=PT_TILES_1,
 			a_k_tiles=PT_TILES_1,
 			b_k_tiles=PT_TILES_1,
@@ -717,6 +746,8 @@ class PTBlackBoxModel:
 		load_m_tiles, load_n_tiles, load_k_tiles = load_shape
 		expected_a_size = self.a_tile_len * load_m_tiles * load_k_tiles
 		expected_b_size = self.b_tile_len * load_k_tiles * load_n_tiles
+		expected_a_scalar_len = (self.x_dim * load_m_tiles) * (self.x_dim * load_k_tiles)
+		expected_b_scalar_len = (self.x_dim * load_k_tiles) * (self.y_dim * load_n_tiles)
 		if (not (need_a or need_b)) or (need_a and a_size == 0) or (need_b and b_size == 0):
 			return self._make_load_error(ctrl_id, a_size, b_size, need_a, need_b, coverage_tags, "reject:illegal_load")
 		if need_a and a_size != expected_a_size:
@@ -734,7 +765,7 @@ class PTBlackBoxModel:
 
 		if need_a:
 			a_matrix = self._get_external(external_a_tiles, ctrl_id, "A")
-			if len(a_matrix) != a_size:
+			if len(a_matrix) != expected_a_scalar_len:
 				return self._make_load_error(ctrl_id, a_size, b_size, need_a, need_b, coverage_tags, "reject:a_size_mismatch")
 			if entry.a_valid:
 				coverage_tags.append("cache:a_hit")
@@ -751,7 +782,7 @@ class PTBlackBoxModel:
 
 		if need_b:
 			b_matrix = self._get_external(external_b_tiles, ctrl_id, "B")
-			if len(b_matrix) != b_size:
+			if len(b_matrix) != expected_b_scalar_len:
 				return self._make_load_error(ctrl_id, a_size, b_size, need_a, need_b, coverage_tags, "reject:b_size_mismatch")
 			if entry.b_valid:
 				if entry.b_is_c:

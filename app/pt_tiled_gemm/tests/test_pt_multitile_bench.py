@@ -146,6 +146,7 @@ async def test_pt_multitile_single_case(dut) -> None:
 	data_width = env_int("PT_DATA_WIDTH", 32)
 	export_lanes = env_int("PT_M_EXPORT_LANES", y_dim)
 	valid_tile_counts = tuple(int(item) for item in os.getenv("PT_MT_VALID_TILE_COUNTS", "1,2,4").split(",") if item.strip())
+	pack_lanes = env_int("PT_PACK_LANES", 1)
 
 	env = await create_env(dut)
 	try:
@@ -180,6 +181,7 @@ async def test_pt_multitile_single_case(dut) -> None:
 			max_encoded_elems=max_encoded_elems,
 			x_dim=x_dim,
 			y_dim=y_dim,
+			pack_lanes=pack_lanes,
 		)
 		schedule = build_command_schedule(m_parts=m_parts, n_parts=n_parts, k_parts=k_parts)
 		c_matrix = [0] * (m_dim * n_dim)
@@ -218,8 +220,8 @@ async def test_pt_multitile_single_case(dut) -> None:
 			env.register_external_matrix("A", ctrl_id, a_sub)
 			env.register_external_matrix("B", ctrl_id, b_sub)
 			load_inst = build_load_inst(
-				len(a_sub),
-				len(b_sub),
+				(len(a_sub) if pack_lanes <= 1 else (len(a_sub) // pack_lanes)),
+				(len(b_sub) if pack_lanes <= 1 else (len(b_sub) // pack_lanes)),
 				need_a=True,
 				need_b=True,
 				m_tiles=command.m_tiles,
@@ -228,8 +230,8 @@ async def test_pt_multitile_single_case(dut) -> None:
 			)
 			load_plan = env.plan_load(
 				ctrl_id,
-				len(a_sub),
-				len(b_sub),
+				(len(a_sub) if pack_lanes <= 1 else (len(a_sub) // pack_lanes)),
+				(len(b_sub) if pack_lanes <= 1 else (len(b_sub) // pack_lanes)),
 				need_a=True,
 				need_b=True,
 				reserved_lo=load_inst & 0x3F,

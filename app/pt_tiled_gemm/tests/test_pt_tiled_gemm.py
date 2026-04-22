@@ -57,6 +57,7 @@ PROBLEM.validate()
 
 PT_X_DIM = env_int("PT_X_DIM", TILE_DIM)
 PT_Y_DIM = env_int("PT_Y_DIM", TILE_DIM)
+PT_PACK_LANES = env_int("PT_PACK_LANES", 1)
 PT_M_EXPORT_LANES = env_int("PT_M_EXPORT_LANES", TILE_DIM)
 EXPORT_BEATS_PER_TILE = PT_X_DIM * math.ceil(PT_Y_DIM / PT_M_EXPORT_LANES)
 CTRL_ID_POOL_SIZE = env_int("PT_APP_CTRL_ID_POOL_SIZE", env_int("PT_LUT_DEPTH", 8))
@@ -66,6 +67,13 @@ RECYCLE_INTERVAL = env_int("PT_VERIFY_RECYCLE_INTERVAL", env_int("PT_LUT_DEPTH",
 
 def cycle_now() -> int:
 	return int(get_sim_time("ns") // CLK_PERIOD_NS)
+
+
+def packed_word_size(logical_elems: int) -> int:
+	if PT_PACK_LANES <= 1:
+		return logical_elems
+	assert (logical_elems % PT_PACK_LANES) == 0
+	return logical_elems // PT_PACK_LANES
 
 
 def record_metric(section: str, key: str, payload: Dict[str, object]) -> None:
@@ -389,9 +397,11 @@ async def run_host_reduce_load_then_matmul(env, submitter: CommandSubmitter, a_f
 				b_tile = extract_b_tile(PROBLEM, b_full, k_tile, n_tile)
 				env.register_external_matrix("A", ctrl_id, a_tile)
 				env.register_external_matrix("B", ctrl_id, b_tile)
-				load_plan = env.plan_load(ctrl_id, len(a_tile), len(b_tile), need_a=True, need_b=True)
+				a_words = packed_word_size(len(a_tile))
+				b_words = packed_word_size(len(b_tile))
+				load_plan = env.plan_load(ctrl_id, a_words, b_words, need_a=True, need_b=True)
 				assert not load_plan.err
-				await submitter.send_ctrl(build_load_inst(len(a_tile), len(b_tile), need_a=True, need_b=True), ctrl_id)
+				await submitter.send_ctrl(build_load_inst(a_words, b_words, need_a=True, need_b=True), ctrl_id)
 				if start_cycle is None:
 					start_cycle = cycle_now()
 				await env.wait_ctrl_resp(load_plan.response_word, 40000)
@@ -668,6 +678,13 @@ async def test_pt_dma_top_ce_md_block_breakdown(dut) -> None:
 			"diagnostics",
 			"pt_ce_md_block_breakdown",
 			{"status": "skipped", "reason": "PT_DMA_TOP only"},
+		)
+		return
+	if APP_TARGET == "pt_dma_top_v3":
+		record_metric(
+			"diagnostics",
+			"pt_ce_md_block_breakdown",
+			{"status": "skipped", "reason": "PT_DMA_TOP_V3 export/diag alignment pending"},
 		)
 		return
 

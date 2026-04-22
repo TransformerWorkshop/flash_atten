@@ -240,9 +240,10 @@ module PT_TOP_V3 #(
 		.malloc_serial_busy(malloc_serial_busy)
 	);
 
-	PT_MALLOC #(
+	PT_MALLOC_V3 #(
 		.GEMM_X_DIM   (GEMM_X_DIM),
 		.GEMM_Y_DIM   (GEMM_Y_DIM),
+		.PACK_LANES   (PACK_LANES),
 		.LUT_DEPTH    (LUT_DEPTH),
 		.A_BANK_DEPTH (A_BANK_DEPTH),
 		.B_BANK_DEPTH (B_BANK_DEPTH)
@@ -289,8 +290,10 @@ module PT_TOP_V3 #(
 		.serial_exec_busy(malloc_serial_busy)
 	);
 
-	PT_MD_V2 #(
+	PT_MD_V3 #(
 		.DATA_WIDTH   (DATA_WIDTH),
+		.ELEM_WIDTH   (ELEM_WIDTH),
+		.PACK_LANES   (PACK_LANES),
 		.GEMM_X_DIM   (GEMM_X_DIM),
 		.GEMM_Y_DIM   (GEMM_Y_DIM),
 		.DMA_BEATS_W  (DMA_BEATS_W),
@@ -409,8 +412,10 @@ module PT_TOP_V3 #(
 		.quant_inv_scale     (quant_inv_scale)
 	);
 
-	PT_CE_V2 #(
+	PT_CE_V3 #(
 		.DATA_WIDTH   (DATA_WIDTH),
+		.ELEM_WIDTH   (ELEM_WIDTH),
+		.PACK_LANES   (PACK_LANES),
 		.GEMM_X_DIM   (GEMM_X_DIM),
 		.GEMM_Y_DIM   (GEMM_Y_DIM),
 		.A_BANK_DEPTH (A_BANK_DEPTH),
@@ -538,8 +543,10 @@ module PT_TOP_V3 #(
 		.rd_exp_data(m_exp_rd_data)
 	);
 
-	GEMM #(
+	GEMM_V3 #(
 		.WIDTH        (DATA_WIDTH),
+		.ELEM_WIDTH   (ELEM_WIDTH),
+		.PACK_LANES   (PACK_LANES),
 		.X_DIM        (GEMM_X_DIM),
 		.Y_DIM        (GEMM_Y_DIM),
 		.OUTPUT_BY_ROW(1)
