@@ -38,6 +38,7 @@ from tests.pt_model import (
 	PT_QTYPE_SYMMETRIC,
 	build_cfg_inst,
 	build_qcfg_header,
+	pack_export_beats,
 	packed_word_count,
 	pack_resp,
 	qcfg_payload_count,
@@ -809,19 +810,14 @@ class PTDmaTopEnv:
 		return beats
 
 	def _pack_export_beats(self, matrix: Sequence[int]) -> List[Tuple[int, int]]:
-		beats: List[Tuple[int, int]] = []
-		byte_mask = (1 << (self.data_width // 8)) - 1
-		for row_start in range(0, len(matrix), self.y_dim):
-			row = list(matrix[row_start : row_start + self.y_dim])
-			for start in range(0, len(row), self.m_export_lanes):
-				chunk = row[start : start + self.m_export_lanes]
-				beat_data = 0
-				beat_strb = 0
-				for lane_idx, word in enumerate(chunk):
-					beat_data |= to_unsigned(int(word), self.data_width) << (lane_idx * self.data_width)
-					beat_strb |= byte_mask << (lane_idx * (self.data_width // 8))
-				beats.append((beat_data, beat_strb))
-		return beats
+		return pack_export_beats(
+			matrix,
+			y_dim=self.y_dim,
+			data_width=self.data_width,
+			m_export_lanes=self.m_export_lanes,
+			pack_lanes=self.pack_lanes,
+			elem_width=self.elem_width,
+		)
 
 	async def axil_write(self, addr: int, data: int, wstrb: int = 0xF, write_delay_cycles: int = 0) -> int:
 		self.axil_write_count += 1

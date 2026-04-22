@@ -63,6 +63,88 @@ def packed_word_count(logical_elems: int, pack_lanes: int) -> int:
 	return logical_elems // pack_lanes
 
 
+def export_beat_count(row_chunk_count: int, y_dim: int, m_export_lanes: int, pack_lanes: int) -> int:
+	if row_chunk_count < 0:
+		raise ValueError(f"row_chunk_count must be >= 0, got {row_chunk_count}")
+	if y_dim <= 0:
+		raise ValueError(f"y_dim must be > 0, got {y_dim}")
+	if m_export_lanes <= 0:
+		raise ValueError(f"m_export_lanes must be > 0, got {m_export_lanes}")
+	total_words = row_chunk_count * packed_word_count(y_dim, pack_lanes)
+	return 0 if total_words == 0 else ((total_words + m_export_lanes - 1) // m_export_lanes)
+
+
+def pack_export_beats(
+	matrix: Sequence[int],
+	*,
+	y_dim: int,
+	data_width: int,
+	m_export_lanes: int,
+	pack_lanes: int,
+	elem_width: int | None = None,
+) -> List[Tuple[int, int]]:
+	if y_dim <= 0:
+		raise ValueError(f"y_dim must be > 0, got {y_dim}")
+	if m_export_lanes <= 0:
+		raise ValueError(f"m_export_lanes must be > 0, got {m_export_lanes}")
+	if len(matrix) % y_dim:
+		raise ValueError(f"matrix length {len(matrix)} is not divisible by row width {y_dim}")
+	byte_mask = (1 << (data_width // 8)) - 1
+	exported_elem_width = data_width if elem_width is None else elem_width
+	beats: List[Tuple[int, int]] = []
+	if pack_lanes <= 1:
+		for row_start in range(0, len(matrix), y_dim):
+			row = list(matrix[row_start : row_start + y_dim])
+			for start in range(0, len(row), m_export_lanes):
+				chunk = row[start : start + m_export_lanes]
+				beat_data = 0
+				beat_strb = 0
+				for lane_idx, word in enumerate(chunk):
+					beat_data |= to_unsigned(int(word), data_width) << (lane_idx * data_width)
+					beat_strb |= byte_mask << (lane_idx * (data_width // 8))
+				beats.append((beat_data, beat_strb))
+		return beats
+
+	packed_words_per_row = packed_word_count(y_dim, pack_lanes)
+	if (m_export_lanes % packed_words_per_row) != 0:
+		raise ValueError(
+			f"m_export_lanes={m_export_lanes} must be divisible by packed_words_per_row={packed_words_per_row}"
+		)
+	rows_per_beat = m_export_lanes // packed_words_per_row
+	if rows_per_beat <= 0:
+		raise ValueError(
+			f"rows_per_beat must be > 0, got {rows_per_beat} for export_lanes={m_export_lanes}"
+		)
+
+	def pack_word(values: Sequence[int]) -> int:
+		word = 0
+		for lane_idx, value in enumerate(values):
+			word |= to_unsigned(to_signed(int(value), data_width), exported_elem_width) << (
+				lane_idx * exported_elem_width
+			)
+		return word & ((1 << data_width) - 1)
+
+	row_words = [
+		[
+			pack_word(row[word_start : word_start + pack_lanes])
+			for word_start in range(0, y_dim, pack_lanes)
+		]
+		for row in (list(matrix[row_start : row_start + y_dim]) for row_start in range(0, len(matrix), y_dim))
+	]
+
+	for group_start in range(0, len(row_words), rows_per_beat):
+		beat_data = 0
+		beat_strb = 0
+		beat_word_idx = 0
+		for row_words_in_group in row_words[group_start : group_start + rows_per_beat]:
+			for packed_word in row_words_in_group:
+				beat_data |= to_unsigned(int(packed_word), data_width) << (beat_word_idx * data_width)
+				beat_strb |= byte_mask << (beat_word_idx * (data_width // 8))
+				beat_word_idx += 1
+		beats.append((beat_data, beat_strb))
+	return beats
+
+
 def pack_resp(err: bool, m_buf: int, ctrl_id: int) -> int:
 	return ((1 if err else 0) << 31) | ((m_buf & 0x1) << 30) | (ctrl_id & 0x3FFF_FFFF)
 

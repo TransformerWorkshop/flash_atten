@@ -18,7 +18,7 @@ if str(COCOTB_ROOT) not in sys.path:
 from app.pt_tiled_gemm import TILE_DIM, app_target_label, normalize_app_target
 from app.pt_tiled_gemm.multitile_utils import build_command_schedule, choose_partition_plan
 from app.pt_tiled_gemm.submission import CommandSubmitter, normalize_submission_mode
-from tests.pt_model import build_load_inst, build_matmul_inst, matmul_row_major, to_unsigned
+from tests.pt_model import build_load_inst, build_matmul_inst, export_beat_count, matmul_row_major, to_unsigned
 
 APP_TARGET = normalize_app_target(os.getenv("PT_APP_TARGET", "pt"))
 SUBMISSION_MODE = normalize_submission_mode(os.getenv("PT_APP_SUBMISSION_MODE", "legacy"))
@@ -391,7 +391,10 @@ async def test_pt_multitile_single_case(dut) -> None:
 		ops = 2 * macs
 		total_cycles = done_cycle - first_accept_cycle
 		resp_cycles = last_resp_cycle - first_accept_cycle
-		export_beats = sum((command.m_tiles * x_dim) * ((command.n_tiles * y_dim + export_lanes - 1) // export_lanes) for command in schedule)
+		export_beats = sum(
+			export_beat_count(command.m_tiles * command.n_tiles * x_dim, y_dim, export_lanes, pack_lanes)
+			for command in schedule
+		)
 		perf_counters = await env.read_perf_counters() if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters") else None
 		if perf_counters is not None and perf_counter_base is not None:
 			perf_counters = perf_counters.delta(perf_counter_base)

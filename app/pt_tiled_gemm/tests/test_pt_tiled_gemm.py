@@ -29,6 +29,7 @@ from tests.pt_model import (
 	build_matadd_inst,
 	build_matmul_inst,
 	build_mwin_off,
+	export_beat_count,
 	matmul_row_major,
 	to_unsigned,
 )
@@ -59,7 +60,7 @@ PT_X_DIM = env_int("PT_X_DIM", TILE_DIM)
 PT_Y_DIM = env_int("PT_Y_DIM", TILE_DIM)
 PT_PACK_LANES = env_int("PT_PACK_LANES", 1)
 PT_M_EXPORT_LANES = env_int("PT_M_EXPORT_LANES", TILE_DIM)
-EXPORT_BEATS_PER_TILE = PT_X_DIM * math.ceil(PT_Y_DIM / PT_M_EXPORT_LANES)
+EXPORT_BEATS_PER_TILE = export_beat_count(PT_X_DIM, PT_Y_DIM, PT_M_EXPORT_LANES, PT_PACK_LANES)
 CTRL_ID_POOL_SIZE = env_int("PT_APP_CTRL_ID_POOL_SIZE", env_int("PT_LUT_DEPTH", 8))
 CTRL_ID_POOL_BASE = env_int("PT_APP_CTRL_ID_BASE", 0x500)
 RECYCLE_INTERVAL = env_int("PT_VERIFY_RECYCLE_INTERVAL", env_int("PT_LUT_DEPTH", 8))

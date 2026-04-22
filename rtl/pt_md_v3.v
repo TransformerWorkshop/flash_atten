@@ -116,12 +116,13 @@ module PT_MD_V3 #(
 	localparam integer K_WORDS_PER_TILE = (PACK_LANES <= 1) ? GEMM_X_DIM : (GEMM_X_DIM / PACK_LANES);
 	localparam integer A_LOAD_CHUNKS_PER_COL = (GEMM_X_DIM + A_LOAD_LANES - 1) / A_LOAD_LANES;
 	localparam integer B_LOAD_CHUNKS_PER_ROW = (GEMM_Y_DIM + B_LOAD_LANES - 1) / B_LOAD_LANES;
-	localparam integer EXP_CHUNKS_PER_ROW = (GEMM_Y_DIM + M_EXPORT_LANES - 1) / M_EXPORT_LANES;
-	localparam integer EXP_CHUNK_W = (EXP_CHUNKS_PER_ROW <= 1) ? 1 : $clog2(EXP_CHUNKS_PER_ROW);
-	localparam integer EXP_BEATS = GEMM_X_DIM * EXP_CHUNKS_PER_ROW;
+	localparam integer EXP_PACKED_WORDS_PER_ROW = (PACK_LANES <= 1) ? GEMM_Y_DIM : (GEMM_Y_DIM / PACK_LANES);
+	localparam integer EXP_ROWS_PER_BEAT = (PACK_LANES <= 1) ? (M_EXPORT_LANES / GEMM_Y_DIM) :
+	                                       (M_EXPORT_LANES / EXP_PACKED_WORDS_PER_ROW);
+	localparam integer EXP_ROW_FILL_W = (EXP_ROWS_PER_BEAT <= 1) ? 1 : $clog2(EXP_ROWS_PER_BEAT + 1);
 	localparam [31:0] A_LOAD_LANES_U32 = A_LOAD_LANES;
 	localparam [31:0] B_LOAD_LANES_U32 = B_LOAD_LANES;
-	localparam [EXP_CHUNK_W:0] EXP_CHUNKS_PER_ROW_W = exp_chunk_count_trunc(EXP_CHUNKS_PER_ROW);
+	localparam [31:0] EXP_ROWS_PER_BEAT_U32 = EXP_ROWS_PER_BEAT;
 	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_CFG          = 2'd0;
 	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_QCFG_HDR     = 2'd1;
 	localparam [`PT_MEM_KIND_W-1:0] MEM_KIND_QCFG_PAYLOAD = 2'd2;
@@ -162,10 +163,21 @@ module PT_MD_V3 #(
 		end
 	endfunction
 
-	function [EXP_CHUNK_W:0] exp_chunk_count_trunc;
-		input integer value;
+	function [EXP_PACKED_WORDS_PER_ROW*DATA_WIDTH-1:0] pack_export_row_words;
+		input [GEMM_Y_DIM*DATA_WIDTH-1:0] row_data;
+		integer word_idx;
+		integer lane_idx;
+		reg [DATA_WIDTH-1:0] packed_word;
 		begin
-			exp_chunk_count_trunc = value[EXP_CHUNK_W:0];
+			pack_export_row_words = {EXP_PACKED_WORDS_PER_ROW*DATA_WIDTH{1'b0}};
+			for (word_idx = 0; word_idx < EXP_PACKED_WORDS_PER_ROW; word_idx = word_idx + 1) begin
+				packed_word = {DATA_WIDTH{1'b0}};
+				for (lane_idx = 0; lane_idx < PACK_LANES; lane_idx = lane_idx + 1) begin
+					packed_word[(lane_idx * ELEM_WIDTH) +: ELEM_WIDTH] =
+						row_data[((word_idx * PACK_LANES) + lane_idx) * DATA_WIDTH +: ELEM_WIDTH];
+				end
+				pack_export_row_words[word_idx*DATA_WIDTH +: DATA_WIDTH] = packed_word;
+			end
 		end
 	endfunction
 
@@ -195,6 +207,12 @@ module PT_MD_V3 #(
 			end
 			if ((GEMM_Y_DIM % M_EXPORT_LANES) != 0) begin
 				$fatal(1, "PT_MD_V2 currently requires GEMM_Y_DIM %% M_EXPORT_LANES == 0, got Y=%0d lanes=%0d", GEMM_Y_DIM, M_EXPORT_LANES);
+			end
+			if ((PACK_LANES > 1) && ((GEMM_Y_DIM % PACK_LANES) != 0)) begin
+				$fatal(1, "PT_MD_V3 requires GEMM_Y_DIM %% PACK_LANES == 0 for packed export, got Y=%0d lanes=%0d", GEMM_Y_DIM, PACK_LANES);
+			end
+			if ((M_EXPORT_LANES % EXP_PACKED_WORDS_PER_ROW) != 0) begin
+				$fatal(1, "PT_MD_V3 requires M_EXPORT_LANES %% EXP_PACKED_WORDS_PER_ROW == 0, got export=%0d packed_row=%0d", M_EXPORT_LANES, EXP_PACKED_WORDS_PER_ROW);
 			end
 		end
 	`endif
@@ -354,10 +372,11 @@ module PT_MD_V3 #(
 	reg exp_req_buf_r, exp_active_buf_r;
 	reg [29:0] exp_req_id_r, exp_active_id_r;
 	reg [`PT_SIZE_W-1:0] exp_req_row_chunk_count_r, exp_active_row_chunk_count_r;
-	reg [M_AW-1:0] exp_row_idx_r, exp_fetch_row_idx_r;
-	reg [EXP_CHUNK_W-1:0] exp_chunk_idx_r;
-	reg [GEMM_Y_DIM*DATA_WIDTH-1:0] exp_row_data_r;
-	reg exp_row_valid_r, exp_row_fetch_pending_r;
+	reg [M_AW-1:0] exp_next_row_idx_r, exp_fetch_row_idx_r;
+	reg [EXP_ROW_FILL_W-1:0] exp_fill_count_r;
+	reg [M_EXPORT_LANES*DATA_WIDTH-1:0] exp_beat_data_r;
+	reg [M_EXPORT_LANES*DATA_WIDTH/8-1:0] exp_beat_strb_r;
+	reg exp_beat_valid_r, exp_beat_last_r, exp_row_fetch_pending_r;
 
 	wire m_buf0_free = (m_buf_state0_r == MBUF_FREE);
 	wire m_buf1_free = (m_buf_state1_r == MBUF_FREE);
@@ -367,19 +386,31 @@ module PT_MD_V3 #(
 	wire exp_pick_buf = (m_buf0_ready && m_buf1_ready) ? next_wr_buf_r : (m_buf1_ready ? 1'b1 : 1'b0);
 	wire [29:0] exp_pick_id = exp_pick_buf ? m_buf_id1_r : m_buf_id0_r;
 	wire [`PT_SIZE_W-1:0] exp_pick_row_chunks = exp_pick_buf ? m_buf1_row_chunk_count_r : m_buf0_row_chunk_count_r;
-	wire [EXP_CHUNK_W:0] exp_chunk_limit = exp_chunk_idx_r + 1'b1;
-	wire exp_last_chunk = (exp_chunk_limit >= EXP_CHUNKS_PER_ROW_W);
-	wire [31:0] exp_row_idx_u32 = {{(32-M_AW){1'b0}}, exp_row_idx_r};
+	wire [31:0] exp_next_row_idx_u32 = {{(32-M_AW){1'b0}}, exp_next_row_idx_r};
+	wire [31:0] exp_fetch_row_idx_u32 = {{(32-M_AW){1'b0}}, exp_fetch_row_idx_r};
 	wire [31:0] exp_active_row_chunks_u32 = {{(32-`PT_SIZE_W){1'b0}}, exp_active_row_chunk_count_r};
 	wire [31:0] exp_req_row_chunk_count_u32 = {{(32-`PT_SIZE_W){1'b0}}, exp_req_row_chunk_count_r};
-	wire exp_last_beat = exp_row_valid_r && (exp_row_idx_u32 == (exp_active_row_chunks_u32 - 1'b1)) && exp_last_chunk;
-	wire exp_fire = (exp_state_r == EXP_STREAM) && exp_row_valid_r && m_axis_tready;
-	wire exp_prime_req = (exp_state_r == EXP_STREAM) && !exp_row_valid_r && !exp_row_fetch_pending_r;
-	wire exp_prefetch_req = (exp_state_r == EXP_STREAM) && exp_row_valid_r && exp_fire &&
-	                        exp_last_chunk && (exp_row_idx_u32 != (exp_active_row_chunks_u32 - 1'b1));
-	wire exp_row_req = exp_prime_req || exp_prefetch_req;
-	wire [M_AW-1:0] exp_req_row_addr = exp_prime_req ? exp_row_idx_r : (exp_row_idx_r + 1'b1);
-	wire [31:0] exp_req_beats_u32 = exp_req_row_chunk_count_u32 * EXP_CHUNKS_PER_ROW;
+	wire [31:0] exp_req_beats_u32 =
+		(exp_req_row_chunk_count_u32 == 0) ? 32'd0 :
+		((exp_req_row_chunk_count_u32 + EXP_ROWS_PER_BEAT_U32 - 1'b1) / EXP_ROWS_PER_BEAT_U32);
+	wire exp_fire = (exp_state_r == EXP_STREAM) && exp_beat_valid_r && m_axis_tready;
+	wire exp_last_beat = exp_fire && exp_beat_last_r;
+	wire [EXP_PACKED_WORDS_PER_ROW*DATA_WIDTH-1:0] exp_packed_row_data = pack_export_row_words(exp_rd_data);
+	wire [EXP_ROW_FILL_W:0] exp_fill_count_next = exp_fill_count_r + 1'b1;
+	wire exp_capture_last_row = (exp_fetch_row_idx_u32 == (exp_active_row_chunks_u32 - 1'b1));
+	wire exp_capture_group_done =
+		(exp_fill_count_next >= EXP_ROWS_PER_BEAT_U32[EXP_ROW_FILL_W:0]) || exp_capture_last_row;
+	wire exp_prime_req = (exp_state_r == EXP_STREAM) &&
+	                    !exp_beat_valid_r &&
+	                    !exp_row_fetch_pending_r &&
+	                    (exp_next_row_idx_u32 < exp_active_row_chunks_u32);
+	wire exp_chain_req = (exp_state_r == EXP_STREAM) &&
+	                    !exp_beat_valid_r &&
+	                    exp_row_fetch_pending_r &&
+	                    !exp_capture_group_done &&
+	                    ((exp_fetch_row_idx_u32 + 1'b1) < exp_active_row_chunks_u32);
+	wire exp_row_req = exp_prime_req || exp_chain_req;
+	wire [M_AW-1:0] exp_req_row_addr = exp_chain_req ? (exp_fetch_row_idx_r + 1'b1) : exp_next_row_idx_r;
 
 	always @(*) begin
 		fill_a_row_base_int = fill_a_row_base;
@@ -399,22 +430,10 @@ module PT_MD_V3 #(
 	assign exp_rd_en   = exp_row_req;
 	assign exp_rd_buf  = exp_active_buf_r;
 	assign exp_rd_addr = exp_req_row_addr;
-	assign m_axis_tvalid = (exp_state_r == EXP_STREAM) && exp_row_valid_r;
-	generate
-		genvar ei;
-		for (ei = 0; ei < M_EXPORT_LANES; ei = ei + 1) begin : gen_export_pack
-			wire lane_valid = ((exp_chunk_idx_r * M_EXPORT_LANES) + ei) < GEMM_Y_DIM;
-			assign m_axis_tdata[(ei+1)*DATA_WIDTH-1:ei*DATA_WIDTH] =
-				((exp_state_r == EXP_STREAM) && exp_row_valid_r && lane_valid) ?
-				exp_row_data_r[((exp_chunk_idx_r * M_EXPORT_LANES) + ei)*DATA_WIDTH +: DATA_WIDTH] :
-				{DATA_WIDTH{1'b0}};
-			assign m_axis_tstrb[(ei+1)*(DATA_WIDTH/8)-1:ei*(DATA_WIDTH/8)] =
-				((exp_state_r == EXP_STREAM) && exp_row_valid_r && lane_valid) ?
-				{(DATA_WIDTH/8){1'b1}} :
-				{(DATA_WIDTH/8){1'b0}};
-		end
-	endgenerate
-	assign m_axis_tlast  = exp_last_beat;
+	assign m_axis_tvalid = (exp_state_r == EXP_STREAM) && exp_beat_valid_r;
+	assign m_axis_tdata  = exp_beat_data_r;
+	assign m_axis_tstrb  = exp_beat_strb_r;
+	assign m_axis_tlast  = exp_beat_valid_r && exp_beat_last_r;
 	assign m_axis_tkeep  = 1'b1;
 	assign m_axis_tid    = 1'b0;
 	assign m_axis_tdest  = 1'b0;
@@ -503,11 +522,13 @@ module PT_MD_V3 #(
 			exp_active_buf_r          <= 1'b0;
 			exp_active_id_r           <= 30'd0;
 			exp_active_row_chunk_count_r <= {`PT_SIZE_W{1'b0}};
-			exp_row_idx_r             <= {M_AW{1'b0}};
+			exp_next_row_idx_r        <= {M_AW{1'b0}};
 			exp_fetch_row_idx_r       <= {M_AW{1'b0}};
-			exp_chunk_idx_r           <= {EXP_CHUNK_W{1'b0}};
-			exp_row_data_r            <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
-			exp_row_valid_r           <= 1'b0;
+			exp_fill_count_r          <= {EXP_ROW_FILL_W{1'b0}};
+			exp_beat_data_r           <= {M_EXPORT_LANES*DATA_WIDTH{1'b0}};
+			exp_beat_strb_r           <= {M_EXPORT_LANES*DATA_WIDTH/8{1'b0}};
+			exp_beat_valid_r          <= 1'b0;
+			exp_beat_last_r           <= 1'b0;
 			exp_row_fetch_pending_r   <= 1'b0;
 		end else if (clear) begin
 			md_cmd_resp_valid         <= 1'b0;
@@ -564,11 +585,13 @@ module PT_MD_V3 #(
 			exp_active_buf_r          <= 1'b0;
 			exp_active_id_r           <= 30'd0;
 			exp_active_row_chunk_count_r <= {`PT_SIZE_W{1'b0}};
-			exp_row_idx_r             <= {M_AW{1'b0}};
+			exp_next_row_idx_r        <= {M_AW{1'b0}};
 			exp_fetch_row_idx_r       <= {M_AW{1'b0}};
-			exp_chunk_idx_r           <= {EXP_CHUNK_W{1'b0}};
-			exp_row_data_r            <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
-			exp_row_valid_r           <= 1'b0;
+			exp_fill_count_r          <= {EXP_ROW_FILL_W{1'b0}};
+			exp_beat_data_r           <= {M_EXPORT_LANES*DATA_WIDTH{1'b0}};
+			exp_beat_strb_r           <= {M_EXPORT_LANES*DATA_WIDTH/8{1'b0}};
+			exp_beat_valid_r          <= 1'b0;
+			exp_beat_last_r           <= 1'b0;
 			exp_row_fetch_pending_r   <= 1'b0;
 		end else begin
 			md_cmd_resp_valid   <= 1'b0;
@@ -747,11 +770,22 @@ module PT_MD_V3 #(
 			end
 
 			if (exp_row_fetch_pending_r) begin
-				exp_row_data_r          <= exp_rd_data;
-				exp_row_valid_r         <= 1'b1;
-				exp_row_fetch_pending_r <= 1'b0;
-				exp_row_idx_r           <= exp_fetch_row_idx_r;
-				exp_chunk_idx_r         <= {EXP_CHUNK_W{1'b0}};
+				exp_row_fetch_pending_r <= exp_chain_req;
+				exp_next_row_idx_r      <= exp_fetch_row_idx_r + 1'b1;
+				if (exp_chain_req) begin
+					exp_fetch_row_idx_r <= exp_fetch_row_idx_r + 1'b1;
+				end
+				for (fi = 0; fi < EXP_PACKED_WORDS_PER_ROW; fi = fi + 1) begin
+					exp_beat_data_r[((exp_fill_count_r * EXP_PACKED_WORDS_PER_ROW) + fi)*DATA_WIDTH +: DATA_WIDTH] <=
+						exp_packed_row_data[fi*DATA_WIDTH +: DATA_WIDTH];
+					exp_beat_strb_r[((exp_fill_count_r * EXP_PACKED_WORDS_PER_ROW) + fi)*(DATA_WIDTH/8) +: (DATA_WIDTH/8)] <=
+						{(DATA_WIDTH/8){1'b1}};
+				end
+				exp_fill_count_r <= exp_fill_count_next[EXP_ROW_FILL_W-1:0];
+				if (exp_capture_group_done) begin
+					exp_beat_valid_r <= 1'b1;
+					exp_beat_last_r  <= exp_capture_last_row;
+				end
 			end
 
 			case (exp_state_r)
@@ -767,10 +801,12 @@ module PT_MD_V3 #(
 						exp_active_buf_r        <= exp_req_buf_r;
 						exp_active_id_r         <= exp_req_id_r;
 						exp_active_row_chunk_count_r <= exp_req_row_chunk_count_r;
-						exp_row_idx_r           <= {M_AW{1'b0}};
-						exp_chunk_idx_r         <= {EXP_CHUNK_W{1'b0}};
-						exp_row_data_r          <= {GEMM_Y_DIM*DATA_WIDTH{1'b0}};
-						exp_row_valid_r         <= 1'b0;
+						exp_next_row_idx_r      <= {M_AW{1'b0}};
+						exp_fill_count_r        <= {EXP_ROW_FILL_W{1'b0}};
+						exp_beat_data_r         <= {M_EXPORT_LANES*DATA_WIDTH{1'b0}};
+						exp_beat_strb_r         <= {M_EXPORT_LANES*DATA_WIDTH/8{1'b0}};
+						exp_beat_valid_r        <= 1'b0;
+						exp_beat_last_r         <= 1'b0;
 						exp_row_fetch_pending_r <= 1'b0;
 						exp_fetch_row_idx_r     <= {M_AW{1'b0}};
 						if (exp_req_buf_r) begin
@@ -785,26 +821,25 @@ module PT_MD_V3 #(
 						exp_row_fetch_pending_r <= 1'b1;
 						exp_fetch_row_idx_r     <= exp_req_row_addr;
 					end else if (exp_fire) begin
-						if (exp_last_beat) begin
-							exp_row_valid_r <= 1'b0;
-						end else if (exp_last_chunk) begin
-							if (exp_prefetch_req) begin
-								exp_row_valid_r         <= 1'b0;
-								exp_row_fetch_pending_r <= 1'b1;
-								exp_fetch_row_idx_r     <= exp_req_row_addr;
-							end else begin
-								exp_row_valid_r <= 1'b0;
-								exp_chunk_idx_r <= {EXP_CHUNK_W{1'b0}};
-							end
+						exp_beat_valid_r <= 1'b0;
+						if (!exp_beat_last_r) begin
+							exp_beat_data_r  <= {M_EXPORT_LANES*DATA_WIDTH{1'b0}};
+							exp_beat_strb_r  <= {M_EXPORT_LANES*DATA_WIDTH/8{1'b0}};
+							exp_fill_count_r <= {EXP_ROW_FILL_W{1'b0}};
+							exp_beat_last_r  <= 1'b0;
 						end else begin
-							exp_chunk_idx_r <= exp_chunk_idx_r + 1'b1;
+							exp_beat_last_r <= 1'b0;
 						end
 					end
 				end
 				EXP_WAIT_DONE: begin
 					if (m_dma_done || m_dma_error) begin
-						exp_row_valid_r         <= 1'b0;
+						exp_beat_valid_r        <= 1'b0;
+						exp_beat_last_r         <= 1'b0;
 						exp_row_fetch_pending_r <= 1'b0;
+						exp_fill_count_r        <= {EXP_ROW_FILL_W{1'b0}};
+						exp_beat_data_r         <= {M_EXPORT_LANES*DATA_WIDTH{1'b0}};
+						exp_beat_strb_r         <= {M_EXPORT_LANES*DATA_WIDTH/8{1'b0}};
 						if (exp_active_buf_r) begin
 							m_buf_state1_r <= MBUF_FREE;
 						end else begin
