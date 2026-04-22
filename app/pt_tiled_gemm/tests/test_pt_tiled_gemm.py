@@ -21,6 +21,10 @@ from app.pt_tiled_gemm import ProblemSpec, TILE_DIM, app_target_label, normalize
 from app.pt_tiled_gemm.submission import CommandSubmitter, normalize_submission_mode
 from tests.pt_model import (
 	PT_SCALE_FULL,
+	PT_TILES_1,
+	PT_TILES_2,
+	DMA_KIND_A,
+	DMA_KIND_B,
 	build_load_inst,
 	build_matadd_inst,
 	build_matmul_inst,
@@ -182,6 +186,26 @@ def reduce_partials(partials: List[List[int]]) -> List[int]:
 			total += int(partial[elem_idx])
 		result.append(to_unsigned(total, 32))
 	return result
+
+
+def make_perf_a_matrix(x_dim: int, m_tiles: int, k_tiles: int) -> List[int]:
+	m_dim = x_dim * m_tiles
+	k_dim = x_dim * k_tiles
+	return [
+		((row * 3) + (col % x_dim) + (row // x_dim) * 5 + (col // x_dim) * 7 + 1)
+		for row in range(m_dim)
+		for col in range(k_dim)
+	]
+
+
+def make_perf_b_matrix(y_dim: int, k_tiles: int, n_tiles: int) -> List[int]:
+	k_dim = y_dim * k_tiles
+	n_dim = y_dim * n_tiles
+	return [
+		((col * 2) + (row % y_dim) + (col // y_dim) * 4 + (row // y_dim) * 6 + 1)
+		for row in range(k_dim)
+		for col in range(n_dim)
+	]
 
 
 async def run_matmul_tile(env, submitter: CommandSubmitter, ctrl_id: int, a_tile: List[int], b_tile: List[int]) -> Tuple[List[int], int, int]:
@@ -633,5 +657,165 @@ async def test_algorithm_compare_reduction_strategies(dut) -> None:
 		assert direct["total_cycles"] >= pipelined["total_cycles"]
 		winner = pipelined["name"] if pipelined["total_cycles"] < direct["total_cycles"] else direct["name"]
 		record_metric("tests", "algorithm_compare_reduction_strategies", {"status": "passed", "winner": winner})
+	finally:
+		env.shutdown()
+
+
+@cocotb.test()
+async def test_pt_dma_top_ce_md_block_breakdown(dut) -> None:
+	if APP_TARGET != "pt_dma_top":
+		record_metric(
+			"diagnostics",
+			"pt_ce_md_block_breakdown",
+			{"status": "skipped", "reason": "PT_DMA_TOP only"},
+		)
+		return
+
+	env = await create_env(dut)
+	try:
+		await setup_bases_and_passthrough_qcfg(env)
+
+		cases = [
+			{
+				"name": "m1_n1_k2",
+				"ctrl_id": 0xF100,
+				"m_tiles": PT_TILES_1,
+				"n_tiles": PT_TILES_1,
+				"k_tiles": PT_TILES_2,
+			},
+			{
+				"name": "m2_n2_k1",
+				"ctrl_id": 0xF200,
+				"m_tiles": PT_TILES_2,
+				"n_tiles": PT_TILES_2,
+				"k_tiles": PT_TILES_1,
+			},
+		]
+
+		results: Dict[str, object] = {}
+		for case in cases:
+			ctrl_id = case["ctrl_id"]
+			m_tiles = case["m_tiles"]
+			n_tiles = case["n_tiles"]
+			k_tiles = case["k_tiles"]
+			inst = build_matmul_inst(m_tiles, n_tiles, k_tiles)
+			env.register_external_matrix("A", ctrl_id, make_perf_a_matrix(env.x_dim, m_tiles, k_tiles))
+			env.register_external_matrix("B", ctrl_id, make_perf_b_matrix(env.y_dim, k_tiles, n_tiles))
+
+			trace = await env.send_desc_command_timed(
+				inst,
+				ctrl_id,
+				a_addr=0x1000_1000 + ((ctrl_id & 0xFF) << 8),
+				b_addr=0x2000_1000 + ((ctrl_id & 0xFF) << 8),
+				m_addr=0x4000_1000 + ((ctrl_id & 0xFF) << 8),
+				mode="compact",
+			)
+			plan = env.plan_matmul(ctrl_id, m_scale=m_tiles, n_scale=n_tiles, k_scale=k_tiles)
+
+			accept = await env.wait_pt_ctrl_accept(ctrl_id, after_cycle=trace.ctrl_write_start_cycle)
+			malloc_issue = await env.wait_malloc_issue(ctrl_id, after_cycle=accept.cycle)
+
+			fill_req_a = await env.wait_fill_req(ctrl_id, DMA_KIND_A, after_cycle=malloc_issue.cycle)
+			rd_a = await env.wait_rd_transfer(ctrl_id, DMA_KIND_A, after_cycle=fill_req_a.cycle)
+			fill_done_a = await env.wait_fill_done(ctrl_id, DMA_KIND_A, after_cycle=rd_a.last_beat_cycle)
+
+			fill_req_b = await env.wait_fill_req(ctrl_id, DMA_KIND_B, after_cycle=fill_done_a.cycle)
+			rd_b = await env.wait_rd_transfer(ctrl_id, DMA_KIND_B, after_cycle=fill_req_b.cycle)
+			fill_done_b = await env.wait_fill_done(ctrl_id, DMA_KIND_B, after_cycle=rd_b.last_beat_cycle)
+
+			ce_cmd = await env.wait_ce_cmd(ctrl_id, after_cycle=fill_done_b.cycle)
+			ce_resp = await env.wait_ce_resp(plan.response_word, after_cycle=ce_cmd.cycle)
+
+			ce_exec_reqs = [
+				item for item in env.ce_exec_req_log
+				if item.ctrl_id == (ctrl_id & 0xFFFF_FFFF) and (ce_cmd.cycle <= item.cycle <= ce_resp.cycle)
+			]
+			ce_exec_rsps = [
+				item for item in env.ce_exec_rsp_log
+				if item.ctrl_id == (ctrl_id & 0xFFFF_FFFF) and (ce_cmd.cycle <= item.cycle <= ce_resp.cycle)
+			]
+			ce_exec_completes = [
+				item for item in env.ce_exec_complete_log
+				if item.ctrl_id == (ctrl_id & 0xFFFF_FFFF) and (ce_cmd.cycle <= item.cycle <= ce_resp.cycle)
+			]
+			ce_drain_accepts = [
+				item for item in env.ce_drain_accept_log
+				if item.ctrl_id == (ctrl_id & 0xFFFF_FFFF) and (ce_cmd.cycle <= item.cycle <= ce_resp.cycle)
+			]
+			ce_drain_completes = [
+				item for item in env.ce_drain_complete_log
+				if item.ctrl_id == (ctrl_id & 0xFFFF_FFFF) and (ce_cmd.cycle <= item.cycle <= ce_resp.cycle)
+			]
+
+			assert ce_exec_reqs
+			assert ce_exec_rsps
+			assert ce_exec_completes
+			assert ce_drain_accepts
+			assert ce_drain_completes
+
+			ce_exec_req_first = ce_exec_reqs[0]
+			ce_exec_rsp_first = ce_exec_rsps[0]
+			ce_exec_complete_last = ce_exec_completes[-1]
+			ce_drain_accept_first = ce_drain_accepts[0]
+			ce_drain_complete_last = ce_drain_completes[-1]
+
+			export_done_target = env.export_done_count + 1
+			wr_transfer = await env.wait_wr_transfer(ctrl_id, after_cycle=ce_resp.cycle)
+			ctrl_resp = await env.wait_resp_visible(plan.response_word, after_cycle=ce_resp.cycle)
+			await env.wait_and_pop_resp(plan.response_word, 40000)
+			await env.wait_export_done(export_done_target, 80000)
+
+			results[case["name"]] = {
+				"shape_tiles": {
+					"m_tiles": m_tiles,
+					"n_tiles": n_tiles,
+					"k_tiles": k_tiles,
+				},
+				"top_level": {
+					"accept_to_ctrl_resp": ctrl_resp.cycle - accept.cycle,
+					"ce_resp_to_ctrl_resp": ctrl_resp.cycle - ce_resp.cycle,
+					"ctrl_resp_to_wr_desc": wr_transfer.desc_cycle - ctrl_resp.cycle,
+				},
+				"pt_md_v2": {
+					"accept_to_malloc_issue": malloc_issue.cycle - accept.cycle,
+					"a_fill": {
+						"fill_req_to_rd_desc": rd_a.desc_cycle - fill_req_a.cycle,
+						"rd_desc_to_first_beat": rd_a.first_beat_cycle - rd_a.desc_cycle,
+						"first_beat_to_last_beat": rd_a.last_beat_cycle - rd_a.first_beat_cycle,
+						"last_beat_to_fill_done": fill_done_a.cycle - rd_a.last_beat_cycle,
+						"fill_req_to_fill_done": fill_done_a.cycle - fill_req_a.cycle,
+					},
+					"b_fill": {
+						"fill_req_to_rd_desc": rd_b.desc_cycle - fill_req_b.cycle,
+						"rd_desc_to_first_beat": rd_b.first_beat_cycle - rd_b.desc_cycle,
+						"first_beat_to_last_beat": rd_b.last_beat_cycle - rd_b.first_beat_cycle,
+						"last_beat_to_fill_done": fill_done_b.cycle - rd_b.last_beat_cycle,
+						"fill_req_to_fill_done": fill_done_b.cycle - fill_req_b.cycle,
+					},
+					"export": {
+						"ce_resp_to_wr_desc": wr_transfer.desc_cycle - ce_resp.cycle,
+						"wr_desc_to_first_beat": wr_transfer.first_beat_cycle - wr_transfer.desc_cycle,
+						"first_beat_to_last_beat": wr_transfer.last_beat_cycle - wr_transfer.first_beat_cycle,
+						"last_beat_to_done": wr_transfer.done_cycle - wr_transfer.last_beat_cycle,
+						"ce_resp_to_wr_done": wr_transfer.done_cycle - ce_resp.cycle,
+					},
+				},
+				"pt_ce_v2": {
+					"exec_req_count": len(ce_exec_reqs),
+					"exec_rsp_count": len(ce_exec_rsps),
+					"drain_accept_count": len(ce_drain_accepts),
+					"drain_complete_count": len(ce_drain_completes),
+					"ce_cmd_to_first_exec_req": ce_exec_req_first.cycle - ce_cmd.cycle,
+					"first_exec_req_to_first_exec_rsp": ce_exec_rsp_first.cycle - ce_exec_req_first.cycle,
+					"first_exec_rsp_to_first_drain_accept": ce_drain_accept_first.cycle - ce_exec_rsp_first.cycle,
+					"first_exec_rsp_to_last_exec_complete": ce_exec_complete_last.cycle - ce_exec_rsp_first.cycle,
+					"first_drain_accept_to_last_drain_complete": ce_drain_complete_last.cycle - ce_drain_accept_first.cycle,
+					"last_exec_complete_to_last_drain_complete_tail": ce_drain_complete_last.cycle - ce_exec_complete_last.cycle,
+					"last_drain_complete_to_ce_resp": ce_resp.cycle - ce_drain_complete_last.cycle,
+					"ce_cmd_to_ce_resp": ce_resp.cycle - ce_cmd.cycle,
+				},
+			}
+
+		record_metric("diagnostics", "pt_ce_md_block_breakdown", {"status": "passed", "cases": results})
 	finally:
 		env.shutdown()

@@ -245,6 +245,36 @@ class CeCmdLog:
 
 
 @dataclass
+class CeExecReqLog:
+	ctrl_id: int
+	cycle: int
+
+
+@dataclass
+class CeExecRspLog:
+	ctrl_id: int
+	cycle: int
+
+
+@dataclass
+class CeExecCompleteLog:
+	ctrl_id: int
+	cycle: int
+
+
+@dataclass
+class CeDrainAcceptLog:
+	ctrl_id: int
+	cycle: int
+
+
+@dataclass
+class CeDrainCompleteLog:
+	ctrl_id: int
+	cycle: int
+
+
+@dataclass
 class CeRespLog:
 	word: int
 	cycle: int
@@ -270,6 +300,7 @@ class RdTransferTrace:
 	elems: int
 	beats: int
 	desc_cycle: int
+	first_beat_cycle: int
 	last_beat_cycle: int
 
 
@@ -280,6 +311,7 @@ class WrTransferTrace:
 	addr: int
 	beats: int
 	desc_cycle: int
+	first_beat_cycle: int
 	last_beat_cycle: int
 	done_cycle: int
 
@@ -437,6 +469,11 @@ class PTDmaTopEnv:
 		self.fill_req_log: Deque[FillReqLog] = deque()
 		self.fill_done_log: Deque[FillDoneLog] = deque()
 		self.ce_cmd_log: Deque[CeCmdLog] = deque()
+		self.ce_exec_req_log: Deque[CeExecReqLog] = deque()
+		self.ce_exec_rsp_log: Deque[CeExecRspLog] = deque()
+		self.ce_exec_complete_log: Deque[CeExecCompleteLog] = deque()
+		self.ce_drain_accept_log: Deque[CeDrainAcceptLog] = deque()
+		self.ce_drain_complete_log: Deque[CeDrainCompleteLog] = deque()
 		self.ce_resp_log: Deque[CeRespLog] = deque()
 		self.md_cmd_resp_log: Deque[MdCmdRespLog] = deque()
 		self.malloc_resp_log: Deque[MallocRespLog] = deque()
@@ -537,6 +574,11 @@ class PTDmaTopEnv:
 		self.rd_desc_log.clear()
 		self.wr_desc_log.clear()
 		self.ctrl_resp_queue.clear()
+		self.ce_exec_req_log.clear()
+		self.ce_exec_rsp_log.clear()
+		self.ce_exec_complete_log.clear()
+		self.ce_drain_accept_log.clear()
+		self.ce_drain_complete_log.clear()
 		self.ab_injections.clear()
 		self.export_injections.clear()
 		self.rd_desc_count = 0
@@ -1094,6 +1136,56 @@ class PTDmaTopEnv:
 			timeout_cycles,
 		)
 
+	async def wait_ce_exec_req(self, ctrl_id: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> CeExecReqLog:
+		return await self._wait_for_logged_event(
+			self.ce_exec_req_log,
+			f"ce exec req id=0x{ctrl_id & 0xFFFF_FFFF:08x}",
+			lambda item: isinstance(item, CeExecReqLog)
+			and item.ctrl_id == (ctrl_id & 0xFFFF_FFFF)
+			and item.cycle >= after_cycle,
+			timeout_cycles,
+		)
+
+	async def wait_ce_exec_rsp(self, ctrl_id: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> CeExecRspLog:
+		return await self._wait_for_logged_event(
+			self.ce_exec_rsp_log,
+			f"ce exec rsp id=0x{ctrl_id & 0xFFFF_FFFF:08x}",
+			lambda item: isinstance(item, CeExecRspLog)
+			and item.ctrl_id == (ctrl_id & 0xFFFF_FFFF)
+			and item.cycle >= after_cycle,
+			timeout_cycles,
+		)
+
+	async def wait_ce_exec_complete(self, ctrl_id: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> CeExecCompleteLog:
+		return await self._wait_for_logged_event(
+			self.ce_exec_complete_log,
+			f"ce exec complete id=0x{ctrl_id & 0xFFFF_FFFF:08x}",
+			lambda item: isinstance(item, CeExecCompleteLog)
+			and item.ctrl_id == (ctrl_id & 0xFFFF_FFFF)
+			and item.cycle >= after_cycle,
+			timeout_cycles,
+		)
+
+	async def wait_ce_drain_accept(self, ctrl_id: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> CeDrainAcceptLog:
+		return await self._wait_for_logged_event(
+			self.ce_drain_accept_log,
+			f"ce drain accept id=0x{ctrl_id & 0xFFFF_FFFF:08x}",
+			lambda item: isinstance(item, CeDrainAcceptLog)
+			and item.ctrl_id == (ctrl_id & 0xFFFF_FFFF)
+			and item.cycle >= after_cycle,
+			timeout_cycles,
+		)
+
+	async def wait_ce_drain_complete(self, ctrl_id: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> CeDrainCompleteLog:
+		return await self._wait_for_logged_event(
+			self.ce_drain_complete_log,
+			f"ce drain complete id=0x{ctrl_id & 0xFFFF_FFFF:08x}",
+			lambda item: isinstance(item, CeDrainCompleteLog)
+			and item.ctrl_id == (ctrl_id & 0xFFFF_FFFF)
+			and item.cycle >= after_cycle,
+			timeout_cycles,
+		)
+
 	async def wait_ce_resp(self, expected_word: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> CeRespLog:
 		return await self._wait_for_logged_event(
 			self.ce_resp_log,
@@ -1330,6 +1422,41 @@ class PTDmaTopEnv:
 							cycle=cycle,
 						)
 					)
+				if self._signal_value(f"{root}.u_ce.mm_exec_req_fire"):
+					self.ce_exec_req_log.append(
+						CeExecReqLog(
+							ctrl_id=self._signal_value(f"{root}.u_ce.exec_id_r"),
+							cycle=cycle,
+						)
+					)
+				if self._signal_value(f"{root}.u_ce.mm_exec_rsp_fire"):
+					self.ce_exec_rsp_log.append(
+						CeExecRspLog(
+							ctrl_id=self._signal_value(f"{root}.u_ce.exec_id_r"),
+							cycle=cycle,
+						)
+					)
+				if self._signal_value(f"{root}.u_ce.exec_complete_fire"):
+					self.ce_exec_complete_log.append(
+						CeExecCompleteLog(
+							ctrl_id=self._signal_value(f"{root}.u_ce.exec_id_r"),
+							cycle=cycle,
+						)
+					)
+				if self._signal_value(f"{root}.u_ce.drain_accept_fire"):
+					self.ce_drain_accept_log.append(
+						CeDrainAcceptLog(
+							ctrl_id=self._signal_value(f"{root}.u_ce.drain_id_r"),
+							cycle=cycle,
+						)
+					)
+				if self._signal_value(f"{root}.u_ce.drain_complete_fire"):
+					self.ce_drain_complete_log.append(
+						CeDrainCompleteLog(
+							ctrl_id=self._signal_value(f"{root}.u_ce.drain_id_r"),
+							cycle=cycle,
+						)
+					)
 				if self._signal_value(f"{root}.ce_resp_valid"):
 					self.ce_resp_log.append(
 						CeRespLog(
@@ -1559,7 +1686,7 @@ class PTDmaTopEnv:
 					injection = self.ab_injections.popleft() if self.ab_injections else AbInjection()
 					beats = self._pack_ab_beats(expected.kind, self.external_a_tiles[actual_id] if expected.kind == "A" else (self.external_b_tiles[actual_id] if expected.kind == "B" else self.external_c_tiles[actual_id]), expected)
 					self.dma_stream_busy = True
-					last_beat_cycle = await self._serve_rd_stream(expected, beats, injection)
+					first_beat_cycle, last_beat_cycle = await self._serve_rd_stream(expected, beats, injection)
 					self.dma_stream_busy = False
 					self.rd_transfer_log.append(
 						RdTransferTrace(
@@ -1569,6 +1696,7 @@ class PTDmaTopEnv:
 							elems=actual_elems,
 							beats=len(beats),
 							desc_cycle=desc_cycle,
+							first_beat_cycle=first_beat_cycle,
 							last_beat_cycle=last_beat_cycle,
 						)
 					)
@@ -1576,7 +1704,7 @@ class PTDmaTopEnv:
 			self.dut._log.exception("rd_dma_agent crashed")
 			raise
 
-	async def _serve_rd_stream(self, expectation: ReadDmaExpectation, beats: Sequence[Tuple[int, int]], injection: AbInjection) -> int:
+	async def _serve_rd_stream(self, expectation: ReadDmaExpectation, beats: Sequence[Tuple[int, int]], injection: AbInjection) -> Tuple[int, int]:
 		ctrl_id = expectation.ctrl_id
 		kind = expectation.kind
 		if kind == "A":
@@ -1593,8 +1721,9 @@ class PTDmaTopEnv:
 			self.dut.rd_dma_error.value = 1
 			await RisingEdge(self.dut.clk)
 			self.dut.rd_dma_error.value = 0
-			return self.current_cycle()
+			return self.current_cycle(), self.current_cycle()
 		await RisingEdge(self.dut.clk)
+		first_beat_cycle = self.current_cycle()
 		last_beat_cycle = self.current_cycle()
 		bad_tuser = MATRIX_B_TUSER if req_tuser == MATRIX_A_TUSER else MATRIX_A_TUSER
 		for beat_idx, (word, strb) in enumerate(beats):
@@ -1612,6 +1741,8 @@ class PTDmaTopEnv:
 				self.dut.s_axis_tlast.value = 1 if beat_idx == (len(beats) - 1) else 0
 				await RisingEdge(self.dut.clk)
 				if value_to_int(self.dut.s_axis_tready.value):
+					if beat_idx == 0:
+						first_beat_cycle = self.current_cycle()
 					last_beat_cycle = self.current_cycle()
 					break
 			if injection.error_mode == "mid_stream" and beat_idx == injection.error_at_beat:
@@ -1622,11 +1753,11 @@ class PTDmaTopEnv:
 					await RisingEdge(self.dut.clk)
 				await RisingEdge(self.dut.clk)
 				self.dut.rd_dma_error.value = 0
-				return self.current_cycle()
+				return first_beat_cycle, self.current_cycle()
 			if injection.wrong_tuser:
 				self.dut.s_axis_tvalid.value = 0
 				self.dut.s_axis_tlast.value = 0
-				return last_beat_cycle
+				return first_beat_cycle, last_beat_cycle
 		self.dut.s_axis_tvalid.value = 0
 		self.dut.s_axis_tlast.value = 0
 		if injection.error_mode == "after_stream":
@@ -1635,7 +1766,7 @@ class PTDmaTopEnv:
 				await RisingEdge(self.dut.clk)
 			await RisingEdge(self.dut.clk)
 			self.dut.rd_dma_error.value = 0
-		return last_beat_cycle
+		return first_beat_cycle, last_beat_cycle
 
 	async def _wr_dma_agent(self) -> None:
 		try:
@@ -1667,7 +1798,7 @@ class PTDmaTopEnv:
 						)
 					)
 					self.export_busy = True
-					last_beat_cycle, done_cycle = await self._consume_export(expected, expected_beats, injection)
+					first_beat_cycle, last_beat_cycle, done_cycle = await self._consume_export(expected, expected_beats, injection)
 					self.export_busy = False
 					self.wr_transfer_log.append(
 						WrTransferTrace(
@@ -1676,6 +1807,7 @@ class PTDmaTopEnv:
 							addr=actual_addr,
 							beats=actual_beats,
 							desc_cycle=desc_cycle,
+							first_beat_cycle=first_beat_cycle,
 							last_beat_cycle=last_beat_cycle,
 							done_cycle=done_cycle,
 						)
@@ -1697,14 +1829,15 @@ class PTDmaTopEnv:
 		assert last_error is not None
 		raise last_error
 
-	async def _consume_export(self, expected: ExportExpectation, expected_beats: Sequence[Tuple[int, int]], injection: ExportInjection) -> Tuple[int, int]:
+	async def _consume_export(self, expected: ExportExpectation, expected_beats: Sequence[Tuple[int, int]], injection: ExportInjection) -> Tuple[int, int, int]:
 		beat_idx = 0
+		first_beat_cycle = self.current_cycle()
 		last_beat_cycle = self.current_cycle()
 		while beat_idx < len(expected_beats):
 			await RisingEdge(self.dut.clk)
 			await ReadOnly()
 			if value_to_int(self.dut.clear.value):
-				return last_beat_cycle, self.current_cycle()
+				return first_beat_cycle, last_beat_cycle, self.current_cycle()
 			if value_to_int(self.dut.m_axis_tvalid.value) and value_to_int(self.dut.m_axis_tready.value):
 				actual_word = value_to_int(self.dut.m_axis_tdata.value)
 				expected_word, expected_strb = expected_beats[beat_idx]
@@ -1715,6 +1848,8 @@ class PTDmaTopEnv:
 				assert value_to_int(self.dut.m_axis_tdest.value) == 0
 				assert value_to_int(self.dut.m_axis_tuser.value) == expected.buffer
 				assert value_to_int(self.dut.m_axis_tlast.value) == int(beat_idx == (len(expected_beats) - 1))
+				if beat_idx == 0:
+					first_beat_cycle = self.current_cycle()
 				last_beat_cycle = self.current_cycle()
 				beat_idx += 1
 		await RisingEdge(self.dut.clk)
@@ -1737,7 +1872,7 @@ class PTDmaTopEnv:
 			self.export_done_count += 1
 			self.coverage.hit("export:success")
 		self.model.complete_export(expected.buffer)
-		return last_beat_cycle, done_cycle
+		return first_beat_cycle, last_beat_cycle, done_cycle
 
 
 async def create_env(dut) -> PTDmaTopEnv:

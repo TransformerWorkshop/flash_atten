@@ -48,7 +48,15 @@ def write_metrics(payload: dict[str, object]) -> None:
 		return
 	path = Path(metrics_path)
 	path.parent.mkdir(parents=True, exist_ok=True)
-	path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+	if path.exists():
+		try:
+			merged = json.loads(path.read_text(encoding="utf-8"))
+		except json.JSONDecodeError:
+			merged = {}
+	else:
+		merged = {}
+	merged.update(payload)
+	path.write_text(json.dumps(merged, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
 
 @cocotb.test()
