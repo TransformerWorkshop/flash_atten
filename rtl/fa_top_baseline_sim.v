@@ -115,29 +115,71 @@ module FA_TOP_BASELINE_SIM #(
     wire       store_done_pulse;
     wire       run_complete_pulse;
 
-    wire       rd_buf_wr_valid;
-    wire [1:0] rd_buf_wr_kind;
-    wire [8:0] rd_buf_wr_addr;
-    wire [31:0] rd_buf_wr_data;
+    wire       qkv_wr_valid;
+    wire [1:0] qkv_wr_kind;
+    wire [3:0] qkv_wr_row;
+    wire [4:0] qkv_wr_lane;
+    wire [31:0] qkv_wr_word;
+    wire       v_pv_wr_valid;
+    wire [4:0] v_pv_wr_addr;
+    wire       v_pv_lane0_valid;
+    wire [3:0] v_pv_lane0_idx;
+    wire       v_pv_lane0_hi;
+    wire [15:0] v_pv_lane0_data;
+    wire       v_pv_lane1_valid;
+    wire [3:0] v_pv_lane1_idx;
+    wire       v_pv_lane1_hi;
+    wire [15:0] v_pv_lane1_data;
     wire       rd_error_pulse;
 
     wire [16383:0] q_tile_flat;
     wire [16383:0] k_tile_flat;
     wire [16383:0] v_tile_flat;
+    wire [16383:0] v_pv_layout_flat;
     wire [4095:0]  p_tile_flat;
     wire [16383:0] oacc_tile_flat;
 
     wire         qk_resp_valid;
-    wire [16383:0] qk_result_tile_flat;
+    wire [8191:0] qk_result_tile_flat;
     wire         score_resp_valid;
     wire [8191:0] score_masked_tile_flat;
     wire         row_resp_valid;
     wire [4095:0] row_p_tile_flat;
     wire [511:0] row_rescale_vec_flat;
+    wire         row_proxy_ready_w;
     wire         pv_resp_valid;
     wire [16383:0] pv_result_tile_flat;
     wire         oacc_resp_valid;
     wire [16383:0] oacc_updated_tile_flat;
+    wire         oacc_proxy_ready_w;
+    wire         p_buf_load_ready;
+    wire         p_buf_load_done_pulse;
+    wire         oacc_buf_load_ready;
+    wire         oacc_buf_load_done_pulse;
+    wire         oacc_clear_req_ready_w;
+    wire         oacc_clear_done_pulse_w;
+    wire         q_qk_rd_en;
+    wire [4:0]   q_qk_rd_addr;
+    wire         q_qk_rd_valid;
+    wire [511:0] q_qk_rd_data;
+    wire         k_qk_rd_en;
+    wire [4:0]   k_qk_rd_addr;
+    wire         k_qk_rd_valid;
+    wire [511:0] k_qk_rd_data;
+    wire         p_pv_rd_en;
+    wire [2:0]   p_pv_rd_addr;
+    wire         p_pv_rd_valid;
+    wire [511:0] p_pv_rd_data;
+    wire         v_pv_rd_en;
+    wire [4:0]   v_pv_rd_addr;
+    wire         v_pv_rd_valid;
+    wire [511:0] v_pv_rd_data;
+    wire         oacc_exp_rd_en;
+    wire [3:0]   oacc_exp_rd_row;
+    wire         oacc_exp_rd_valid;
+    wire [1023:0] oacc_exp_rd_data;
+    wire         row_proxy_done_pulse;
+    wire         oacc_proxy_done_pulse;
 
     wire runtime_clear = clear || csr_soft_reset_pulse;
 
@@ -262,86 +304,149 @@ module FA_TOP_BASELINE_SIM #(
         .rd_data_ready(rd_data_ready),
         .rd_data(rd_data),
         .rd_data_last(rd_data_last),
-        .buf_wr_valid(rd_buf_wr_valid),
-        .buf_wr_kind(rd_buf_wr_kind),
-        .buf_wr_addr(rd_buf_wr_addr),
-        .buf_wr_data(rd_buf_wr_data),
+        .qkv_wr_valid(qkv_wr_valid),
+        .qkv_wr_kind(qkv_wr_kind),
+        .qkv_wr_row(qkv_wr_row),
+        .qkv_wr_lane(qkv_wr_lane),
+        .qkv_wr_word(qkv_wr_word),
+        .v_pv_wr_valid(v_pv_wr_valid),
+        .v_pv_wr_addr(v_pv_wr_addr),
+        .v_pv_lane0_valid(v_pv_lane0_valid),
+        .v_pv_lane0_idx(v_pv_lane0_idx),
+        .v_pv_lane0_hi(v_pv_lane0_hi),
+        .v_pv_lane0_data(v_pv_lane0_data),
+        .v_pv_lane1_valid(v_pv_lane1_valid),
+        .v_pv_lane1_idx(v_pv_lane1_idx),
+        .v_pv_lane1_hi(v_pv_lane1_hi),
+        .v_pv_lane1_data(v_pv_lane1_data),
         .done_pulse(load_done_pulse),
         .error_pulse(rd_error_pulse)
     );
 
-    Q_BUF u_q_buf (
+    FA_Q_BUF_REAL u_q_buf (
         .clk(clk),
         .rstn(rstn),
         .clear(runtime_clear),
-        .word_write_valid(rd_buf_wr_valid && (rd_buf_wr_kind == LOAD_KIND_Q)),
-        .word_write_addr(rd_buf_wr_addr),
-        .word_write_data(rd_buf_wr_data),
+        .word_write_valid(qkv_wr_valid && (qkv_wr_kind == LOAD_KIND_Q)),
+        .word_write_row(qkv_wr_row),
+        .word_write_lane(qkv_wr_lane),
+        .word_write_data(qkv_wr_word),
+        .qk_rd_en(q_qk_rd_en),
+        .qk_rd_addr(q_qk_rd_addr),
+        .qk_rd_valid(q_qk_rd_valid),
+        .qk_rd_data(q_qk_rd_data),
         .tile_flat(q_tile_flat)
     );
 
-    K_BUF u_k_buf (
+    FA_K_BUF_REAL u_k_buf (
         .clk(clk),
         .rstn(rstn),
         .clear(runtime_clear),
-        .word_write_valid(rd_buf_wr_valid && (rd_buf_wr_kind == LOAD_KIND_K)),
-        .word_write_addr(rd_buf_wr_addr),
-        .word_write_data(rd_buf_wr_data),
+        .word_write_valid(qkv_wr_valid && (qkv_wr_kind == LOAD_KIND_K)),
+        .word_write_row(qkv_wr_row),
+        .word_write_lane(qkv_wr_lane),
+        .word_write_data(qkv_wr_word),
+        .qk_rd_en(k_qk_rd_en),
+        .qk_rd_addr(k_qk_rd_addr),
+        .qk_rd_valid(k_qk_rd_valid),
+        .qk_rd_data(k_qk_rd_data),
         .tile_flat(k_tile_flat)
     );
 
-    V_BUF u_v_buf (
+    FA_V_BUF_REAL u_v_buf (
         .clk(clk),
         .rstn(rstn),
         .clear(runtime_clear),
-        .word_write_valid(rd_buf_wr_valid && (rd_buf_wr_kind == LOAD_KIND_V)),
-        .word_write_addr(rd_buf_wr_addr),
-        .word_write_data(rd_buf_wr_data),
+        .word_write_valid(qkv_wr_valid && (qkv_wr_kind == LOAD_KIND_V)),
+        .word_write_row(qkv_wr_row),
+        .word_write_lane(qkv_wr_lane),
+        .word_write_data(qkv_wr_word),
         .tile_flat(v_tile_flat)
     );
 
-    P_BUF u_p_buf (
+    FA_V_BUF_PV_REAL u_v_buf_pv (
         .clk(clk),
         .rstn(rstn),
         .clear(runtime_clear),
-        .tile_replace_valid(row_update_done_pulse),
-        .tile_replace_data(row_p_tile_flat),
+        .wr_valid(v_pv_wr_valid),
+        .wr_addr(v_pv_wr_addr),
+        .wr_lane0_valid(v_pv_lane0_valid),
+        .wr_lane0_idx(v_pv_lane0_idx),
+        .wr_lane0_hi(v_pv_lane0_hi),
+        .wr_lane0_data(v_pv_lane0_data),
+        .wr_lane1_valid(v_pv_lane1_valid),
+        .wr_lane1_idx(v_pv_lane1_idx),
+        .wr_lane1_hi(v_pv_lane1_hi),
+        .wr_lane1_data(v_pv_lane1_data),
+        .rd_en(v_pv_rd_en),
+        .rd_addr(v_pv_rd_addr),
+        .rd_valid(v_pv_rd_valid),
+        .rd_data(v_pv_rd_data),
+        .layout_flat(v_pv_layout_flat)
+    );
+
+    FA_P_BUF_REAL u_p_buf (
+        .clk(clk),
+        .rstn(rstn),
+        .clear(runtime_clear),
+        .load_valid(row_proxy_done_pulse),
+        .load_ready(p_buf_load_ready),
+        .tile_load_data(row_p_tile_flat),
+        .load_done_pulse(p_buf_load_done_pulse),
+        .pv_rd_en(p_pv_rd_en),
+        .pv_rd_addr(p_pv_rd_addr),
+        .pv_rd_valid(p_pv_rd_valid),
+        .pv_rd_data(p_pv_rd_data),
         .tile_flat(p_tile_flat)
     );
 
-    OACC_BUF u_oacc_buf (
+    FA_OACC_BUF_REAL u_oacc_buf (
         .clk(clk),
         .rstn(rstn),
         .clear(runtime_clear),
-        .tile_replace_valid(oacc_clear_valid || oacc_update_done_pulse),
-        .tile_replace_data(oacc_clear_valid ? ZERO_TILE_16X64 : oacc_updated_tile_flat),
+        .clear_req_valid(oacc_clear_valid),
+        .clear_req_ready(oacc_clear_req_ready_w),
+        .clear_done_pulse(oacc_clear_done_pulse_w),
+        .load_valid(oacc_proxy_done_pulse),
+        .load_ready(oacc_buf_load_ready),
+        .tile_load_data(oacc_updated_tile_flat),
+        .load_done_pulse(oacc_buf_load_done_pulse),
+        .row_rd_en(1'b0),
+        .row_rd_addr(4'd0),
+        .row_rd_valid(),
+        .row_rd_data(),
+        .exp_rd_en(oacc_exp_rd_en),
+        .exp_rd_addr(oacc_exp_rd_row),
+        .exp_rd_valid(oacc_exp_rd_valid),
+        .exp_rd_data(oacc_exp_rd_data),
         .tile_flat(oacc_tile_flat)
     );
 
-    assign oacc_clear_ready = 1'b1;
+    assign oacc_clear_ready = oacc_clear_req_ready_w;
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
             oacc_clear_done_pulse_r <= 1'b0;
         end else if (runtime_clear) begin
             oacc_clear_done_pulse_r <= 1'b0;
         end else begin
-            oacc_clear_done_pulse_r <= oacc_clear_valid;
+            oacc_clear_done_pulse_r <= oacc_clear_done_pulse_w;
         end
     end
 
-    FA_TILE_GEMM_PROXY #(
-        .LATENCY(8)
-    ) u_tile_gemm_qk (
+    FA_QK_CORE_REAL u_qk_core (
         .clk(clk),
         .rstn(rstn),
         .clear(runtime_clear),
         .req_valid(qk_req_valid),
         .req_ready(qk_req_ready),
-        .mode_pv(1'b0),
-        .q_tile_flat(q_tile_flat),
-        .k_tile_flat(k_tile_flat),
-        .p_tile_flat(p_tile_flat),
-        .v_tile_flat(v_tile_flat),
+        .q_rd_en(q_qk_rd_en),
+        .q_rd_addr(q_qk_rd_addr),
+        .q_rd_valid(q_qk_rd_valid),
+        .q_rd_data(q_qk_rd_data),
+        .k_rd_en(k_qk_rd_en),
+        .k_rd_addr(k_qk_rd_addr),
+        .k_rd_valid(k_qk_rd_valid),
+        .k_rd_data(k_qk_rd_data),
         .resp_valid(qk_resp_valid),
         .resp_ready(1'b1),
         .result_tile_flat(qk_result_tile_flat),
@@ -361,7 +466,7 @@ module FA_TOP_BASELINE_SIM #(
         .causal_en(csr_causal_en),
         .scale_word(csr_scale),
         .neg_large_word(csr_neg_large),
-        .score_tile_flat(qk_result_tile_flat[8191:0]),
+        .score_tile_flat(qk_result_tile_flat),
         .resp_valid(score_resp_valid),
         .resp_ready(1'b1),
         .masked_score_tile_flat(score_masked_tile_flat),
@@ -378,29 +483,33 @@ module FA_TOP_BASELINE_SIM #(
         .init_ready(row_init_ready),
         .init_done_pulse(row_init_done_pulse),
         .update_valid(row_update_valid),
-        .update_ready(row_update_ready),
+        .update_ready(row_proxy_ready_w),
         .neg_large_word(csr_neg_large),
         .masked_score_tile_flat(score_masked_tile_flat),
         .resp_valid(row_resp_valid),
         .resp_ready(1'b1),
         .p_tile_flat(row_p_tile_flat),
         .rescale_vec_flat(row_rescale_vec_flat),
-        .done_pulse(row_update_done_pulse)
+        .done_pulse(row_proxy_done_pulse)
     );
 
-    FA_TILE_GEMM_PROXY #(
-        .LATENCY(8)
-    ) u_tile_gemm_pv (
+    assign row_update_ready = row_proxy_ready_w && p_buf_load_ready;
+    assign row_update_done_pulse = p_buf_load_done_pulse;
+
+    FA_PV_CORE_REAL u_pv_core (
         .clk(clk),
         .rstn(rstn),
         .clear(runtime_clear),
         .req_valid(pv_req_valid),
         .req_ready(pv_req_ready),
-        .mode_pv(1'b1),
-        .q_tile_flat(q_tile_flat),
-        .k_tile_flat(k_tile_flat),
-        .p_tile_flat(p_tile_flat),
-        .v_tile_flat(v_tile_flat),
+        .p_rd_en(p_pv_rd_en),
+        .p_rd_addr(p_pv_rd_addr),
+        .p_rd_valid(p_pv_rd_valid),
+        .p_rd_data(p_pv_rd_data),
+        .v_rd_en(v_pv_rd_en),
+        .v_rd_addr(v_pv_rd_addr),
+        .v_rd_valid(v_pv_rd_valid),
+        .v_rd_data(v_pv_rd_data),
         .resp_valid(pv_resp_valid),
         .resp_ready(1'b1),
         .result_tile_flat(pv_result_tile_flat),
@@ -414,15 +523,18 @@ module FA_TOP_BASELINE_SIM #(
         .rstn(rstn),
         .clear(runtime_clear),
         .req_valid(oacc_update_valid),
-        .req_ready(oacc_update_ready),
+        .req_ready(oacc_proxy_ready_w),
         .rescale_vec_flat(row_rescale_vec_flat),
         .old_oacc_tile_flat(oacc_tile_flat),
         .partial_o_tile_flat(pv_result_tile_flat),
         .resp_valid(oacc_resp_valid),
         .resp_ready(1'b1),
         .updated_oacc_tile_flat(oacc_updated_tile_flat),
-        .done_pulse(oacc_update_done_pulse)
+        .done_pulse(oacc_proxy_done_pulse)
     );
+
+    assign oacc_update_ready = oacc_proxy_ready_w && oacc_buf_load_ready;
+    assign oacc_update_done_pulse = oacc_buf_load_done_pulse;
 
     FA_WR_DMA u_wr_dma (
         .clk(clk),
@@ -433,7 +545,10 @@ module FA_TOP_BASELINE_SIM #(
         .req_q_blk(sched_q_blk_idx),
         .o_base(csr_o_base),
         .stride_bytes(csr_stride_bytes),
-        .oacc_tile_flat(oacc_tile_flat),
+        .oacc_exp_rd_en(oacc_exp_rd_en),
+        .oacc_exp_rd_row(oacc_exp_rd_row),
+        .oacc_exp_rd_valid(oacc_exp_rd_valid),
+        .oacc_exp_rd_data(oacc_exp_rd_data),
         .wr_desc_valid(wr_desc_valid),
         .wr_desc_ready(wr_desc_ready),
         .wr_desc_addr(wr_desc_addr),

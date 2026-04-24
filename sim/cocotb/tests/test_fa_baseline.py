@@ -23,6 +23,7 @@ from tests.fa_baseline_env import (
     attention_golden,
     create_env,
     matrix_error,
+    q88_from_float,
     random_q88_matrix,
     zero_matrix,
 )
@@ -54,6 +55,94 @@ def make_single_q_full_kv_case(seed_base: int):
     for row in range(16):
         q[row] = q_tile[row]
     return q, k, v
+
+
+def unpack_q88_tile_words(words: list[int], rows: int, cols: int) -> list[list[int]]:
+    out = [[0 for _ in range(cols)] for _ in range(rows)]
+    word_idx = 0
+    for row in range(rows):
+        for col in range(0, cols, 2):
+            word = int(words[word_idx]) & 0xFFFF_FFFF
+            lo = word & 0xFFFF
+            hi = (word >> 16) & 0xFFFF
+            if lo & 0x8000:
+                lo -= 0x10000
+            if hi & 0x8000:
+                hi -= 0x10000
+            out[row][col] = lo
+            out[row][col + 1] = hi
+            word_idx += 1
+    return out
+
+
+def flat_words(signal_value: int, count: int) -> list[int]:
+    return [(signal_value >> (idx * 32)) & 0xFFFF_FFFF for idx in range(count)]
+
+
+async def wait_signal_high(dut, signal, timeout_cycles: int = 4000) -> None:
+    for _ in range(timeout_cycles):
+        if int(signal.value):
+            return
+        await ClockCycles(dut.clk, 1)
+    raise AssertionError("signal did not go high before timeout")
+
+
+def expected_v_pv_layout_words(v_matrix: list[list[float]]) -> list[int]:
+    words = [0 for _ in range(32 * 16)]
+    for row in range(16):
+        k_pair = row >> 1
+        hi_half = row & 0x1
+        for col in range(64):
+            blk = col // 16
+            lane = col % 16
+            addr = (blk * 8) + k_pair
+            idx = (addr * 16) + lane
+            raw = q88_from_float(v_matrix[row][col]) & 0xFFFF
+            if hi_half:
+                words[idx] = (words[idx] & 0x0000_FFFF) | (raw << 16)
+            else:
+                words[idx] = (words[idx] & 0xFFFF_0000) | raw
+    return words
+
+
+def expected_qk_tile_words(q_matrix: list[list[float]], k_matrix: list[list[float]]) -> list[int]:
+    out: list[int] = []
+    for row in range(16):
+        for col in range(16):
+            acc = 0
+            for dim in range(64):
+                acc += q88_from_float(q_matrix[row][dim]) * q88_from_float(k_matrix[col][dim])
+            if acc > 0x7FFF_FFFF:
+                acc = 0x7FFF_FFFF
+            elif acc < -0x8000_0000:
+                acc = -0x8000_0000
+            out.append(acc & 0xFFFF_FFFF)
+    return out
+
+
+def expected_pv_tile_words(p_words: list[int], v_matrix: list[list[float]]) -> list[int]:
+    p_raw = unpack_q88_tile_words(p_words, 16, 16)
+    out_words = [0 for _ in range(16 * 32)]
+    for row in range(16):
+        for col in range(64):
+            acc = 0
+            for k_idx in range(16):
+                acc += p_raw[row][k_idx] * q88_from_float(v_matrix[k_idx][col])
+            if acc >= 0:
+                rounded = acc + 128
+            else:
+                rounded = acc - 128
+            shifted = rounded >> 8
+            if shifted > 32767:
+                shifted = 32767
+            elif shifted < -32768:
+                shifted = -32768
+            word_idx = ((row * 64) + col) >> 1
+            if col & 0x1:
+                out_words[word_idx] = (out_words[word_idx] & 0x0000_FFFF) | ((shifted & 0xFFFF) << 16)
+            else:
+                out_words[word_idx] = (out_words[word_idx] & 0xFFFF_0000) | (shifted & 0xFFFF)
+    return out_words
 
 
 @cocotb.test()
@@ -121,6 +210,60 @@ async def test_fa_baseline_single_q_single_kv_noncausal(dut) -> None:
         mean_err, max_err = matrix_error(first_rows(actual, 16), first_rows(expected, 16))
         assert mean_err <= 0.03, f"mean_err={mean_err}"
         assert max_err <= 0.10, f"max_err={max_err}"
+    finally:
+        env.shutdown()
+
+
+@cocotb.test()
+async def test_fa_baseline_vbuf_pv_layout(dut) -> None:
+    env = await create_env(dut)
+    try:
+        await env.reset()
+        q, k, v = make_single_tile_case(250)
+        env.load_qkv(q, k, v)
+        await env.start_run(causal=False)
+        for _ in range(1500):
+            if len(env.rd_desc_log) >= 3 and env.rd_desc_log[2].tag == RD_TAG_V:
+                break
+            await ClockCycles(dut.clk, 1)
+        for _ in range(700):
+            await ClockCycles(dut.clk, 1)
+        actual_words = flat_words(int(dut.u_v_buf_pv.layout_flat.value), 32 * 16)
+        expected_words = expected_v_pv_layout_words(v[:16])
+        assert actual_words == expected_words
+    finally:
+        env.shutdown()
+
+
+@cocotb.test()
+async def test_fa_baseline_qk_core_real_tile(dut) -> None:
+    env = await create_env(dut)
+    try:
+        await env.reset()
+        q, k, v = make_single_tile_case(260)
+        env.load_qkv(q, k, v)
+        await env.start_run(causal=False)
+        await wait_signal_high(dut, dut.u_qk_core.resp_valid, timeout_cycles=6000)
+        actual_words = flat_words(int(dut.u_qk_core.result_tile_flat.value), 16 * 16)
+        expected_words = expected_qk_tile_words(q[:16], k[:16])
+        assert actual_words == expected_words
+    finally:
+        env.shutdown()
+
+
+@cocotb.test()
+async def test_fa_baseline_pv_core_real_tile(dut) -> None:
+    env = await create_env(dut)
+    try:
+        await env.reset()
+        q, k, v = make_single_tile_case(270)
+        env.load_qkv(q, k, v)
+        await env.start_run(causal=False)
+        await wait_signal_high(dut, dut.u_pv_core.resp_valid, timeout_cycles=12000)
+        p_words = flat_words(int(dut.u_p_buf.tile_flat.value), 16 * 8)
+        actual_words = flat_words(int(dut.u_pv_core.result_tile_flat.value), 16 * 32)
+        expected_words = expected_pv_tile_words(p_words, v[:16])
+        assert actual_words == expected_words
     finally:
         env.shutdown()
 
