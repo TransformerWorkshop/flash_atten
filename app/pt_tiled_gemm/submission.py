@@ -4,7 +4,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Deque, Optional
 
-from . import APP_TARGET_PT_DMA_TOP, APP_TARGET_PT_DMA_TOP_V3, normalize_app_target
+from . import is_wrapper_target, normalize_app_target
 
 
 SUBMISSION_MODE_LEGACY = "legacy"
@@ -89,7 +89,7 @@ class CommandSubmitter:
 		self.submission_mode = normalize_submission_mode(submission_mode)
 		self.stats = SubmissionStats(submission_mode=self.submission_mode)
 		self._ctrl_id_pool = None
-		if self.target in {APP_TARGET_PT_DMA_TOP, APP_TARGET_PT_DMA_TOP_V3}:
+		if is_wrapper_target(self.target):
 			self._ctrl_id_pool = CtrlIdPool(ctrl_id_base, ctrl_id_pool_size)
 
 	def acquire_ctrl_id(self, fallback_ctrl_id: Optional[int] = None) -> int:
@@ -105,7 +105,7 @@ class CommandSubmitter:
 		self._ctrl_id_pool.release(ctrl_id)
 
 	async def send_ctrl(self, inst: int, ctrl_id: int, timeout_cycles: int = 4000):
-		if self.target in {APP_TARGET_PT_DMA_TOP, APP_TARGET_PT_DMA_TOP_V3}:
+		if is_wrapper_target(self.target):
 			trace = await self.env.send_ctrl_timed(
 				inst,
 				ctrl_id,

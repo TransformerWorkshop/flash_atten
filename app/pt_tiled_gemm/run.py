@@ -21,6 +21,7 @@ from app.pt_tiled_gemm import (
 from app.pt_tiled_gemm.multitile_runner import render_multitile_text, run_multitile_sweep
 from app.pt_tiled_gemm.param_utils import load_pt_param_snapshot
 from app.pt_tiled_gemm.planner import build_recommendation, build_report_markdown, render_text
+from app.pt_tiled_gemm.regression_runner import render_regression_text, run_regression_matrix
 from app.pt_tiled_gemm.submission import (
 	SUBMISSION_MODE_LEGACY,
 	SUBMISSION_MODE_SHADOW_DELTA,
@@ -142,6 +143,15 @@ def _multitile_command(
 	return 0 if result.success else 1
 
 
+def _regress_command(*, sim_name: str, waves: bool, as_json: bool, out_path: Path | None) -> int:
+	result = run_regression_matrix(sim_name=sim_name, waves=waves, out_path=out_path)
+	if as_json:
+		print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+	else:
+		print(render_regression_text(result))
+	return 0 if result.success else 1
+
+
 def parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(description="PT tiled application CLI")
 	subparsers = parser.add_subparsers(dest="command", required=True)
@@ -178,6 +188,12 @@ def parse_args() -> argparse.Namespace:
 	multitile.add_argument("--json", action="store_true", help="输出机器可读 JSON")
 	multitile.add_argument("--out", type=Path, default=None, help="输出聚合 JSON 路径，默认写到 app/pt_tiled_gemm/out/")
 
+	regress = subparsers.add_parser("regress", help="运行固定的 channel verify/multitile 回归矩阵")
+	regress.add_argument("--sim", default="icarus", choices=["icarus", "verilator", "questa"])
+	regress.add_argument("--waves", action="store_true")
+	regress.add_argument("--json", action="store_true", help="输出机器可读 JSON")
+	regress.add_argument("--out", type=Path, default=None, help="输出聚合 JSON 路径，默认写到 app/pt_tiled_gemm/out/")
+
 	return parser.parse_args()
 
 
@@ -185,8 +201,8 @@ def main() -> int:
 	DEFAULT_OUT_DIR.mkdir(parents=True, exist_ok=True)
 	args = parse_args()
 	try:
-		target = _target_from_args(args)
-		if args.command != "multitile":
+		target = _target_from_args(args) if hasattr(args, "target") else DEFAULT_APP_TARGET
+		if args.command not in {"multitile", "regress"}:
 			problem = _problem_from_args(args)
 			problem.validate()
 		else:
@@ -213,6 +229,13 @@ def main() -> int:
 			n_tiles=args.n_tiles,
 			k_tiles=args.k_tiles,
 			submission_mode=args.submission_mode,
+			waves=args.waves,
+			as_json=args.json,
+			out_path=args.out,
+		)
+	if args.command == "regress":
+		return _regress_command(
+			sim_name=args.sim,
 			waves=args.waves,
 			as_json=args.json,
 			out_path=args.out,

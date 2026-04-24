@@ -207,7 +207,6 @@ module PT_MALLOC_V3 #(
 	wire [`PT_SIZE_W-1:0] cmd_load_b_size = malloc_cmd_inst[`PT_LOAD_B_SIZE_H:`PT_LOAD_B_SIZE_L];
 	wire cmd_load_need_a = malloc_cmd_inst[`PT_LOAD_NEED_A_BIT];
 	wire cmd_load_need_b = malloc_cmd_inst[`PT_LOAD_NEED_B_BIT];
-	wire [5:0] cmd_load_reserved = malloc_cmd_inst[`PT_LOAD_RSV_H:`PT_LOAD_RSV_L];
 	wire [1:0] cmd_load_m_code = malloc_cmd_inst[`PT_LOAD_M_CODE_H:`PT_LOAD_M_CODE_L];
 	wire [1:0] cmd_load_n_code = malloc_cmd_inst[`PT_LOAD_N_CODE_H:`PT_LOAD_N_CODE_L];
 	wire [1:0] cmd_load_k_code = malloc_cmd_inst[`PT_LOAD_K_CODE_H:`PT_LOAD_K_CODE_L];
@@ -275,18 +274,11 @@ module PT_MALLOC_V3 #(
 		end
 	endfunction
 
-	function [`PT_SIZE_W-1:0] size_trunc;
-		input integer value;
-		begin
-			size_trunc = value[`PT_SIZE_W-1:0];
-		end
-	endfunction
-
 	function [`PT_LOCAL_ADDR_W-1:0] make_local_base;
-		input integer buf_sel;
-		input integer elem_base;
+		input buf_sel;
+		input [`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] elem_base;
 		begin
-			make_local_base = {buf_sel[0], elem_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L]};
+			make_local_base = {buf_sel, elem_base};
 		end
 	endfunction
 
@@ -303,19 +295,19 @@ module PT_MALLOC_V3 #(
 		for (si = 0; si < LUT_DEPTH; si = si + 1) begin
 			if (!slot_found && lut_valid[si] && (lut_id[si] == malloc_cmd_id)) begin
 				slot_found = 1'b1;
-				slot_idx   = si[LUT_AW-1:0];
+				slot_idx   = si;
 			end
 			if (!free_found && !lut_valid[si]) begin
 				free_found = 1'b1;
-				free_idx   = si[LUT_AW-1:0];
+				free_idx   = si;
 			end
 			if (!evict_found && lut_valid[si]) begin
 				evict_found = 1'b1;
-				evict_idx   = si[LUT_AW-1:0];
+				evict_idx   = si;
 			end
 			if (!resp_slot_found && lut_valid[si] && (lut_id[si][29:0] == ce_resp[29:0])) begin
 				resp_slot_found = 1'b1;
-				resp_slot_idx   = si[LUT_AW-1:0];
+				resp_slot_idx   = si;
 			end
 		end
 	end
@@ -340,7 +332,7 @@ module PT_MALLOC_V3 #(
 			a_alloc_ok = 1'b1;
 			a_alloc_base = make_local_base(0, a_base0_int);
 			a_next_int = a_base0_int + a_len_int;
-			a_alloc_next_after = a_next_int[A_PTR_W-1:0];
+			a_alloc_next_after = a_next_int;
 		end else if ((dec_a_len != {`PT_SIZE_W{1'b0}}) &&
 		           ((a_base1_int + a_len_int) <= A_BUF_CAPACITY) &&
 		           (!alloc_a_busy_en || !a_buf1_busy)) begin
@@ -348,7 +340,7 @@ module PT_MALLOC_V3 #(
 			a_alloc_buf_sel = 1'b1;
 			a_alloc_base = make_local_base(1, a_base1_int);
 			a_next_int = a_base1_int + a_len_int;
-			a_alloc_next_after = a_next_int[A_PTR_W-1:0];
+			a_alloc_next_after = a_next_int;
 		end else if ((dec_a_len != {`PT_SIZE_W{1'b0}}) &&
 		           alloc_a_busy_en &&
 		           (((a_base0_int + a_len_int) <= A_BUF_CAPACITY) ||
@@ -377,7 +369,7 @@ module PT_MALLOC_V3 #(
 			b_alloc_ok = 1'b1;
 			b_alloc_base = make_local_base(0, b_base0_int);
 			b_next_int = b_base0_int + b_len_int;
-			b_alloc_next_after = b_next_int[B_PTR_W-1:0];
+			b_alloc_next_after = b_next_int;
 		end else if ((dec_b_len != {`PT_SIZE_W{1'b0}}) &&
 		           ((b_base1_int + b_len_int) <= B_BUF_CAPACITY) &&
 		           (!alloc_b_busy_en || !b_buf1_busy)) begin
@@ -385,7 +377,7 @@ module PT_MALLOC_V3 #(
 			b_alloc_buf_sel = 1'b1;
 			b_alloc_base = make_local_base(1, b_base1_int);
 			b_next_int = b_base1_int + b_len_int;
-			b_alloc_next_after = b_next_int[B_PTR_W-1:0];
+			b_alloc_next_after = b_next_int;
 		end else if ((dec_b_len != {`PT_SIZE_W{1'b0}}) &&
 		           alloc_b_busy_en &&
 		           (((b_base0_int + b_len_int) <= B_BUF_CAPACITY) ||
@@ -421,8 +413,8 @@ module PT_MALLOC_V3 #(
 				dec_m_tiles = cmd_matmul_m_tiles;
 				dec_n_tiles = cmd_matmul_n_tiles;
 				dec_k_tiles = cmd_matmul_k_tiles;
-					dec_a_len  = size_trunc(cmd_matmul_m_tiles * cmd_matmul_k_tiles * A_TILE_LEN);
-					dec_b_len  = size_trunc(cmd_matmul_k_tiles * cmd_matmul_n_tiles * B_TILE_LEN);
+					dec_a_len  = cmd_matmul_m_tiles * cmd_matmul_k_tiles * A_TILE_LEN;
+					dec_b_len  = cmd_matmul_k_tiles * cmd_matmul_n_tiles * B_TILE_LEN;
 				dec_error  = !cmd_matmul_legal;
 			end
 
@@ -948,12 +940,7 @@ module PT_MALLOC_V3 #(
 			if (ce_resp_valid && resp_slot_found && (lut_busy_count[resp_slot_idx] != 2'd0)) begin
 				lut_busy_count[resp_slot_idx] <= lut_busy_count[resp_slot_idx] - 2'b01;
 			end
-			if (matadd_enqueue_fire) begin
-				serial_exec_busy_r <= 1'b1;
-			end
-			if (ce_resp_valid && serial_exec_busy_r) begin
-				serial_exec_busy_r <= 1'b0;
-			end
+			serial_exec_busy_r <= (serial_exec_busy_r && !ce_resp_valid) || matadd_enqueue_fire;
 
 			case (state_r)
 				ST_IDLE: begin

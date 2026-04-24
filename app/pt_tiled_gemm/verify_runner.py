@@ -205,6 +205,10 @@ def run_verification(
 		extra_env["PT_ELEM_WIDTH"] = str(rtl_params["ELEM_WIDTH"])
 		extra_env["PT_PACK_LANES"] = str(rtl_params["PACK_LANES"])
 		extra_env["PT_ACC_WIDTH"] = str(rtl_params["ACC_WIDTH"])
+	if "STREAM_CHANNELS" in rtl_params:
+		extra_env["PT_STREAM_CHANNELS"] = str(rtl_params["STREAM_CHANNELS"])
+		extra_env["PT_S_AXIS_CHAN_WIDTH"] = str(rtl_params["S_AXIS_CHANNEL_WIDTH"])
+		extra_env["PT_M_AXIS_CHAN_WIDTH"] = str(rtl_params["M_AXIS_CHANNEL_WIDTH"])
 
 	failure_message: Optional[str] = None
 	try:

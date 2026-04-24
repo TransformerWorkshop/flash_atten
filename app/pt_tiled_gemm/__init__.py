@@ -22,12 +22,22 @@ APP_TARGET_PT = "pt"
 APP_TARGET_PT_DMA_TOP = "pt_dma_top"
 APP_TARGET_PT_V3 = "pt_v3"
 APP_TARGET_PT_DMA_TOP_V3 = "pt_dma_top_v3"
+APP_TARGET_PT_DMA_TOP_V3_CH1 = "pt_dma_top_v3_ch1"
+APP_TARGET_PT_DMA_TOP_V3_CH2 = "pt_dma_top_v3_ch2"
+APP_TARGET_PT_DMA_TOP_V3_CH4 = "pt_dma_top_v3_ch4"
+APP_TARGET_PT_DMA_TOP_V3_128B = "pt_dma_top_v3_128b"
+APP_TARGET_PT_DMA_TOP_V3_128B_STRICT = "pt_dma_top_v3_128b_strict"
 DEFAULT_APP_TARGET = APP_TARGET_PT_DMA_TOP
 SUPPORTED_APP_TARGETS = (
 	APP_TARGET_PT,
 	APP_TARGET_PT_DMA_TOP,
 	APP_TARGET_PT_V3,
 	APP_TARGET_PT_DMA_TOP_V3,
+	APP_TARGET_PT_DMA_TOP_V3_CH1,
+	APP_TARGET_PT_DMA_TOP_V3_CH2,
+	APP_TARGET_PT_DMA_TOP_V3_CH4,
+	APP_TARGET_PT_DMA_TOP_V3_128B,
+	APP_TARGET_PT_DMA_TOP_V3_128B_STRICT,
 )
 
 PT_PARAMS = {
@@ -66,6 +76,39 @@ PT_V3_PARAMS = {
 	"M_WRITE_LANES": TILE_DIM,
 	"M_EXPORT_LANES": TILE_DIM,
 	"M_PHYSICAL_COPIES": 2,
+}
+
+PT_V3_128B_PARAMS = {
+	**PT_V3_PARAMS,
+	"A_LOAD_LANES": 4,
+	"B_LOAD_LANES": 4,
+	"M_EXPORT_LANES": 4,
+}
+
+PT_V3_128B_STRICT_PARAMS = {
+	**PT_V3_128B_PARAMS,
+	"M_WRITE_LANES": 4,
+}
+
+PT_V3_CH1_PARAMS = {
+	**PT_V3_PARAMS,
+	"STREAM_CHANNELS": 1,
+	"S_AXIS_CHANNEL_WIDTH": 512,
+	"M_AXIS_CHANNEL_WIDTH": 512,
+}
+
+PT_V3_CH2_PARAMS = {
+	**PT_V3_PARAMS,
+	"STREAM_CHANNELS": 2,
+	"S_AXIS_CHANNEL_WIDTH": 256,
+	"M_AXIS_CHANNEL_WIDTH": 256,
+}
+
+PT_V3_CH4_PARAMS = {
+	**PT_V3_PARAMS,
+	"STREAM_CHANNELS": 4,
+	"S_AXIS_CHANNEL_WIDTH": 128,
+	"M_AXIS_CHANNEL_WIDTH": 128,
 }
 
 
@@ -148,6 +191,26 @@ def normalize_app_target(target: str | None) -> str:
 		"pt-dma-top-v3": APP_TARGET_PT_DMA_TOP_V3,
 		"dma_top_v3": APP_TARGET_PT_DMA_TOP_V3,
 		"wrapper_v3": APP_TARGET_PT_DMA_TOP_V3,
+		"pt_dma_top_v3_ch1": APP_TARGET_PT_DMA_TOP_V3_CH1,
+		"pt-dma-top-v3-ch1": APP_TARGET_PT_DMA_TOP_V3_CH1,
+		"dma_top_v3_ch1": APP_TARGET_PT_DMA_TOP_V3_CH1,
+		"wrapper_v3_ch1": APP_TARGET_PT_DMA_TOP_V3_CH1,
+		"pt_dma_top_v3_ch2": APP_TARGET_PT_DMA_TOP_V3_CH2,
+		"pt-dma-top-v3-ch2": APP_TARGET_PT_DMA_TOP_V3_CH2,
+		"dma_top_v3_ch2": APP_TARGET_PT_DMA_TOP_V3_CH2,
+		"wrapper_v3_ch2": APP_TARGET_PT_DMA_TOP_V3_CH2,
+		"pt_dma_top_v3_ch4": APP_TARGET_PT_DMA_TOP_V3_CH4,
+		"pt-dma-top-v3-ch4": APP_TARGET_PT_DMA_TOP_V3_CH4,
+		"dma_top_v3_ch4": APP_TARGET_PT_DMA_TOP_V3_CH4,
+		"wrapper_v3_ch4": APP_TARGET_PT_DMA_TOP_V3_CH4,
+		"pt_dma_top_v3_128b": APP_TARGET_PT_DMA_TOP_V3_128B,
+		"pt-dma-top-v3-128b": APP_TARGET_PT_DMA_TOP_V3_128B,
+		"dma_top_v3_128b": APP_TARGET_PT_DMA_TOP_V3_128B,
+		"wrapper_v3_128b": APP_TARGET_PT_DMA_TOP_V3_128B,
+		"pt_dma_top_v3_128b_strict": APP_TARGET_PT_DMA_TOP_V3_128B_STRICT,
+		"pt-dma-top-v3-128b-strict": APP_TARGET_PT_DMA_TOP_V3_128B_STRICT,
+		"dma_top_v3_128b_strict": APP_TARGET_PT_DMA_TOP_V3_128B_STRICT,
+		"wrapper_v3_128b_strict": APP_TARGET_PT_DMA_TOP_V3_128B_STRICT,
 	}
 	try:
 		return alias_map[name]
@@ -165,7 +228,42 @@ def app_target_label(target: str) -> str:
 		return "PT_V3"
 	if normalized_target == APP_TARGET_PT_DMA_TOP_V3:
 		return "PT_DMA_TOP_V3"
+	if normalized_target == APP_TARGET_PT_DMA_TOP_V3_CH1:
+		return "PT_DMA_TOP_V3_CH1"
+	if normalized_target == APP_TARGET_PT_DMA_TOP_V3_CH2:
+		return "PT_DMA_TOP_V3_CH2"
+	if normalized_target == APP_TARGET_PT_DMA_TOP_V3_CH4:
+		return "PT_DMA_TOP_V3_CH4"
+	if normalized_target == APP_TARGET_PT_DMA_TOP_V3_128B:
+		return "PT_DMA_TOP_V3_128B"
+	if normalized_target == APP_TARGET_PT_DMA_TOP_V3_128B_STRICT:
+		return "PT_DMA_TOP_V3_128B_STRICT"
 	raise ValueError(f"unsupported app target {target!r}")
+
+
+def is_wrapper_target(target: str | None) -> bool:
+	normalized_target = normalize_app_target(target)
+	return normalized_target in {
+		APP_TARGET_PT_DMA_TOP,
+		APP_TARGET_PT_DMA_TOP_V3,
+		APP_TARGET_PT_DMA_TOP_V3_CH1,
+		APP_TARGET_PT_DMA_TOP_V3_CH2,
+		APP_TARGET_PT_DMA_TOP_V3_CH4,
+		APP_TARGET_PT_DMA_TOP_V3_128B,
+		APP_TARGET_PT_DMA_TOP_V3_128B_STRICT,
+	}
+
+
+def is_v3_wrapper_target(target: str | None) -> bool:
+	normalized_target = normalize_app_target(target)
+	return normalized_target in {
+		APP_TARGET_PT_DMA_TOP_V3,
+		APP_TARGET_PT_DMA_TOP_V3_CH1,
+		APP_TARGET_PT_DMA_TOP_V3_CH2,
+		APP_TARGET_PT_DMA_TOP_V3_CH4,
+		APP_TARGET_PT_DMA_TOP_V3_128B,
+		APP_TARGET_PT_DMA_TOP_V3_128B_STRICT,
+	}
 
 
 def default_metrics_path(problem: ProblemSpec, target: str = DEFAULT_APP_TARGET) -> Path:
@@ -197,7 +295,14 @@ def hdl_toplevel_for_target(target: str) -> str:
 		return "PT_DMA_TOP"
 	if normalized_target == APP_TARGET_PT_V3:
 		return "PT_V3"
-	if normalized_target == APP_TARGET_PT_DMA_TOP_V3:
+	if normalized_target in {
+		APP_TARGET_PT_DMA_TOP_V3,
+		APP_TARGET_PT_DMA_TOP_V3_CH1,
+		APP_TARGET_PT_DMA_TOP_V3_CH2,
+		APP_TARGET_PT_DMA_TOP_V3_CH4,
+		APP_TARGET_PT_DMA_TOP_V3_128B,
+		APP_TARGET_PT_DMA_TOP_V3_128B_STRICT,
+	}:
 		return "PT_DMA_TOP_V3"
 	raise ValueError(f"unsupported app target {target!r}")
 
@@ -208,4 +313,14 @@ def rtl_params_for_target(target: str) -> dict[str, int]:
 		return dict(PT_PARAMS)
 	if normalized_target in {APP_TARGET_PT_V3, APP_TARGET_PT_DMA_TOP_V3}:
 		return dict(PT_V3_PARAMS)
+	if normalized_target == APP_TARGET_PT_DMA_TOP_V3_CH1:
+		return dict(PT_V3_CH1_PARAMS)
+	if normalized_target == APP_TARGET_PT_DMA_TOP_V3_CH2:
+		return dict(PT_V3_CH2_PARAMS)
+	if normalized_target == APP_TARGET_PT_DMA_TOP_V3_CH4:
+		return dict(PT_V3_CH4_PARAMS)
+	if normalized_target == APP_TARGET_PT_DMA_TOP_V3_128B:
+		return dict(PT_V3_128B_PARAMS)
+	if normalized_target == APP_TARGET_PT_DMA_TOP_V3_128B_STRICT:
+		return dict(PT_V3_128B_STRICT_PARAMS)
 	raise ValueError(f"unsupported app target {target!r}")

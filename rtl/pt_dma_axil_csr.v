@@ -33,6 +33,7 @@ module PT_DMA_AXIL_CSR #(
 	input  wire                       status_desc_overflow,
 	input  wire                       status_resp_overflow,
 	input  wire                       status_desc_miss,
+	input  wire                       status_stream_align_error,
 	input  wire [31:0]                resp_head,
 	input  wire [31:0]                perf_command_push_count,
 	input  wire [31:0]                perf_pt_accept_count,
@@ -45,6 +46,7 @@ module PT_DMA_AXIL_CSR #(
 	output reg                        resp_pop_pulse,
 	output reg                        soft_clear_pulse,
 	output reg                        clear_flags_pulse,
+	output reg  [31:0]                active_channel_mask_reg,
 	output reg  [31:0]                cmd_inst_reg,
 	output reg  [31:0]                cmd_id_reg,
 	output reg  [EXT_ADDR_W-1:0]      a_addr_reg,
@@ -77,6 +79,7 @@ module PT_DMA_AXIL_CSR #(
 	localparam [7:0] ADDR_PUSH_TO_ACCEPT_CYCLES = 8'h58;
 	localparam [7:0] ADDR_ACCEPT_TO_RESP_CYCLES = 8'h5C;
 	localparam [7:0] ADDR_RESP_TO_DONE_CYCLES = 8'h60;
+	localparam [7:0] ADDR_ACTIVE_CHANNEL_MASK = 8'h64;
 
 	localparam [1:0] RESP_OKAY = 2'b00;
 	localparam [7:0] CMD_FIFO_DEPTH_U8 = CMD_FIFO_DEPTH;
@@ -173,7 +176,8 @@ module PT_DMA_AXIL_CSR #(
 		case (rd_addr_r[7:0])
 			ADDR_STATUS: begin
 				read_data_r = {
-					24'd0,
+					23'd0,
+					status_stream_align_error,
 					status_desc_miss,
 					status_resp_overflow,
 					status_desc_overflow,
@@ -205,6 +209,7 @@ module PT_DMA_AXIL_CSR #(
 			ADDR_PUSH_TO_ACCEPT_CYCLES: read_data_r = perf_push_to_accept_cycles;
 			ADDR_ACCEPT_TO_RESP_CYCLES: read_data_r = perf_accept_to_resp_cycles;
 			ADDR_RESP_TO_DONE_CYCLES: read_data_r = perf_resp_to_done_cycles;
+			ADDR_ACTIVE_CHANNEL_MASK: read_data_r = active_channel_mask_reg;
 			default:        read_data_r = 32'd0;
 		endcase
 	end
@@ -234,6 +239,7 @@ module PT_DMA_AXIL_CSR #(
 			resp_pop_pulse    <= 1'b0;
 			soft_clear_pulse  <= 1'b0;
 			clear_flags_pulse <= 1'b0;
+			active_channel_mask_reg <= 32'hFFFF_FFFF;
 			cmd_inst_reg      <= 32'd0;
 			cmd_id_reg        <= 32'd0;
 			a_addr_reg        <= {EXT_ADDR_W{1'b0}};
@@ -254,6 +260,7 @@ module PT_DMA_AXIL_CSR #(
 			resp_pop_pulse    <= 1'b0;
 			soft_clear_pulse  <= 1'b0;
 			clear_flags_pulse <= 1'b0;
+			active_channel_mask_reg <= 32'hFFFF_FFFF;
 			cmd_inst_reg      <= 32'd0;
 			cmd_id_reg        <= 32'd0;
 			a_addr_reg        <= {EXT_ADDR_W{1'b0}};
@@ -291,6 +298,9 @@ module PT_DMA_AXIL_CSR #(
 					end
 					ADDR_CMD_INST: begin
 						cmd_inst_reg <= apply_wstrb32(cmd_inst_reg, s_axil_wdata, s_axil_wstrb);
+					end
+					ADDR_ACTIVE_CHANNEL_MASK: begin
+						active_channel_mask_reg <= apply_wstrb32(active_channel_mask_reg, s_axil_wdata, s_axil_wstrb);
 					end
 					ADDR_CMD_ID: begin
 						cmd_id_reg <= apply_wstrb32(cmd_id_reg, s_axil_wdata, s_axil_wstrb);

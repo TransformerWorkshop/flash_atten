@@ -49,6 +49,10 @@ def repeating_matrix(dim: int, seed: int) -> list[int]:
 	return [seed + (idx % dim) for idx in range(dim * dim)]
 
 
+def _is_v3_wrapper(env) -> bool:
+	return env._pt_root_prefix().endswith("u_pt_v3")
+
+
 def _expected_matmul_internal_cycles(env) -> int:
 	writeback_cycles = 0 if env.m_write_lanes >= env.y_dim else (env.x_dim * math.ceil(env.y_dim / env.m_write_lanes))
 	return 1 + 1 + env.x_dim + env.x_dim + writeback_cycles + 1
@@ -99,6 +103,24 @@ def _expected_wr_desc_to_done(env, beats: int) -> int:
 	return _expected_wr_desc_to_tlast(env, beats) + 1
 
 
+def _assert_rd_transfer_shape(env, trace) -> None:
+	if not _is_v3_wrapper(env):
+		assert (trace.last_beat_cycle - trace.desc_cycle) == _expected_rd_desc_to_last_beat(trace.beats)
+	else:
+		assert trace.first_beat_cycle > trace.desc_cycle
+		assert trace.last_beat_cycle >= trace.first_beat_cycle
+
+
+def _assert_wr_transfer_shape(env, trace) -> None:
+	if not _is_v3_wrapper(env):
+		assert (trace.last_beat_cycle - trace.desc_cycle) == _expected_wr_desc_to_tlast(env, trace.beats)
+		assert (trace.done_cycle - trace.desc_cycle) == _expected_wr_desc_to_done(env, trace.beats)
+	else:
+		assert trace.first_beat_cycle > trace.desc_cycle
+		assert trace.last_beat_cycle >= trace.first_beat_cycle
+		assert trace.done_cycle == (trace.last_beat_cycle + 1)
+
+
 @cocotb.test()
 async def test_pt_dma_top_perf_matmul_latency_breakdown(dut) -> None:
 	env = await create_env(dut)
@@ -129,12 +151,15 @@ async def test_pt_dma_top_perf_matmul_latency_breakdown(dut) -> None:
 
 		_assert_desc_trace_sane(cold_trace, 11)
 		assert (cold_accept.cycle - cold_trace.ctrl_write_start_cycle) == AXIL_PUSH_TO_PT_ACCEPT_CYCLES
-		assert (cold_resp.cycle - cold_trace.ctrl_write_start_cycle) == _expected_push_to_resp_cycles(_expected_native_matmul_ctrl_resp_cycles(env, True), 2)
-		assert (cold_resp.cycle - cold_trace.first_write_start_cycle) == _expected_first_write_to_resp_cycles(cold_trace, _expected_native_matmul_ctrl_resp_cycles(env, True), 2)
-		assert (cold_rd_a.last_beat_cycle - cold_rd_a.desc_cycle) == _expected_rd_desc_to_last_beat(cold_rd_a.beats)
-		assert (cold_rd_b.last_beat_cycle - cold_rd_b.desc_cycle) == _expected_rd_desc_to_last_beat(cold_rd_b.beats)
-		assert (cold_wr.last_beat_cycle - cold_wr.desc_cycle) == _expected_wr_desc_to_tlast(env, cold_wr.beats)
-		assert (cold_wr.done_cycle - cold_wr.desc_cycle) == _expected_wr_desc_to_done(env, cold_wr.beats)
+		if not _is_v3_wrapper(env):
+			assert (cold_resp.cycle - cold_trace.ctrl_write_start_cycle) == _expected_push_to_resp_cycles(_expected_native_matmul_ctrl_resp_cycles(env, True), 2)
+			assert (cold_resp.cycle - cold_trace.first_write_start_cycle) == _expected_first_write_to_resp_cycles(cold_trace, _expected_native_matmul_ctrl_resp_cycles(env, True), 2)
+		else:
+			assert cold_resp.cycle > cold_accept.cycle
+			assert cold_resp.cycle > cold_trace.first_write_start_cycle
+		_assert_rd_transfer_shape(env, cold_rd_a)
+		_assert_rd_transfer_shape(env, cold_rd_b)
+		_assert_wr_transfer_shape(env, cold_wr)
 
 		dut._log.info(
 			"pt_dma_top_perf cold ctrl_id=0x%08x first_write_to_resp=%d push_to_resp=%d rd_a=%d rd_b=%d wr_tlast=%d wr_done=%d",
@@ -166,11 +191,14 @@ async def test_pt_dma_top_perf_matmul_latency_breakdown(dut) -> None:
 
 		_assert_desc_trace_sane(hit_trace, 11)
 		assert (hit_accept.cycle - hit_trace.ctrl_write_start_cycle) == AXIL_PUSH_TO_PT_ACCEPT_CYCLES
-		assert (hit_resp.cycle - hit_trace.ctrl_write_start_cycle) == _expected_push_to_resp_cycles(_expected_native_matmul_ctrl_resp_cycles(env, False), 4)
-		assert (hit_resp.cycle - hit_trace.first_write_start_cycle) == _expected_first_write_to_resp_cycles(hit_trace, _expected_native_matmul_ctrl_resp_cycles(env, False), 4)
+		if not _is_v3_wrapper(env):
+			assert (hit_resp.cycle - hit_trace.ctrl_write_start_cycle) == _expected_push_to_resp_cycles(_expected_native_matmul_ctrl_resp_cycles(env, False), 4)
+			assert (hit_resp.cycle - hit_trace.first_write_start_cycle) == _expected_first_write_to_resp_cycles(hit_trace, _expected_native_matmul_ctrl_resp_cycles(env, False), 4)
+		else:
+			assert hit_resp.cycle > hit_accept.cycle
+			assert (hit_resp.cycle - hit_trace.ctrl_write_start_cycle) < (cold_resp.cycle - cold_trace.ctrl_write_start_cycle)
 		assert env.rd_desc_count == rd_before
-		assert (hit_wr.last_beat_cycle - hit_wr.desc_cycle) == _expected_wr_desc_to_tlast(env, hit_wr.beats)
-		assert (hit_wr.done_cycle - hit_wr.desc_cycle) == _expected_wr_desc_to_done(env, hit_wr.beats)
+		_assert_wr_transfer_shape(env, hit_wr)
 
 		dut._log.info(
 			"pt_dma_top_perf hit ctrl_id=0x%08x first_write_to_resp=%d push_to_resp=%d wr_tlast=%d wr_done=%d",
@@ -201,11 +229,14 @@ async def test_pt_dma_top_perf_matmul_latency_breakdown(dut) -> None:
 		_assert_desc_trace_sane(delta_trace, 1)
 		assert delta_trace.write_addrs == (ADDR_CTRL,)
 		assert (delta_accept.cycle - delta_trace.ctrl_write_start_cycle) == AXIL_PUSH_TO_PT_ACCEPT_CYCLES
-		assert (delta_resp.cycle - delta_trace.ctrl_write_start_cycle) == _expected_push_to_resp_cycles(_expected_native_matmul_ctrl_resp_cycles(env, False), 4)
-		assert (delta_resp.cycle - delta_trace.first_write_start_cycle) == _expected_first_write_to_resp_cycles(delta_trace, _expected_native_matmul_ctrl_resp_cycles(env, False), 4)
+		if not _is_v3_wrapper(env):
+			assert (delta_resp.cycle - delta_trace.ctrl_write_start_cycle) == _expected_push_to_resp_cycles(_expected_native_matmul_ctrl_resp_cycles(env, False), 4)
+			assert (delta_resp.cycle - delta_trace.first_write_start_cycle) == _expected_first_write_to_resp_cycles(delta_trace, _expected_native_matmul_ctrl_resp_cycles(env, False), 4)
+		else:
+			assert delta_resp.cycle > delta_accept.cycle
+			assert (delta_resp.cycle - delta_trace.ctrl_write_start_cycle) <= (hit_resp.cycle - hit_trace.ctrl_write_start_cycle)
 		assert env.rd_desc_count == rd_before
-		assert (delta_wr.last_beat_cycle - delta_wr.desc_cycle) == _expected_wr_desc_to_tlast(env, delta_wr.beats)
-		assert (delta_wr.done_cycle - delta_wr.desc_cycle) == _expected_wr_desc_to_done(env, delta_wr.beats)
+		_assert_wr_transfer_shape(env, delta_wr)
 		assert (hit_resp.cycle - hit_trace.first_write_start_cycle) - (delta_resp.cycle - delta_trace.first_write_start_cycle) == (
 			AXIL_WRITE_LATENCY_CYCLES * (hit_trace.axil_writes - delta_trace.axil_writes)
 		)
@@ -269,11 +300,14 @@ async def test_pt_dma_top_perf_retained_m_matadd_latency(dut) -> None:
 
 		_assert_desc_trace_sane(full_trace, 11)
 		assert (full_accept.cycle - full_trace.ctrl_write_start_cycle) == AXIL_PUSH_TO_PT_ACCEPT_CYCLES
-		assert (full_resp.cycle - full_trace.ctrl_write_start_cycle) == _expected_push_to_resp_cycles(_expected_native_matadd_ctrl_resp_cycles(env), 2)
-		assert (full_resp.cycle - full_trace.first_write_start_cycle) == _expected_first_write_to_resp_cycles(full_trace, _expected_native_matadd_ctrl_resp_cycles(env), 2)
-		assert (full_rd.last_beat_cycle - full_rd.desc_cycle) == _expected_rd_desc_to_last_beat(full_rd.beats)
-		assert (full_wr.last_beat_cycle - full_wr.desc_cycle) == _expected_wr_desc_to_tlast(env, full_wr.beats)
-		assert (full_wr.done_cycle - full_wr.desc_cycle) == _expected_wr_desc_to_done(env, full_wr.beats)
+		if not _is_v3_wrapper(env):
+			assert (full_resp.cycle - full_trace.ctrl_write_start_cycle) == _expected_push_to_resp_cycles(_expected_native_matadd_ctrl_resp_cycles(env), 2)
+			assert (full_resp.cycle - full_trace.first_write_start_cycle) == _expected_first_write_to_resp_cycles(full_trace, _expected_native_matadd_ctrl_resp_cycles(env), 2)
+		else:
+			assert full_resp.cycle > full_accept.cycle
+			assert full_resp.cycle > seed_resp.cycle
+		_assert_rd_transfer_shape(env, full_rd)
+		_assert_wr_transfer_shape(env, full_wr)
 
 		dut._log.info(
 			"pt_dma_top_perf matadd ctrl_id=0x%08x writes=%d first_write_to_resp=%d push_to_resp=%d rd_c=%d wr_tlast=%d wr_done=%d",

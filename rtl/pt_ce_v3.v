@@ -147,8 +147,10 @@ module PT_CE_V3 #(
 	reg        macro_m_wr_buf_r;
 	reg [3:0] macro_m_tiles_r, macro_n_tiles_r, macro_k_tiles_r;
 	reg [TILE_IDX_W-1:0] macro_next_m_tile_r, macro_next_n_tile_r;
+	reg [TILE_IDX_W-1:0] macro_next_m_tile_n, macro_next_n_tile_n;
 
 	reg [2:0] add_state_r;
+	reg [2:0] add_state_n;
 	reg [31:0] add_id_r;
 	reg        add_b_buf_r;
 	reg [B_AW-1:0] add_b_row_base_r;
@@ -156,11 +158,37 @@ module PT_CE_V3 #(
 	reg        add_m_wr_buf_r;
 	reg [M_AW-1:0] add_row_idx_r;
 	reg [GEMM_Y_DIM*DATA_WIDTH-1:0] add_lhs_row_r, add_rhs_row_r;
+	reg [31:0] add_id_n;
+	reg        add_b_buf_n;
+	reg [B_AW-1:0] add_b_row_base_n;
+	reg        add_m_src_buf_n;
+	reg        add_m_wr_buf_n;
+	reg [M_AW-1:0] add_row_idx_n;
+	reg [GEMM_Y_DIM*DATA_WIDTH-1:0] add_lhs_row_n, add_rhs_row_n;
 
 	reg [GEMM_Y_DIM*DATA_WIDTH-1:0] store_result_row_r;
 	reg [M_AW-1:0] store_row_addr_r;
 	reg store_row_last_r;
 	reg [STORE_BASE_W-1:0] store_chunk_base_r;
+	reg [GEMM_Y_DIM*DATA_WIDTH-1:0] store_result_row_n;
+	reg [M_AW-1:0] store_row_addr_n;
+	reg store_row_last_n;
+	reg [STORE_BASE_W-1:0] store_chunk_base_n;
+	reg drain_chunking_n;
+	reg exec_b_buf_n;
+	reg [B_AW-1:0] exec_b_addr_n;
+	reg exec_m_b_buf_n;
+	reg [M_AW-1:0] exec_m_b_addr_n;
+	reg m_mem_wr_en_n;
+	reg m_mem_wr_buf_n;
+	reg [GEMM_Y_DIM-1:0] m_mem_wr_mask_n;
+	reg [M_AW-1:0] m_mem_wr_addr_n;
+	reg [GEMM_Y_DIM*DATA_WIDTH-1:0] m_mem_wr_data_n;
+	reg ce_resp_valid_n;
+	reg [31:0] ce_resp_n;
+	reg [`PT_SIZE_W-1:0] ce_resp_row_chunk_count_n;
+	reg ce_resp_single_output_n;
+	reg ce_irq_n;
 	wire [`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] ce_a_local_elem = ce_a_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L];
 	wire [`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L] ce_b_local_elem = ce_b_local_base[`PT_LOCAL_ELEM_H:`PT_LOCAL_ELEM_L];
 
@@ -340,6 +368,201 @@ module PT_CE_V3 #(
 	assign gema_in_idx   = {{(32-M_AW){1'b0}}, add_row_idx_r};
 	assign gema_in_last  = (add_row_idx_r == (GEMM_X_DIM - 1));
 	assign gema_in_valid = (add_state_r == ADD_SEND);
+
+	always @(*) begin
+		macro_next_m_tile_n = macro_next_m_tile_r;
+		macro_next_n_tile_n = macro_next_n_tile_r;
+		add_state_n = add_state_r;
+		add_id_n = add_id_r;
+		add_b_buf_n = add_b_buf_r;
+		add_b_row_base_n = add_b_row_base_r;
+		add_m_src_buf_n = add_m_src_buf_r;
+		add_m_wr_buf_n = add_m_wr_buf_r;
+		add_row_idx_n = add_row_idx_r;
+		add_lhs_row_n = add_lhs_row_r;
+		add_rhs_row_n = add_rhs_row_r;
+		store_result_row_n = store_result_row_r;
+		store_row_addr_n = store_row_addr_r;
+		store_row_last_n = store_row_last_r;
+		store_chunk_base_n = store_chunk_base_r;
+		drain_chunking_n = drain_chunking_r;
+		exec_b_buf_n = exec_b_buf;
+		exec_b_addr_n = exec_b_addr;
+		exec_m_b_buf_n = exec_m_b_buf;
+		exec_m_b_addr_n = exec_m_b_addr;
+		m_mem_wr_en_n = 1'b0;
+		m_mem_wr_buf_n = m_mem_wr_buf;
+		m_mem_wr_mask_n = {GEMM_Y_DIM{1'b0}};
+		m_mem_wr_addr_n = m_mem_wr_addr;
+		m_mem_wr_data_n = m_mem_wr_data;
+		ce_resp_valid_n = 1'b0;
+		ce_resp_n = ce_resp;
+		ce_resp_row_chunk_count_n = GEMM_X_DIM[`PT_SIZE_W-1:0];
+		ce_resp_single_output_n = 1'b1;
+		ce_irq_n = 1'b0;
+
+		if (schedule_macro_shadow_fire) begin
+			macro_next_m_tile_n = macro_after_queue_m_tile;
+			macro_next_n_tile_n = macro_after_queue_n_tile;
+		end
+		if (ce_cmd_fire_matmul && cmd_macro_has_more_tiles) begin
+			macro_next_m_tile_n = (cmd_matmul_n_tiles == `PT_TILES_1) ? {{(TILE_IDX_W-1){1'b0}}, 1'b1} : {TILE_IDX_W{1'b0}};
+			macro_next_n_tile_n = (cmd_matmul_n_tiles == `PT_TILES_1) ? {TILE_IDX_W{1'b0}} : {{(TILE_IDX_W-1){1'b0}}, 1'b1};
+		end
+
+		if (drain_load_launch_fire || drain_load_exec_fire || drain_load_shadow_done_fire || drain_load_shadow_fire) begin
+			drain_chunking_n = 1'b0;
+			store_chunk_base_n = {STORE_BASE_W{1'b0}};
+		end else if (drain_clear_fire) begin
+			drain_chunking_n = 1'b0;
+		end
+
+		if (drain_valid_r) begin
+			if (DRAIN_FULL_WIDTH) begin
+				if (drain_accept_fire) begin
+					m_mem_wr_en_n = 1'b1;
+					m_mem_wr_buf_n = drain_m_wr_buf_r;
+					m_mem_wr_mask_n = {GEMM_Y_DIM{1'b1}};
+					m_mem_wr_addr_n = drain_quant_store_addr[M_AW-1:0];
+					m_mem_wr_data_n = quant_m_data;
+					if (quant_m_last && drain_final_tile_r) begin
+						ce_resp_n = pack_resp(1'b0, drain_m_wr_buf_r, drain_id_r);
+						ce_resp_valid_n = 1'b1;
+						ce_resp_row_chunk_count_n = drain_single_output_r ?
+						                            GEMM_X_DIM[`PT_SIZE_W-1:0] :
+						                            macro_total_row_chunks;
+						ce_resp_single_output_n = drain_single_output_r;
+						ce_irq_n = 1'b1;
+					end
+				end
+			end else if (!drain_chunking_r) begin
+				if (drain_accept_fire) begin
+					store_result_row_n = quant_m_data;
+					store_row_addr_n = drain_quant_store_addr[M_AW-1:0];
+					store_row_last_n = quant_m_last;
+					store_chunk_base_n = {STORE_BASE_W{1'b0}};
+					drain_chunking_n = 1'b1;
+				end
+			end else begin
+				m_mem_wr_en_n = 1'b1;
+				m_mem_wr_buf_n = drain_m_wr_buf_r;
+				m_mem_wr_mask_n = {GEMM_Y_DIM{1'b0}};
+				m_mem_wr_addr_n = store_row_addr_r;
+				m_mem_wr_data_n = store_result_row_r;
+				for (wi = 0; wi < GEMM_Y_DIM; wi = wi + 1) begin
+					if ((wi >= store_chunk_base_u32) && (wi < store_chunk_limit_u32)) begin
+						m_mem_wr_mask_n[wi] = 1'b1;
+					end
+				end
+				if (store_chunk_last) begin
+					drain_chunking_n = 1'b0;
+					if (store_row_last_r && drain_final_tile_r) begin
+						ce_resp_n = pack_resp(1'b0, drain_m_wr_buf_r, drain_id_r);
+						ce_resp_valid_n = 1'b1;
+						ce_resp_row_chunk_count_n = drain_single_output_r ?
+						                            GEMM_X_DIM[`PT_SIZE_W-1:0] :
+						                            macro_total_row_chunks;
+						ce_resp_single_output_n = drain_single_output_r;
+						ce_irq_n = 1'b1;
+					end
+				end else begin
+					store_chunk_base_n = store_chunk_base_r + M_WRITE_LANES;
+				end
+			end
+		end
+
+		if (launch_cmd_direct_fire || shadow_launch_fire) begin
+			exec_b_buf_n = shadow_launch_fire ? shadow_b_buf_r : ce_b_local_base[`PT_LOCAL_BUF_BIT];
+			exec_b_addr_n = shadow_launch_fire ? shadow_b_row_base_r : cmd_b_row_base;
+		end else if (exec_valid_r && mm_exec_req_fire && ((exec_issue_cnt_r + 1'b1) < exec_total_accs_r)) begin
+			exec_b_addr_n = exec_b_row_base_r + exec_issue_cnt_r[B_AW-1:0] + 1'b1;
+		end
+
+		if (ce_cmd_fire_matadd) begin
+			if (matadd_mwindow_multitile) begin
+				ce_resp_n = pack_resp(1'b1, 1'b0, ce_cmd_id);
+				ce_resp_valid_n = 1'b1;
+				ce_irq_n = 1'b1;
+			end else begin
+				add_state_n = ADD_REQ;
+				add_id_n = ce_cmd_id;
+				add_b_buf_n = ce_b_local_base[`PT_LOCAL_BUF_BIT];
+				add_b_row_base_n = cmd_b_row_base;
+				add_m_src_buf_n = cmd_matadd_m_src_buf;
+				add_m_wr_buf_n = ce_m_wr_buf;
+				add_row_idx_n = {M_AW{1'b0}};
+				exec_b_buf_n = ce_b_local_base[`PT_LOCAL_BUF_BIT];
+				exec_b_addr_n = cmd_b_row_base;
+				exec_m_b_buf_n = cmd_matadd_m_src_buf;
+				exec_m_b_addr_n = {M_AW{1'b0}};
+			end
+		end else begin
+			case (add_state_r)
+				ADD_IDLE: begin
+				end
+				ADD_REQ: begin
+					if (add_req_fire) begin
+						add_state_n = ADD_CAPTURE;
+					end
+				end
+				ADD_CAPTURE: begin
+					add_lhs_row_n = m_mem_row_data;
+					add_rhs_row_n = b_mem_row_data;
+					add_state_n = ADD_SEND;
+				end
+				ADD_SEND: begin
+					if (add_send_fire) begin
+						if (add_row_idx_r != (GEMM_X_DIM - 1)) begin
+							add_row_idx_n = add_row_idx_r + 1'b1;
+						end
+						add_state_n = ADD_WAIT_RESULT;
+					end
+				end
+				ADD_WAIT_RESULT: begin
+					if (add_res_fire) begin
+						store_result_row_n = add_m_data;
+						store_row_addr_n = add_m_idx[M_AW-1:0];
+						store_row_last_n = add_m_last;
+						store_chunk_base_n = {STORE_BASE_W{1'b0}};
+						add_state_n = ADD_STORE;
+					end
+				end
+				ADD_STORE: begin
+					m_mem_wr_en_n = 1'b1;
+					m_mem_wr_buf_n = add_m_wr_buf_r;
+					m_mem_wr_mask_n = {GEMM_Y_DIM{1'b0}};
+					m_mem_wr_addr_n = store_row_addr_r;
+					m_mem_wr_data_n = store_result_row_r;
+					for (wi = 0; wi < GEMM_Y_DIM; wi = wi + 1) begin
+						if ((wi >= store_chunk_base_u32) && (wi < store_chunk_limit_u32)) begin
+							m_mem_wr_mask_n[wi] = 1'b1;
+						end
+					end
+					if (store_chunk_last) begin
+						if (store_row_last_r) begin
+							ce_resp_n = pack_resp(1'b0, add_m_wr_buf_r, add_id_r);
+							ce_resp_valid_n = 1'b1;
+							ce_resp_row_chunk_count_n = GEMM_X_DIM[`PT_SIZE_W-1:0];
+							ce_resp_single_output_n = 1'b1;
+							ce_irq_n = 1'b1;
+							add_state_n = ADD_IDLE;
+						end else begin
+							exec_b_buf_n = add_b_buf_r;
+							exec_b_addr_n = add_b_row_base_r + add_row_idx_r[B_AW-1:0];
+							exec_m_b_buf_n = add_m_src_buf_r;
+							exec_m_b_addr_n = add_row_idx_r;
+							add_state_n = ADD_REQ;
+						end
+					end else begin
+						store_chunk_base_n = store_chunk_base_r + M_WRITE_LANES;
+					end
+				end
+				default: begin
+					add_state_n = ADD_IDLE;
+				end
+			endcase
+		end
+	end
 
 	always @(posedge clk or negedge rstn) begin
 		if (!rstn) begin
@@ -523,12 +746,36 @@ module PT_CE_V3 #(
 			ce_resp_single_output <= 1'b1;
 			ce_irq              <= 1'b0;
 		end else begin
-			ce_resp_valid <= 1'b0;
-			ce_irq        <= 1'b0;
-			ce_resp_row_chunk_count <= GEMM_X_DIM[`PT_SIZE_W-1:0];
-			ce_resp_single_output <= 1'b1;
-			m_mem_wr_en   <= 1'b0;
-			m_mem_wr_mask <= {GEMM_Y_DIM{1'b0}};
+			add_state_r <= add_state_n;
+			add_id_r <= add_id_n;
+			add_b_buf_r <= add_b_buf_n;
+			add_b_row_base_r <= add_b_row_base_n;
+			add_m_src_buf_r <= add_m_src_buf_n;
+			add_m_wr_buf_r <= add_m_wr_buf_n;
+			add_row_idx_r <= add_row_idx_n;
+			add_lhs_row_r <= add_lhs_row_n;
+			add_rhs_row_r <= add_rhs_row_n;
+			store_result_row_r <= store_result_row_n;
+			store_row_addr_r <= store_row_addr_n;
+			store_row_last_r <= store_row_last_n;
+			store_chunk_base_r <= store_chunk_base_n;
+			macro_next_m_tile_r <= macro_next_m_tile_n;
+			macro_next_n_tile_r <= macro_next_n_tile_n;
+			drain_chunking_r <= drain_chunking_n;
+			exec_b_buf <= exec_b_buf_n;
+			exec_b_addr <= exec_b_addr_n;
+			exec_m_b_buf <= exec_m_b_buf_n;
+			exec_m_b_addr <= exec_m_b_addr_n;
+			m_mem_wr_en <= m_mem_wr_en_n;
+			m_mem_wr_buf <= m_mem_wr_buf_n;
+			m_mem_wr_mask <= m_mem_wr_mask_n;
+			m_mem_wr_addr <= m_mem_wr_addr_n;
+			m_mem_wr_data <= m_mem_wr_data_n;
+			ce_resp_valid <= ce_resp_valid_n;
+			ce_resp <= ce_resp_n;
+			ce_resp_row_chunk_count <= ce_resp_row_chunk_count_n;
+			ce_resp_single_output <= ce_resp_single_output_n;
+			ce_irq <= ce_irq_n;
 
 			if (schedule_macro_shadow_fire) begin
 				shadow_valid_r      <= 1'b1;
@@ -545,8 +792,6 @@ module PT_CE_V3 #(
 				shadow_total_n_tiles_r <= macro_n_tiles_r;
 				shadow_single_output_r <= 1'b0;
 				shadow_final_tile_r <= macro_queued_final_tile;
-				macro_next_m_tile_r <= macro_after_queue_m_tile;
-				macro_next_n_tile_r <= macro_after_queue_n_tile;
 			end else if (shadow_launch_fire) begin
 				if (shadow_store_cmd_fire) begin
 					shadow_valid_r      <= 1'b1;
@@ -612,8 +857,6 @@ module PT_CE_V3 #(
 				macro_m_tiles_r     <= cmd_matmul_m_tiles;
 				macro_n_tiles_r     <= cmd_matmul_n_tiles;
 				macro_k_tiles_r     <= cmd_matmul_k_tiles;
-				macro_next_m_tile_r <= (cmd_matmul_n_tiles == `PT_TILES_1) ? {{(TILE_IDX_W-1){1'b0}}, 1'b1} : {TILE_IDX_W{1'b0}};
-				macro_next_n_tile_r <= (cmd_matmul_n_tiles == `PT_TILES_1) ? {TILE_IDX_W{1'b0}} : {{(TILE_IDX_W-1){1'b0}}, 1'b1};
 			end else if (drain_complete_fire && drain_final_tile_r) begin
 				macro_active_r <= 1'b0;
 			end
@@ -636,9 +879,7 @@ module PT_CE_V3 #(
 				exec_issue_cnt_r  <= 16'd0;
 				exec_rsp_cnt_r    <= 16'd0;
 				exec_a_buf        <= shadow_launch_fire ? shadow_a_buf_r : ce_a_local_base[`PT_LOCAL_BUF_BIT];
-				exec_b_buf        <= shadow_launch_fire ? shadow_b_buf_r : ce_b_local_base[`PT_LOCAL_BUF_BIT];
 				exec_a_addr       <= shadow_launch_fire ? shadow_a_row_base_r : cmd_a_row_base;
-				exec_b_addr       <= shadow_launch_fire ? shadow_b_row_base_r : cmd_b_row_base;
 				// In DRAIN_FULL_WIDTH mode, co-launch drain so it can accept
 				// quant results while exec is still feeding A/B rows.
 				end else if (exec_valid_r) begin
@@ -646,7 +887,6 @@ module PT_CE_V3 #(
 					exec_issue_cnt_r <= exec_issue_cnt_r + 1'b1;
 					if ((exec_issue_cnt_r + 1'b1) < exec_total_accs_r) begin
 						exec_a_addr <= exec_a_row_base_r + exec_issue_cnt_r[A_AW-1:0] + 1'b1;
-						exec_b_addr <= exec_b_row_base_r + exec_issue_cnt_r[B_AW-1:0] + 1'b1;
 					end
 				end
 				if (mm_exec_rsp_fire) begin
@@ -672,8 +912,6 @@ module PT_CE_V3 #(
 
 				if (drain_load_launch_fire || drain_load_exec_fire || drain_load_shadow_done_fire || drain_load_shadow_fire) begin
 					drain_valid_r <= 1'b1;
-					drain_chunking_r <= 1'b0;
-					store_chunk_base_r <= {STORE_BASE_W{1'b0}};
 					if (drain_load_shadow_fire) begin
 						drain_id_r <= drain_shadow_id_r;
 						drain_m_wr_buf_r <= drain_shadow_m_wr_buf_r;
@@ -709,156 +947,35 @@ module PT_CE_V3 #(
 					end
 				end else if (drain_clear_fire) begin
 					drain_valid_r <= 1'b0;
-					drain_chunking_r <= 1'b0;
 				end
 
 			if (drain_valid_r) begin
 				if (DRAIN_FULL_WIDTH) begin
 					if (drain_accept_fire) begin
-						m_mem_wr_en   <= 1'b1;
-						m_mem_wr_buf  <= drain_m_wr_buf_r;
-						m_mem_wr_mask <= {GEMM_Y_DIM{1'b1}};
-						m_mem_wr_addr <= drain_quant_store_addr[M_AW-1:0];
-						m_mem_wr_data <= quant_m_data;
 						if (quant_m_last) begin
 							if (drain_final_tile_r) begin
-								ce_resp       <= pack_resp(1'b0, drain_m_wr_buf_r, drain_id_r);
-								ce_resp_valid <= 1'b1;
-								ce_resp_row_chunk_count <= drain_single_output_r ?
-								                           GEMM_X_DIM[`PT_SIZE_W-1:0] :
-								                           macro_total_row_chunks;
-								ce_resp_single_output <= drain_single_output_r;
-								ce_irq        <= 1'b1;
 							end
 						end
 					end
 				end else if (!drain_chunking_r) begin
 					if (drain_accept_fire) begin
-						store_result_row_r <= quant_m_data;
-						store_row_addr_r   <= drain_quant_store_addr[M_AW-1:0];
-						store_row_last_r   <= quant_m_last;
-						store_chunk_base_r <= {STORE_BASE_W{1'b0}};
-						drain_chunking_r   <= 1'b1;
 					end
 				end else begin
-					m_mem_wr_en   <= 1'b1;
-					m_mem_wr_buf  <= drain_m_wr_buf_r;
-					m_mem_wr_mask <= {GEMM_Y_DIM{1'b0}};
-					m_mem_wr_addr <= store_row_addr_r;
-					m_mem_wr_data <= store_result_row_r;
 					for (wi = 0; wi < GEMM_Y_DIM; wi = wi + 1) begin
-						if ((wi >= store_chunk_base_u32) && (wi < store_chunk_limit_u32)) begin
-							m_mem_wr_mask[wi] <= 1'b1;
-						end
 					end
 					if (store_chunk_last) begin
-						drain_chunking_r <= 1'b0;
 						if (store_row_last_r) begin
 							if (drain_final_tile_r) begin
-								ce_resp       <= pack_resp(1'b0, drain_m_wr_buf_r, drain_id_r);
-								ce_resp_valid <= 1'b1;
-								ce_resp_row_chunk_count <= drain_single_output_r ?
-								                           GEMM_X_DIM[`PT_SIZE_W-1:0] :
-								                           macro_total_row_chunks;
-								ce_resp_single_output <= drain_single_output_r;
-								ce_irq        <= 1'b1;
 							end
 						end
-					end else begin
-						store_chunk_base_r <= store_chunk_base_r + M_WRITE_LANES;
 					end
 				end
 			end
 
 			if (ce_cmd_fire_matadd) begin
 				if (matadd_mwindow_multitile) begin
-					ce_resp       <= pack_resp(1'b1, 1'b0, ce_cmd_id);
-					ce_resp_valid <= 1'b1;
-					ce_irq        <= 1'b1;
 				end else begin
-					add_state_r      <= ADD_REQ;
-					add_id_r         <= ce_cmd_id;
-					add_b_buf_r      <= ce_b_local_base[`PT_LOCAL_BUF_BIT];
-					add_b_row_base_r <= cmd_b_row_base;
-					add_m_src_buf_r  <= cmd_matadd_m_src_buf;
-					add_m_wr_buf_r   <= ce_m_wr_buf;
-					add_row_idx_r    <= {M_AW{1'b0}};
-					exec_b_buf       <= ce_b_local_base[`PT_LOCAL_BUF_BIT];
-					exec_b_addr      <= cmd_b_row_base;
-					exec_m_b_buf     <= cmd_matadd_m_src_buf;
-					exec_m_b_addr    <= {M_AW{1'b0}};
 				end
-			end else begin
-				case (add_state_r)
-					ADD_IDLE: begin
-					end
-
-					ADD_REQ: begin
-						if (add_req_fire) begin
-							add_state_r <= ADD_CAPTURE;
-						end
-					end
-
-					ADD_CAPTURE: begin
-						add_lhs_row_r <= m_mem_row_data;
-						add_rhs_row_r <= b_mem_row_data;
-						add_state_r   <= ADD_SEND;
-					end
-
-					ADD_SEND: begin
-						if (add_send_fire) begin
-							if (add_row_idx_r != (GEMM_X_DIM - 1)) begin
-								add_row_idx_r <= add_row_idx_r + 1'b1;
-							end
-							add_state_r <= ADD_WAIT_RESULT;
-						end
-					end
-
-					ADD_WAIT_RESULT: begin
-						if (add_res_fire) begin
-							store_result_row_r <= add_m_data;
-							store_row_addr_r   <= add_m_idx[M_AW-1:0];
-							store_row_last_r   <= add_m_last;
-							store_chunk_base_r <= {STORE_BASE_W{1'b0}};
-							add_state_r        <= ADD_STORE;
-						end
-					end
-
-					ADD_STORE: begin
-						m_mem_wr_en   <= 1'b1;
-						m_mem_wr_buf  <= add_m_wr_buf_r;
-						m_mem_wr_mask <= {GEMM_Y_DIM{1'b0}};
-						m_mem_wr_addr <= store_row_addr_r;
-						m_mem_wr_data <= store_result_row_r;
-						for (wi = 0; wi < GEMM_Y_DIM; wi = wi + 1) begin
-							if ((wi >= store_chunk_base_u32) && (wi < store_chunk_limit_u32)) begin
-								m_mem_wr_mask[wi] <= 1'b1;
-							end
-						end
-						if (store_chunk_last) begin
-							if (store_row_last_r) begin
-								ce_resp       <= pack_resp(1'b0, add_m_wr_buf_r, add_id_r);
-								ce_resp_valid <= 1'b1;
-								ce_resp_row_chunk_count <= GEMM_X_DIM[`PT_SIZE_W-1:0];
-								ce_resp_single_output <= 1'b1;
-								ce_irq        <= 1'b1;
-								add_state_r   <= ADD_IDLE;
-							end else begin
-								exec_b_buf   <= add_b_buf_r;
-								exec_b_addr  <= add_b_row_base_r + add_row_idx_r[B_AW-1:0];
-								exec_m_b_buf <= add_m_src_buf_r;
-								exec_m_b_addr <= add_row_idx_r;
-								add_state_r  <= ADD_REQ;
-							end
-						end else begin
-							store_chunk_base_r <= store_chunk_base_r + M_WRITE_LANES;
-						end
-					end
-
-					default: begin
-						add_state_r <= ADD_IDLE;
-					end
-				endcase
 			end
 		end
 	end

@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import os
 import random
+import sys
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,21 @@ from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, ReadOnly, RisingEdge, Timer
 from cocotb.utils import get_sim_time
 from functional_coverage import FunctionalCoverageRecorder, classify_csr_pattern
+_SELF_PATH = Path(__file__).resolve()
+REPO_ROOT = next(
+	(
+		parent
+		for parent in [_SELF_PATH.parent, *_SELF_PATH.parents]
+		if (parent / "app" / "pt_tiled_gemm").exists() and (parent / "sim" / "cocotb").exists()
+	),
+	Path.cwd(),
+)
+COCOTB_ROOT = REPO_ROOT / "sim" / "cocotb"
+if str(REPO_ROOT) not in sys.path:
+	sys.path.insert(0, str(REPO_ROOT))
+if str(COCOTB_ROOT) not in sys.path:
+	sys.path.insert(0, str(COCOTB_ROOT))
+from app.pt_tiled_gemm import is_v3_wrapper_target, normalize_app_target
 from app.pt_tiled_gemm.submission import (
 	SUBMISSION_MODE_LEGACY,
 	normalize_submission_mode,
@@ -60,6 +76,7 @@ STATUS_CMD_OVERFLOW = 1 << 4
 STATUS_DESC_OVERFLOW = 1 << 5
 STATUS_RESP_OVERFLOW = 1 << 6
 STATUS_DESC_MISS = 1 << 7
+STATUS_STREAM_ALIGN_ERROR = 1 << 8
 
 ADDR_CTRL = 0x00
 ADDR_STATUS = 0x04
@@ -85,6 +102,7 @@ ADDR_COMPACT_COMMIT_COUNT = 0x54
 ADDR_PUSH_TO_ACCEPT_CYCLES = 0x58
 ADDR_ACCEPT_TO_RESP_CYCLES = 0x5C
 ADDR_RESP_TO_DONE_CYCLES = 0x60
+ADDR_ACTIVE_CHANNEL_MASK = 0x64
 
 DEFAULT_A_BASE = 0x0000_1000
 DEFAULT_B_BASE = 0x0000_2000
@@ -334,6 +352,13 @@ class AbInjection:
 	error_mode: Optional[str] = None
 	error_at_beat: int = 0
 	done_delay: int = 0
+	channel_group_delay_cycles: Tuple[int, ...] = ()
+	suppress_channel_mask: int = 0
+	tuser_mismatch_channel: int = -1
+	tlast_mismatch_channel: int = -1
+	tkeep_mismatch_channel: int = -1
+	tid_mismatch_channel: int = -1
+	tdest_mismatch_channel: int = -1
 
 
 @dataclass
@@ -409,6 +434,13 @@ class PTDmaTopEnv:
 		self.b_load_lanes = env_int("PT_B_LOAD_LANES", 1)
 		self.m_write_lanes = env_int("PT_M_WRITE_LANES", 1)
 		self.m_export_lanes = env_int("PT_M_EXPORT_LANES", 1)
+		self.stream_channels = env_int("PT_STREAM_CHANNELS", 1)
+		self.s_axis_chan_width = env_int("PT_S_AXIS_CHAN_WIDTH", max(self.a_load_lanes, self.b_load_lanes) * self.data_width)
+		self.m_axis_chan_width = env_int("PT_M_AXIS_CHAN_WIDTH", self.m_export_lanes * self.data_width)
+		self.s_axis_chan_words = self.s_axis_chan_width // self.data_width
+		self.m_axis_chan_words = self.m_axis_chan_width // self.data_width
+		self.s_axis_group_words = self.stream_channels * self.s_axis_chan_words
+		self.m_axis_group_words = self.stream_channels * self.m_axis_chan_words
 		self.m_physical_copies = env_int("PT_M_PHYSICAL_COPIES", 3)
 		self.ext_addr_w = env_int("PT_EXT_ADDR_W", 32)
 		self.submission_mode = normalize_submission_mode(os.getenv("PT_APP_SUBMISSION_MODE", SUBMISSION_MODE_LEGACY))
@@ -566,14 +598,14 @@ class PTDmaTopEnv:
 		self.dut.s_axis_tdata.value = 0
 		self.dut.s_axis_tstrb.value = 0
 		self.dut.s_axis_tlast.value = 0
-		self.dut.s_axis_tkeep.value = 1
+		self.dut.s_axis_tkeep.value = (1 << self.stream_channels) - 1
 		self.dut.s_axis_tid.value = 0
 		self.dut.s_axis_tdest.value = 0
 		self.dut.s_axis_tuser.value = 0
 		self.dut.wr_dma_desc_ready.value = 1
 		self.dut.wr_dma_done.value = 0
 		self.dut.wr_dma_error.value = 0
-		self.dut.m_axis_tready.value = 1
+		self.dut.m_axis_tready.value = (1 << self.stream_channels) - 1
 
 	def _apply_soft_clear_model(self) -> None:
 		dma_req_count = self.dma_req_count
@@ -635,6 +667,7 @@ class PTDmaTopEnv:
 			ADDR_C_ADDR_HI: 0,
 			ADDR_M_ADDR_LO: 0,
 			ADDR_M_ADDR_HI: 0,
+			ADDR_ACTIVE_CHANNEL_MASK: 0xFFFF_FFFF,
 		}
 
 	def current_cycle(self) -> int:
@@ -656,6 +689,9 @@ class PTDmaTopEnv:
 			resp_to_done_cycles=await self.axil_read(ADDR_RESP_TO_DONE_CYCLES),
 		)
 
+	async def set_active_channel_mask(self, mask: int) -> None:
+		await self.axil_write(ADDR_ACTIVE_CHANNEL_MASK, mask & 0xFFFF_FFFF)
+
 	def snapshot(self) -> CounterSnapshot:
 		return CounterSnapshot(self.dma_req_count, self.export_req_count, self.export_done_count, self.export_error_count, self.irq_count)
 
@@ -668,6 +704,103 @@ class PTDmaTopEnv:
 			self.m_axis_ready_pattern = m_axis_ready
 		if s_axis_valid is not None:
 			self.s_axis_valid_pattern = s_axis_valid
+
+	def _channel_ready_mask(self, ready_value: int) -> int:
+		return ((1 << self.stream_channels) - 1) if ready_value else 0
+
+	def _expand_tuser(self, value: int) -> int:
+		word = 0
+		for ch_idx in range(self.stream_channels):
+			word |= (value & 0x3) << (ch_idx * 2)
+		return word
+
+	def _active_channel_mask(self) -> int:
+		mask = self._shadow_word(ADDR_ACTIVE_CHANNEL_MASK) & ((1 << self.stream_channels) - 1)
+		return mask if mask != 0 else ((1 << self.stream_channels) - 1)
+
+	def _split_input_beat(self, beat_data: int, beat_strb: int, req_tuser: int, is_last_beat: bool) -> List[Dict[str, List[int]]]:
+		groups: List[Dict[str, List[int]]] = []
+		internal_words = max(self.a_load_lanes, self.b_load_lanes)
+		active_mask = self._active_channel_mask()
+		active_channels = [ch_idx for ch_idx in range(self.stream_channels) if (active_mask & (1 << ch_idx))]
+		group_words = len(active_channels) * self.s_axis_chan_words
+		assert group_words > 0
+		assert internal_words % group_words == 0
+		group_count = internal_words // group_words
+		for group_idx in range(group_count):
+			data_by_channel: List[int] = []
+			strb_by_channel: List[int] = []
+			last_by_channel: List[int] = []
+			keep_by_channel: List[int] = []
+			user_by_channel: List[int] = []
+			tid_by_channel: List[int] = []
+			tdest_by_channel: List[int] = []
+			for ch_idx in range(self.stream_channels):
+				data = 0
+				strb = 0
+				if ch_idx in active_channels:
+					active_slot = active_channels.index(ch_idx)
+					for lane_idx in range(self.s_axis_chan_words):
+						word_idx = (group_idx * group_words) + (active_slot * self.s_axis_chan_words) + lane_idx
+						word = (beat_data >> (word_idx * self.data_width)) & ((1 << self.data_width) - 1)
+						word_strb = (beat_strb >> (word_idx * (self.data_width // 8))) & ((1 << (self.data_width // 8)) - 1)
+						data |= word << (lane_idx * self.data_width)
+						strb |= word_strb << (lane_idx * (self.data_width // 8))
+				data_by_channel.append(data)
+				strb_by_channel.append(strb)
+				last_by_channel.append(1 if ((active_mask & (1 << ch_idx)) and is_last_beat and (group_idx == (group_count - 1))) else 0)
+				keep_by_channel.append(1 if (active_mask & (1 << ch_idx)) else 0)
+				user_by_channel.append((req_tuser & 0x3) if (active_mask & (1 << ch_idx)) else 0)
+				tid_by_channel.append(0)
+				tdest_by_channel.append(0)
+			groups.append(
+				{
+					"data": data_by_channel,
+					"strb": strb_by_channel,
+					"last": last_by_channel,
+					"keep": keep_by_channel,
+					"user": user_by_channel,
+					"tid": tid_by_channel,
+					"tdest": tdest_by_channel,
+				}
+			)
+		return groups
+
+	def _pack_input_group(self, group: Dict[str, List[int]]) -> Tuple[int, int, int, int, int, int, int]:
+		data = 0
+		strb = 0
+		tuser = 0
+		tlast = 0
+		tkeep = 0
+		tid = 0
+		tdest = 0
+		for ch_idx in range(self.stream_channels):
+			data |= int(group["data"][ch_idx]) << (ch_idx * self.s_axis_chan_width)
+			strb |= int(group["strb"][ch_idx]) << (ch_idx * (self.s_axis_chan_width // 8))
+			tuser |= (int(group["user"][ch_idx]) & 0x3) << (ch_idx * 2)
+			tlast |= (int(group["last"][ch_idx]) & 0x1) << ch_idx
+			tkeep |= (int(group["keep"][ch_idx]) & 0x1) << ch_idx
+			tid |= (int(group["tid"][ch_idx]) & 0x1) << ch_idx
+			tdest |= (int(group["tdest"][ch_idx]) & 0x1) << ch_idx
+		return data, strb, tuser, tlast, tkeep, tid, tdest
+
+	def _split_output_beat(self, beat_data: int, beat_strb: int, exp_buffer: int, is_last_beat: bool) -> List[Tuple[int, int, int, int]]:
+		groups: List[Tuple[int, int, int, int]] = []
+		assert self.m_export_lanes % self.m_axis_group_words == 0
+		group_count = self.m_export_lanes // self.m_axis_group_words
+		for group_idx in range(group_count):
+			data = 0
+			strb = 0
+			for ch_idx in range(self.stream_channels):
+				for lane_idx in range(self.m_axis_chan_words):
+					word_idx = (group_idx * self.m_axis_group_words) + (ch_idx * self.m_axis_chan_words) + lane_idx
+					word = (beat_data >> (word_idx * self.data_width)) & ((1 << self.data_width) - 1)
+					word_strb = (beat_strb >> (word_idx * (self.data_width // 8))) & ((1 << (self.data_width // 8)) - 1)
+					data |= word << ((ch_idx * self.m_axis_chan_width) + (lane_idx * self.data_width))
+					strb |= word_strb << ((ch_idx * (self.m_axis_chan_width // 8)) + (lane_idx * (self.data_width // 8)))
+			last_mask = ((1 << self.stream_channels) - 1) if (is_last_beat and (group_idx == (group_count - 1))) else 0
+			groups.append((data, strb, self._expand_tuser(exp_buffer), last_mask))
+		return groups
 
 	def queue_ab_injection(self, injection: AbInjection) -> None:
 		self.ab_injections.append(injection)
@@ -711,7 +844,8 @@ class PTDmaTopEnv:
 		raise AssertionError(f"{label} timeout")
 
 	def _pt_root_prefix(self) -> str:
-		return "u_pt.u_pt_v3" if os.getenv("PT_APP_TARGET", "").strip().lower() == "pt_dma_top_v3" else "u_pt.u_pt_v2"
+		target = normalize_app_target(os.getenv("PT_APP_TARGET", "pt_dma_top"))
+		return "u_pt.u_pt_v3" if is_v3_wrapper_target(target) else "u_pt.u_pt_v2"
 
 	def _auto_descriptor_addrs(self, ctrl_id: int) -> DescriptorAddrs:
 		base_id = ctrl_id & 0xFFFF_FFFF
@@ -1384,7 +1518,7 @@ class PTDmaTopEnv:
 			while True:
 				self.dut.rd_dma_desc_ready.value = 0 if self.dma_stream_busy else self.dma_req_ready_pattern.next()
 				self.dut.wr_dma_desc_ready.value = 0 if self.export_busy else self.m_dma_req_ready_pattern.next()
-				self.dut.m_axis_tready.value = self.m_axis_ready_pattern.next()
+				self.dut.m_axis_tready.value = self._channel_ready_mask(self.m_axis_ready_pattern.next())
 				await RisingEdge(self.dut.clk)
 		except Exception:
 			self.dut._log.exception("ready_driver crashed")
@@ -1772,40 +1906,118 @@ class PTDmaTopEnv:
 		first_beat_cycle = self.current_cycle()
 		last_beat_cycle = self.current_cycle()
 		bad_tuser = MATRIX_B_TUSER if req_tuser == MATRIX_A_TUSER else MATRIX_A_TUSER
+		delay_by_channel = list(injection.channel_group_delay_cycles[: self.stream_channels]) if injection.channel_group_delay_cycles else []
+		if len(delay_by_channel) < self.stream_channels:
+			delay_by_channel.extend([0] * (self.stream_channels - len(delay_by_channel)))
+		sideband_mismatch_active = any(
+			value >= 0
+			for value in (
+				injection.tuser_mismatch_channel,
+				injection.tlast_mismatch_channel,
+				injection.tkeep_mismatch_channel,
+				injection.tid_mismatch_channel,
+				injection.tdest_mismatch_channel,
+			)
+		)
 		for beat_idx, (word, strb) in enumerate(beats):
-			while True:
-				offer = self.s_axis_valid_pattern.next()
-				if not offer:
+			groups = self._split_input_beat(word, strb, bad_tuser if injection.wrong_tuser else req_tuser, beat_idx == (len(beats) - 1))
+			for group in groups:
+				if injection.tuser_mismatch_channel >= 0 and injection.tuser_mismatch_channel < self.stream_channels:
+					group["user"][injection.tuser_mismatch_channel] = bad_tuser & 0x3
+				if injection.tlast_mismatch_channel >= 0 and injection.tlast_mismatch_channel < self.stream_channels:
+					group["last"][injection.tlast_mismatch_channel] ^= 0x1
+				if injection.tkeep_mismatch_channel >= 0 and injection.tkeep_mismatch_channel < self.stream_channels:
+					group["keep"][injection.tkeep_mismatch_channel] ^= 0x1
+				if injection.tid_mismatch_channel >= 0 and injection.tid_mismatch_channel < self.stream_channels:
+					group["tid"][injection.tid_mismatch_channel] ^= 0x1
+				if injection.tdest_mismatch_channel >= 0 and injection.tdest_mismatch_channel < self.stream_channels:
+					group["tdest"][injection.tdest_mismatch_channel] ^= 0x1
+				pending = [False] * self.stream_channels
+				accepted = [False] * self.stream_channels
+				delay_remaining = list(delay_by_channel)
+				required_mask = self._active_channel_mask() & ~injection.suppress_channel_mask
+				while True:
+					if ((sum((1 << idx) for idx, done in enumerate(accepted) if done)) & required_mask) == required_mask:
+						break
+					offer = self.s_axis_valid_pattern.next()
+					for ch_idx in range(self.stream_channels):
+						if injection.suppress_channel_mask & (1 << ch_idx):
+							pending[ch_idx] = False
+						elif accepted[ch_idx]:
+							pending[ch_idx] = False
+						elif delay_remaining[ch_idx] > 0:
+							delay_remaining[ch_idx] -= 1
+							pending[ch_idx] = False
+						else:
+							pending[ch_idx] = bool(offer)
+					group_data, group_strb, group_user, group_last, group_keep, group_tid, group_tdest = self._pack_input_group(group)
+					tvalid_mask = 0
+					for ch_idx in range(self.stream_channels):
+						if pending[ch_idx]:
+							tvalid_mask |= 1 << ch_idx
+					self.dut.s_axis_tvalid.value = tvalid_mask
+					self.dut.s_axis_tdata.value = group_data
+					self.dut.s_axis_tstrb.value = group_strb
+					self.dut.s_axis_tuser.value = group_user
+					self.dut.s_axis_tlast.value = group_last
+					self.dut.s_axis_tkeep.value = group_keep
+					self.dut.s_axis_tid.value = group_tid
+					self.dut.s_axis_tdest.value = group_tdest
+					await RisingEdge(self.dut.clk)
+					ready_mask = value_to_int(self.dut.s_axis_tready.value)
+					for ch_idx in range(self.stream_channels):
+						if pending[ch_idx] and (ready_mask & (1 << ch_idx)):
+							accepted[ch_idx] = True
+							if beat_idx == 0 and last_beat_cycle == first_beat_cycle:
+								first_beat_cycle = self.current_cycle()
+							last_beat_cycle = self.current_cycle()
+					if tvalid_mask == 0:
+						self.dut.s_axis_tvalid.value = 0
+						self.dut.s_axis_tlast.value = 0
+						self.dut.s_axis_tkeep.value = (1 << self.stream_channels) - 1
+						self.dut.s_axis_tid.value = 0
+						self.dut.s_axis_tdest.value = 0
+						self.dut.s_axis_tuser.value = 0
+				if (injection.suppress_channel_mask & self._active_channel_mask()) != 0:
 					self.dut.s_axis_tvalid.value = 0
 					self.dut.s_axis_tlast.value = 0
-					await RisingEdge(self.dut.clk)
-					continue
-				self.dut.s_axis_tvalid.value = 1
-				self.dut.s_axis_tdata.value = word
-				self.dut.s_axis_tstrb.value = strb
-				self.dut.s_axis_tuser.value = bad_tuser if injection.wrong_tuser else req_tuser
-				self.dut.s_axis_tlast.value = 1 if beat_idx == (len(beats) - 1) else 0
-				await RisingEdge(self.dut.clk)
-				if value_to_int(self.dut.s_axis_tready.value):
-					if beat_idx == 0:
-						first_beat_cycle = self.current_cycle()
+					return first_beat_cycle, last_beat_cycle
+				if sideband_mismatch_active:
+					self.dut.s_axis_tvalid.value = 0
+					self.dut.s_axis_tlast.value = 0
+					self.dut.s_axis_tkeep.value = (1 << self.stream_channels) - 1
+					self.dut.s_axis_tid.value = 0
+					self.dut.s_axis_tdest.value = 0
+					self.dut.s_axis_tuser.value = 0
+					return first_beat_cycle, last_beat_cycle
+				if injection.wrong_tuser:
+					self.dut.s_axis_tvalid.value = 0
+					self.dut.s_axis_tlast.value = 0
+					self.dut.s_axis_tkeep.value = (1 << self.stream_channels) - 1
+					self.dut.s_axis_tid.value = 0
+					self.dut.s_axis_tdest.value = 0
+					self.dut.s_axis_tuser.value = 0
+					return first_beat_cycle, last_beat_cycle
+				if beat_idx == 0 and last_beat_cycle == first_beat_cycle:
+					first_beat_cycle = self.current_cycle()
+				if any(accepted):
 					last_beat_cycle = self.current_cycle()
-					break
 			if injection.error_mode == "mid_stream" and beat_idx == injection.error_at_beat:
 				self.dut.s_axis_tvalid.value = 0
 				self.dut.s_axis_tlast.value = 0
+				self.dut.s_axis_tkeep.value = (1 << self.stream_channels) - 1
 				self.dut.rd_dma_error.value = 1
 				for _ in range(injection.done_delay):
 					await RisingEdge(self.dut.clk)
 				await RisingEdge(self.dut.clk)
 				self.dut.rd_dma_error.value = 0
 				return first_beat_cycle, self.current_cycle()
-			if injection.wrong_tuser:
-				self.dut.s_axis_tvalid.value = 0
-				self.dut.s_axis_tlast.value = 0
-				return first_beat_cycle, last_beat_cycle
 		self.dut.s_axis_tvalid.value = 0
 		self.dut.s_axis_tlast.value = 0
+		self.dut.s_axis_tkeep.value = (1 << self.stream_channels) - 1
+		self.dut.s_axis_tid.value = 0
+		self.dut.s_axis_tdest.value = 0
+		self.dut.s_axis_tuser.value = 0
 		if injection.error_mode == "after_stream":
 			self.dut.rd_dma_error.value = 1
 			for _ in range(injection.done_delay):
@@ -1884,16 +2096,23 @@ class PTDmaTopEnv:
 			await ReadOnly()
 			if value_to_int(self.dut.clear.value):
 				return first_beat_cycle, last_beat_cycle, self.current_cycle()
-			if value_to_int(self.dut.m_axis_tvalid.value) and value_to_int(self.dut.m_axis_tready.value):
-				actual_word = value_to_int(self.dut.m_axis_tdata.value)
+			full_mask = (1 << self.stream_channels) - 1
+			if value_to_int(self.dut.m_axis_tvalid.value) == full_mask and value_to_int(self.dut.m_axis_tready.value) == full_mask:
 				expected_word, expected_strb = expected_beats[beat_idx]
-				assert actual_word == expected_word
-				assert value_to_int(self.dut.m_axis_tstrb.value) == expected_strb
-				assert value_to_int(self.dut.m_axis_tkeep.value) == 1
-				assert value_to_int(self.dut.m_axis_tid.value) == 0
-				assert value_to_int(self.dut.m_axis_tdest.value) == 0
-				assert value_to_int(self.dut.m_axis_tuser.value) == expected.buffer
-				assert value_to_int(self.dut.m_axis_tlast.value) == int(beat_idx == (len(expected_beats) - 1))
+				groups = self._split_output_beat(expected_word, expected_strb, expected.buffer, beat_idx == (len(expected_beats) - 1))
+				group_idx = 0
+				for group_data, group_strb, group_user, group_last in groups:
+					if group_idx != 0:
+						await RisingEdge(self.dut.clk)
+						await ReadOnly()
+					assert value_to_int(self.dut.m_axis_tdata.value) == group_data
+					assert value_to_int(self.dut.m_axis_tstrb.value) == group_strb
+					assert value_to_int(self.dut.m_axis_tkeep.value) == full_mask
+					assert value_to_int(self.dut.m_axis_tid.value) == 0
+					assert value_to_int(self.dut.m_axis_tdest.value) == 0
+					assert value_to_int(self.dut.m_axis_tuser.value) == group_user
+					assert value_to_int(self.dut.m_axis_tlast.value) == group_last
+					group_idx += 1
 				if beat_idx == 0:
 					first_beat_cycle = self.current_cycle()
 				last_beat_cycle = self.current_cycle()

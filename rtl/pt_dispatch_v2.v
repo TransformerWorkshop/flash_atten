@@ -52,7 +52,6 @@ module PT_DISPATCH_V2 #(
 	wire ctrl_load_need_b = ctrl_inst[`PT_LOAD_NEED_B_BIT];
 	wire [`PT_SIZE_W-1:0] ctrl_load_a_size = ctrl_inst[`PT_LOAD_A_SIZE_H:`PT_LOAD_A_SIZE_L];
 	wire [`PT_SIZE_W-1:0] ctrl_load_b_size = ctrl_inst[`PT_LOAD_B_SIZE_H:`PT_LOAD_B_SIZE_L];
-	wire [5:0] ctrl_load_reserved = ctrl_inst[`PT_LOAD_RSV_H:`PT_LOAD_RSV_L];
 	wire [1:0] ctrl_load_m_code = ctrl_inst[`PT_LOAD_M_CODE_H:`PT_LOAD_M_CODE_L];
 	wire [1:0] ctrl_load_n_code = ctrl_inst[`PT_LOAD_N_CODE_H:`PT_LOAD_N_CODE_L];
 	wire [1:0] ctrl_load_k_code = ctrl_inst[`PT_LOAD_K_CODE_H:`PT_LOAD_K_CODE_L];

@@ -40,6 +40,11 @@ APP_TARGET_PT = "pt"
 APP_TARGET_PT_DMA_TOP = "pt_dma_top"
 APP_TARGET_PT_V3 = "pt_v3"
 APP_TARGET_PT_DMA_TOP_V3 = "pt_dma_top_v3"
+APP_TARGET_PT_DMA_TOP_V3_CH1 = "pt_dma_top_v3_ch1"
+APP_TARGET_PT_DMA_TOP_V3_CH2 = "pt_dma_top_v3_ch2"
+APP_TARGET_PT_DMA_TOP_V3_CH4 = "pt_dma_top_v3_ch4"
+APP_TARGET_PT_DMA_TOP_V3_128B = "pt_dma_top_v3_128b"
+APP_TARGET_PT_DMA_TOP_V3_128B_STRICT = "pt_dma_top_v3_128b_strict"
 DEFAULT_RUN_TARGET = APP_TARGET_PT_DMA_TOP
 EXTENDED_SEEDS = [10, 110, 210]
 SOAK_RANDOM_CASES = 100
@@ -138,7 +143,7 @@ class RunConfig:
 
 def parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(description="Run PT cocotb blackbox regressions")
-	parser.add_argument("suite", choices=["smoke", "full", "randomized", "extended", "ci", "stress", "soak", "coverage", "perf", "axil", "axil_perf"])
+	parser.add_argument("suite", choices=["smoke", "full", "randomized", "extended", "ci", "stress", "soak", "coverage", "perf", "axil", "axil_perf", "shell_sim"])
 	parser.add_argument("--sim", default=os.getenv("SIM", "icarus"))
 	parser.add_argument("--target", default=os.getenv("TARGET", DEFAULT_RUN_TARGET), help="Regression target: pt or pt_dma_top")
 	parser.add_argument("--seed", type=int, default=None, help="Override random seed for the selected suite")
@@ -173,11 +178,31 @@ def normalize_target(target: str) -> str:
 		"pt-dma-top-v3": APP_TARGET_PT_DMA_TOP_V3,
 		"dma_top_v3": APP_TARGET_PT_DMA_TOP_V3,
 		"wrapper_v3": APP_TARGET_PT_DMA_TOP_V3,
+		"pt_dma_top_v3_ch1": APP_TARGET_PT_DMA_TOP_V3_CH1,
+		"pt-dma-top-v3-ch1": APP_TARGET_PT_DMA_TOP_V3_CH1,
+		"dma_top_v3_ch1": APP_TARGET_PT_DMA_TOP_V3_CH1,
+		"wrapper_v3_ch1": APP_TARGET_PT_DMA_TOP_V3_CH1,
+		"pt_dma_top_v3_ch2": APP_TARGET_PT_DMA_TOP_V3_CH2,
+		"pt-dma-top-v3-ch2": APP_TARGET_PT_DMA_TOP_V3_CH2,
+		"dma_top_v3_ch2": APP_TARGET_PT_DMA_TOP_V3_CH2,
+		"wrapper_v3_ch2": APP_TARGET_PT_DMA_TOP_V3_CH2,
+		"pt_dma_top_v3_ch4": APP_TARGET_PT_DMA_TOP_V3_CH4,
+		"pt-dma-top-v3-ch4": APP_TARGET_PT_DMA_TOP_V3_CH4,
+		"dma_top_v3_ch4": APP_TARGET_PT_DMA_TOP_V3_CH4,
+		"wrapper_v3_ch4": APP_TARGET_PT_DMA_TOP_V3_CH4,
+		"pt_dma_top_v3_128b": APP_TARGET_PT_DMA_TOP_V3_128B,
+		"pt-dma-top-v3-128b": APP_TARGET_PT_DMA_TOP_V3_128B,
+		"dma_top_v3_128b": APP_TARGET_PT_DMA_TOP_V3_128B,
+		"wrapper_v3_128b": APP_TARGET_PT_DMA_TOP_V3_128B,
+		"pt_dma_top_v3_128b_strict": APP_TARGET_PT_DMA_TOP_V3_128B_STRICT,
+		"pt-dma-top-v3-128b-strict": APP_TARGET_PT_DMA_TOP_V3_128B_STRICT,
+		"dma_top_v3_128b_strict": APP_TARGET_PT_DMA_TOP_V3_128B_STRICT,
+		"wrapper_v3_128b_strict": APP_TARGET_PT_DMA_TOP_V3_128B_STRICT,
 	}
 	try:
 		return alias_map[name]
 	except KeyError as exc:
-		raise SystemExit(f"unsupported target {target!r}; expected one of: pt, pt_dma_top, pt_v3, pt_dma_top_v3") from exc
+		raise SystemExit(f"unsupported target {target!r}; expected one of: pt, pt_dma_top, pt_v3, pt_dma_top_v3, pt_dma_top_v3_ch1, pt_dma_top_v3_ch2, pt_dma_top_v3_ch4, pt_dma_top_v3_128b, pt_dma_top_v3_128b_strict") from exc
 
 
 def hdl_toplevel_for_target(target: str) -> str:
@@ -186,9 +211,81 @@ def hdl_toplevel_for_target(target: str) -> str:
 		return "PT"
 	if normalized_target == APP_TARGET_PT_V3:
 		return "PT_V3"
-	if normalized_target == APP_TARGET_PT_DMA_TOP_V3:
+	if normalized_target in {APP_TARGET_PT_DMA_TOP_V3, APP_TARGET_PT_DMA_TOP_V3_CH1, APP_TARGET_PT_DMA_TOP_V3_CH2, APP_TARGET_PT_DMA_TOP_V3_CH4, APP_TARGET_PT_DMA_TOP_V3_128B, APP_TARGET_PT_DMA_TOP_V3_128B_STRICT}:
 		return "PT_DMA_TOP_V3"
 	return "PT_DMA_TOP"
+
+
+def target_rtl_param_overrides(target: str, x_dim: int, y_dim: int) -> Mapping[str, int]:
+	normalized_target = normalize_target(target)
+	base_stream_width = max(x_dim, y_dim) * 32
+	m_export_width = y_dim * 32
+	v3_family_targets = {
+		APP_TARGET_PT_DMA_TOP_V3,
+		APP_TARGET_PT_DMA_TOP_V3_CH1,
+		APP_TARGET_PT_DMA_TOP_V3_CH2,
+		APP_TARGET_PT_DMA_TOP_V3_CH4,
+	}
+	if normalized_target == APP_TARGET_PT_DMA_TOP:
+		return {
+			"STREAM_CHANNELS": 1,
+			"S_AXIS_CHANNEL_WIDTH": base_stream_width,
+			"M_AXIS_CHANNEL_WIDTH": m_export_width,
+		}
+	if normalized_target in v3_family_targets:
+		params = {
+			"WORD_WIDTH": 32,
+			"ELEM_WIDTH": 8,
+			"PACK_LANES": 4,
+			"ACC_WIDTH": 32,
+			"A_LOAD_LANES": x_dim,
+			"B_LOAD_LANES": y_dim,
+			"M_WRITE_LANES": y_dim,
+			"M_EXPORT_LANES": y_dim,
+			"M_PHYSICAL_COPIES": 2,
+		}
+		if normalized_target in {APP_TARGET_PT_DMA_TOP_V3, APP_TARGET_PT_DMA_TOP_V3_CH1}:
+			params.update(
+				{
+					"STREAM_CHANNELS": 1,
+					"S_AXIS_CHANNEL_WIDTH": base_stream_width,
+					"M_AXIS_CHANNEL_WIDTH": m_export_width,
+				}
+			)
+			return params
+	if normalized_target == APP_TARGET_PT_DMA_TOP_V3_CH2:
+		params = {
+			"WORD_WIDTH": 32,
+			"ELEM_WIDTH": 8,
+			"PACK_LANES": 4,
+			"ACC_WIDTH": 32,
+			"A_LOAD_LANES": x_dim,
+			"B_LOAD_LANES": y_dim,
+			"M_WRITE_LANES": y_dim,
+			"M_EXPORT_LANES": y_dim,
+			"M_PHYSICAL_COPIES": 2,
+			"STREAM_CHANNELS": 2,
+			"S_AXIS_CHANNEL_WIDTH": base_stream_width // 2,
+			"M_AXIS_CHANNEL_WIDTH": m_export_width // 2,
+		}
+		return params
+	if normalized_target == APP_TARGET_PT_DMA_TOP_V3_CH4:
+		params = {
+			"WORD_WIDTH": 32,
+			"ELEM_WIDTH": 8,
+			"PACK_LANES": 4,
+			"ACC_WIDTH": 32,
+			"A_LOAD_LANES": x_dim,
+			"B_LOAD_LANES": y_dim,
+			"M_WRITE_LANES": y_dim,
+			"M_EXPORT_LANES": y_dim,
+			"M_PHYSICAL_COPIES": 2,
+			"STREAM_CHANNELS": 4,
+			"S_AXIS_CHANNEL_WIDTH": base_stream_width // 4,
+			"M_AXIS_CHANNEL_WIDTH": m_export_width // 4,
+		}
+		return params
+	return {}
 
 
 def config_suffix_for_target(target: str) -> str:
@@ -199,9 +296,15 @@ def config_suffix_for_target(target: str) -> str:
 def apply_target_to_config(config: RunConfig, target: str) -> RunConfig:
 	normalized_target = normalize_target(target)
 	default_toplevel = hdl_toplevel_for_target(normalized_target)
-	if config.hdl_toplevel in {"PT_DMA_TOP", "PT_DMA_TOP_V3"}:
-		if normalized_target not in {APP_TARGET_PT_DMA_TOP, APP_TARGET_PT_DMA_TOP_V3}:
+	if config.hdl_toplevel in {"PT_DMA_TOP", "PT_DMA_TOP_V3", "PT_DMA_TOP_V3_SHELL_SIM"}:
+		if config.hdl_toplevel == "PT_DMA_TOP_V3_SHELL_SIM":
+			return config
+		if normalized_target not in {APP_TARGET_PT_DMA_TOP, APP_TARGET_PT_DMA_TOP_V3, APP_TARGET_PT_DMA_TOP_V3_CH1, APP_TARGET_PT_DMA_TOP_V3_CH2, APP_TARGET_PT_DMA_TOP_V3_CH4, APP_TARGET_PT_DMA_TOP_V3_128B, APP_TARGET_PT_DMA_TOP_V3_128B_STRICT}:
 			raise SystemExit(f"suite {config.name!r} is wrapper-only and does not support --target {normalized_target}")
+		if config.hdl_toplevel == "PT_DMA_TOP_V3":
+			merged_rtl_params = dict(config.rtl_params or {})
+			merged_rtl_params.update(target_rtl_param_overrides(normalized_target, config.x_dim, config.y_dim))
+			config = replace(config, rtl_params=merged_rtl_params)
 		return config
 	if default_toplevel == config.hdl_toplevel:
 		return config
@@ -447,17 +550,49 @@ def suite_configs(suite: str, seed_override: Optional[int], target: str) -> List
 		]
 		return [apply_target_to_config(config, normalized_target) for config in configs]
 
-	if suite == "axil":
-		if normalized_target not in {APP_TARGET_PT_DMA_TOP, APP_TARGET_PT_DMA_TOP_V3}:
-			raise SystemExit("suite 'axil' is wrapper-only; use --target pt_dma_top or pt_dma_top_v3")
+	if suite == "shell_sim":
 		return [
+			RunConfig(
+				name="shell_sim_16x16",
+				build_name="shell_sim_16x16",
+				x_dim=16,
+				y_dim=16,
+				test_modules=["tests.test_pt_shell_sim"],
+				hdl_toplevel="PT_DMA_TOP_V3_SHELL_SIM",
+				seeds=[default_seed],
+				rtl_params={
+					"DATA_WIDTH": 32,
+					"WORD_WIDTH": 32,
+					"ELEM_WIDTH": 8,
+					"PACK_LANES": 4,
+					"ACC_WIDTH": 32,
+					"A_LOAD_LANES": 16,
+					"B_LOAD_LANES": 16,
+					"M_WRITE_LANES": 16,
+					"M_EXPORT_LANES": 16,
+					"M_PHYSICAL_COPIES": 2,
+				},
+				extra_env={
+					"PT_ELEM_WIDTH": "8",
+					"PT_PACK_LANES": "4",
+					"PT_WORD_WIDTH": "32",
+					"PT_ACC_WIDTH": "32",
+				},
+			)
+		]
+
+	if suite == "axil":
+		if normalized_target not in {APP_TARGET_PT_DMA_TOP, APP_TARGET_PT_DMA_TOP_V3, APP_TARGET_PT_DMA_TOP_V3_CH1, APP_TARGET_PT_DMA_TOP_V3_CH2, APP_TARGET_PT_DMA_TOP_V3_CH4, APP_TARGET_PT_DMA_TOP_V3_128B, APP_TARGET_PT_DMA_TOP_V3_128B_STRICT}:
+			raise SystemExit("suite 'axil' is wrapper-only; use --target pt_dma_top, pt_dma_top_v3, pt_dma_top_v3_ch1, pt_dma_top_v3_ch2, pt_dma_top_v3_ch4, pt_dma_top_v3_128b, or pt_dma_top_v3_128b_strict")
+		axil_toplevel = "PT_DMA_TOP_V3" if normalized_target in {APP_TARGET_PT_DMA_TOP_V3, APP_TARGET_PT_DMA_TOP_V3_CH1, APP_TARGET_PT_DMA_TOP_V3_CH2, APP_TARGET_PT_DMA_TOP_V3_CH4, APP_TARGET_PT_DMA_TOP_V3_128B, APP_TARGET_PT_DMA_TOP_V3_128B_STRICT} else "PT_DMA_TOP"
+		configs = [
 			RunConfig(
 				name="axil_pt_dma_top_4x4",
 				build_name="axil_pt_dma_top_4x4",
 				x_dim=4,
 				y_dim=4,
 				test_modules=["tests.test_pt_dma_top_cases"],
-				hdl_toplevel="PT_DMA_TOP",
+				hdl_toplevel=axil_toplevel,
 				seeds=[default_seed],
 			),
 			RunConfig(
@@ -466,22 +601,24 @@ def suite_configs(suite: str, seed_override: Optional[int], target: str) -> List
 				x_dim=8,
 				y_dim=8,
 				test_modules=["tests.test_pt_dma_top_cases"],
-				hdl_toplevel="PT_DMA_TOP",
+				hdl_toplevel=axil_toplevel,
 				seeds=[default_seed],
 			),
 		]
+		return [apply_target_to_config(config, normalized_target) for config in configs]
 
 	if suite == "axil_perf":
-		if normalized_target not in {APP_TARGET_PT_DMA_TOP, APP_TARGET_PT_DMA_TOP_V3}:
-			raise SystemExit("suite 'axil_perf' is wrapper-only; use --target pt_dma_top or pt_dma_top_v3")
-		return [
+		if normalized_target not in {APP_TARGET_PT_DMA_TOP, APP_TARGET_PT_DMA_TOP_V3, APP_TARGET_PT_DMA_TOP_V3_CH1, APP_TARGET_PT_DMA_TOP_V3_CH2, APP_TARGET_PT_DMA_TOP_V3_CH4, APP_TARGET_PT_DMA_TOP_V3_128B, APP_TARGET_PT_DMA_TOP_V3_128B_STRICT}:
+			raise SystemExit("suite 'axil_perf' is wrapper-only; use --target pt_dma_top, pt_dma_top_v3, pt_dma_top_v3_ch1, pt_dma_top_v3_ch2, pt_dma_top_v3_ch4, pt_dma_top_v3_128b, or pt_dma_top_v3_128b_strict")
+		axil_perf_toplevel = "PT_DMA_TOP_V3" if normalized_target in {APP_TARGET_PT_DMA_TOP_V3, APP_TARGET_PT_DMA_TOP_V3_CH1, APP_TARGET_PT_DMA_TOP_V3_CH2, APP_TARGET_PT_DMA_TOP_V3_CH4, APP_TARGET_PT_DMA_TOP_V3_128B, APP_TARGET_PT_DMA_TOP_V3_128B_STRICT} else "PT_DMA_TOP"
+		configs = [
 			RunConfig(
 				name="axil_perf_legacy_4x4",
 				build_name="axil_perf_legacy_4x4",
 				x_dim=4,
 				y_dim=4,
 				test_modules=["tests.test_pt_dma_top_perf_cases"],
-				hdl_toplevel="PT_DMA_TOP",
+				hdl_toplevel=axil_perf_toplevel,
 				seeds=[default_seed],
 			),
 			RunConfig(
@@ -490,7 +627,7 @@ def suite_configs(suite: str, seed_override: Optional[int], target: str) -> List
 				x_dim=8,
 				y_dim=8,
 				test_modules=["tests.test_pt_dma_top_perf_cases"],
-				hdl_toplevel="PT_DMA_TOP",
+				hdl_toplevel=axil_perf_toplevel,
 				seeds=[default_seed],
 			),
 			RunConfig(
@@ -499,7 +636,7 @@ def suite_configs(suite: str, seed_override: Optional[int], target: str) -> List
 				x_dim=8,
 				y_dim=8,
 				test_modules=["tests.test_pt_dma_top_perf_cases"],
-				hdl_toplevel="PT_DMA_TOP",
+				hdl_toplevel=axil_perf_toplevel,
 				seeds=[default_seed],
 				rtl_params={"A_LOAD_LANES": 8, "B_LOAD_LANES": 8, "M_WRITE_LANES": 8, "M_EXPORT_LANES": 8, "M_PHYSICAL_COPIES": 2},
 			),
@@ -509,11 +646,12 @@ def suite_configs(suite: str, seed_override: Optional[int], target: str) -> List
 				x_dim=16,
 				y_dim=16,
 				test_modules=["tests.test_pt_dma_top_perf_cases"],
-				hdl_toplevel="PT_DMA_TOP",
+				hdl_toplevel=axil_perf_toplevel,
 				seeds=[default_seed],
 				rtl_params={"A_LOAD_LANES": 16, "B_LOAD_LANES": 16, "M_WRITE_LANES": 16, "M_EXPORT_LANES": 16, "M_PHYSICAL_COPIES": 2},
 			),
 		]
+		return [apply_target_to_config(config, normalized_target) for config in configs]
 
 	configs = [
 		RunConfig(
@@ -589,6 +727,20 @@ def write_synthetic_results(results_xml: Path, config: RunConfig, passed: bool, 
 		failure = ET.SubElement(testcase, "failure", message=message)
 		failure.text = message
 	ET.ElementTree(testsuites).write(results_xml, encoding="utf-8", xml_declaration=True)
+
+
+def junit_failure_counts(results_xml: Path) -> tuple[int, int]:
+	try:
+		tree = ET.parse(results_xml)
+	except (FileNotFoundError, ET.ParseError):
+		return 1, 1
+	root = tree.getroot()
+	failures = 0
+	errors = 0
+	for suite in root.iter("testsuite"):
+		failures += int(suite.attrib.get("failures", "0"))
+		errors += int(suite.attrib.get("errors", "0"))
+	return failures, errors
 
 
 def expected_fail_status(config: RunConfig, exit_code: int, log_text: str) -> Optional[str]:
@@ -688,7 +840,7 @@ def merge_coverage_files(suite: str, coverage_files: List[Path]) -> None:
 	generate_coverage_reports(merged_dat, merged_info, summary_txt)
 
 
-def run_case(sim_name: str, suite_name: str, waves: bool, verbose: bool, config: RunConfig) -> tuple[List[Path], List[Path]]:
+def run_case(sim_name: str, suite_name: str, waves: bool, verbose: bool, config: RunConfig, target: str) -> tuple[List[Path], List[Path]]:
 	if get_runner is None:
 		venv_hint = REPO_ROOT / ".venv" / "Scripts" / "python.exe"
 		raise SystemExit(
@@ -712,9 +864,14 @@ def run_case(sim_name: str, suite_name: str, waves: bool, verbose: bool, config:
 		"M_WRITE_LANES": 1,
 		"M_EXPORT_LANES": 1,
 		"M_PHYSICAL_COPIES": 3,
+		"STREAM_CHANNELS": 1,
 	}
 	if config.rtl_params:
 		params.update(config.rtl_params)
+	if "S_AXIS_CHANNEL_WIDTH" not in params:
+		params["S_AXIS_CHANNEL_WIDTH"] = max(int(params["A_LOAD_LANES"]), int(params["B_LOAD_LANES"])) * int(params["DATA_WIDTH"])
+	if "M_AXIS_CHANNEL_WIDTH" not in params:
+		params["M_AXIS_CHANNEL_WIDTH"] = int(params["M_EXPORT_LANES"]) * int(params["DATA_WIDTH"])
 
 	startup_error = validate_bank_config(int(params["M_BANK_DEPTH"]), config.x_dim, config.y_dim)
 	if startup_error and not config.expect_startup_fail:
@@ -784,8 +941,12 @@ def run_case(sim_name: str, suite_name: str, waves: bool, verbose: bool, config:
 		func_cov_dir.mkdir(parents=True, exist_ok=True)
 		sync_tests_into_dir(test_dir)
 		existing_pythonpath = os.getenv("PYTHONPATH", "")
+		pythonpath_entries = [str(REPO_ROOT), str(COCOTB_ROOT)]
+		if existing_pythonpath:
+			pythonpath_entries.append(existing_pythonpath)
 		extra_env = {
-			"PYTHONPATH": str(COCOTB_ROOT) if not existing_pythonpath else f"{COCOTB_ROOT}{os.pathsep}{existing_pythonpath}",
+			"PYTHONPATH": os.pathsep.join(pythonpath_entries),
+			"PT_APP_TARGET": normalize_target(target),
 			"PT_X_DIM": str(config.x_dim),
 			"PT_Y_DIM": str(config.y_dim),
 			"PT_DATA_WIDTH": "32",
@@ -801,6 +962,9 @@ def run_case(sim_name: str, suite_name: str, waves: bool, verbose: bool, config:
 			"PT_M_WRITE_LANES": str(params["M_WRITE_LANES"]),
 			"PT_M_EXPORT_LANES": str(params["M_EXPORT_LANES"]),
 			"PT_M_PHYSICAL_COPIES": str(params["M_PHYSICAL_COPIES"]),
+			"PT_STREAM_CHANNELS": str(params["STREAM_CHANNELS"]),
+			"PT_S_AXIS_CHAN_WIDTH": str(params["S_AXIS_CHANNEL_WIDTH"]),
+			"PT_M_AXIS_CHAN_WIDTH": str(params["M_AXIS_CHANNEL_WIDTH"]),
 			"PT_TEST_SEED": str(seed),
 			"PT_RANDOM_CASES": str(config.random_cases),
 			"PT_SUITE_NAME": suite_name,
@@ -808,6 +972,14 @@ def run_case(sim_name: str, suite_name: str, waves: bool, verbose: bool, config:
 			"PT_FUNC_COV_DIR": str(func_cov_dir),
 			"PT_TOPLEVEL": config.hdl_toplevel,
 		}
+		for env_key, param_key in (
+			("PT_WORD_WIDTH", "WORD_WIDTH"),
+			("PT_ELEM_WIDTH", "ELEM_WIDTH"),
+			("PT_PACK_LANES", "PACK_LANES"),
+			("PT_ACC_WIDTH", "ACC_WIDTH"),
+		):
+			if param_key in params:
+				extra_env[env_key] = str(params[param_key])
 		if config.extra_env:
 			extra_env.update(config.extra_env)
 		exit_code = 0
@@ -843,6 +1015,13 @@ def run_case(sim_name: str, suite_name: str, waves: bool, verbose: bool, config:
 			else:
 				write_synthetic_results(results_xml, config, False, status)
 				raise SystemExit(status)
+		else:
+			failures, errors = junit_failure_counts(results_xml)
+			if failures or errors:
+				raise SystemExit(
+					f"{config.name}: cocotb reported {failures} failure(s) and {errors} error(s); "
+					f"see {log_file}"
+				)
 
 		functional_fragments = discover_functional_coverage_files(func_cov_dir)
 		functional_files.extend(snapshot_functional_coverage_files(suite_name, config.name, seed, functional_fragments))
@@ -869,7 +1048,7 @@ def main() -> None:
 	all_coverage_files: List[Path] = []
 	all_functional_files: List[Path] = []
 	for config in suite_configs(args.suite, args.seed, target):
-		coverage_files, functional_files = run_case(args.sim, args.suite, args.waves, args.verbose, config)
+		coverage_files, functional_files = run_case(args.sim, args.suite, args.waves, args.verbose, config, target)
 		all_coverage_files.extend(coverage_files)
 		all_functional_files.extend(functional_files)
 	write_functional_coverage_suite(args.suite, all_functional_files)

@@ -15,14 +15,14 @@ if str(REPO_ROOT) not in sys.path:
 if str(COCOTB_ROOT) not in sys.path:
 	sys.path.insert(0, str(COCOTB_ROOT))
 
-from app.pt_tiled_gemm import TILE_DIM, app_target_label, normalize_app_target
+from app.pt_tiled_gemm import TILE_DIM, app_target_label, is_wrapper_target, normalize_app_target
 from app.pt_tiled_gemm.multitile_utils import build_command_schedule, choose_partition_plan
 from app.pt_tiled_gemm.submission import CommandSubmitter, normalize_submission_mode
 from tests.pt_model import build_load_inst, build_matmul_inst, export_beat_count, matmul_row_major, to_unsigned
 
 APP_TARGET = normalize_app_target(os.getenv("PT_APP_TARGET", "pt"))
 SUBMISSION_MODE = normalize_submission_mode(os.getenv("PT_APP_SUBMISSION_MODE", "legacy"))
-if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"}:
+if is_wrapper_target(APP_TARGET):
 	from tests.pt_dma_top_env import create_env, setup_bases_and_passthrough_qcfg
 else:
 	from tests.pt_blackbox_env import create_env, setup_bases_and_passthrough_qcfg
@@ -33,6 +33,9 @@ CLK_PERIOD_NS = 10
 
 def env_int(name: str, default: int) -> int:
 	return int(os.getenv(name, str(default)))
+
+
+ACTIVE_CHANNEL_MASK = env_int("PT_ACTIVE_CHANNEL_MASK", 0)
 
 
 def cycle_now() -> int:
@@ -152,8 +155,10 @@ async def test_pt_multitile_single_case(dut) -> None:
 	try:
 		await env.reset()
 		await setup_bases_and_passthrough_qcfg(env)
+		if ACTIVE_CHANNEL_MASK and is_wrapper_target(APP_TARGET) and hasattr(env, "set_active_channel_mask"):
+			await env.set_active_channel_mask(ACTIVE_CHANNEL_MASK)
 		snapshot = env.snapshot()
-		perf_counter_base = await env.read_perf_counters() if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters") else None
+		perf_counter_base = await env.read_perf_counters() if is_wrapper_target(APP_TARGET) and hasattr(env, "read_perf_counters") else None
 		perf_counter_accum = None
 		submitter = CommandSubmitter(
 			env,
@@ -189,7 +194,7 @@ async def test_pt_multitile_single_case(dut) -> None:
 		last_resp_cycle = None
 		clear_count = 0
 		use_load_prefetch = (
-			(APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"})
+			(is_wrapper_target(APP_TARGET))
 			and (len(schedule) > 1)
 			and (ctrl_id_pool_size >= 2)
 			and (env_int("PT_MT_LOAD_PREFETCH", 1) != 0)
@@ -259,12 +264,14 @@ async def test_pt_multitile_single_case(dut) -> None:
 					segment_counters = (await env.read_perf_counters()).delta(perf_counter_base)
 					perf_counter_accum = segment_counters if perf_counter_accum is None else perf_counter_accum.add(segment_counters)
 				clear_count += 1
-				if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"}:
+				if is_wrapper_target(APP_TARGET):
 					await env.soft_clear()
+					if ACTIVE_CHANNEL_MASK and hasattr(env, "set_active_channel_mask"):
+						await env.set_active_channel_mask(ACTIVE_CHANNEL_MASK)
 				else:
 					await env.pulse_clear(phase="multitile_bench")
 					await setup_bases_and_passthrough_qcfg(env)
-				perf_counter_base = await env.read_perf_counters() if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters") else None
+				perf_counter_base = await env.read_perf_counters() if is_wrapper_target(APP_TARGET) and hasattr(env, "read_perf_counters") else None
 
 			segment_end = min(segment_start + recycle_interval, len(schedule))
 			if use_load_prefetch:
@@ -395,7 +402,7 @@ async def test_pt_multitile_single_case(dut) -> None:
 			export_beat_count(command.m_tiles * command.n_tiles * x_dim, y_dim, export_lanes, pack_lanes)
 			for command in schedule
 		)
-		perf_counters = await env.read_perf_counters() if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters") else None
+		perf_counters = await env.read_perf_counters() if is_wrapper_target(APP_TARGET) and hasattr(env, "read_perf_counters") else None
 		if perf_counters is not None and perf_counter_base is not None:
 			perf_counters = perf_counters.delta(perf_counter_base)
 			perf_counters = perf_counters if perf_counter_accum is None else perf_counter_accum.add(perf_counters)
@@ -403,6 +410,7 @@ async def test_pt_multitile_single_case(dut) -> None:
 			"case": {
 				"target": APP_TARGET,
 				"target_label": app_target_label(APP_TARGET),
+				"active_channel_mask": ACTIVE_CHANNEL_MASK,
 				"m_tiles": full_m_tiles,
 				"n_tiles": full_n_tiles,
 				"k_tiles": full_k_tiles,

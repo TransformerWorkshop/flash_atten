@@ -282,6 +282,7 @@ module PT_MD_V3 #(
 	reg [`PT_LOCAL_ADDR_W-1:0] fill_local_base_r;
 	reg [`PT_SIZE_W-1:0] fill_len_r;
 	reg [`PT_SIZE_W-1:0] fill_recv_count_r;
+	reg [`PT_SIZE_W-1:0] fill_recv_count_n;
 	reg [3:0] fill_m_tiles_r, fill_n_tiles_r, fill_k_tiles_r;
 	localparam integer FILL_ROW_W = (A_AW >= B_AW) ? A_AW : B_AW;
 	reg [FILL_ROW_W-1:0] fill_row_base_r;
@@ -363,20 +364,30 @@ module PT_MD_V3 #(
 	end
 
 	reg [1:0] m_buf_state0_r, m_buf_state1_r;
+	reg [1:0] m_buf_state0_n, m_buf_state1_n;
 	reg [29:0] m_buf_id0_r, m_buf_id1_r;
 	reg m_buf0_single_output_r, m_buf1_single_output_r;
 	reg [`PT_SIZE_W-1:0] m_buf0_row_chunk_count_r, m_buf1_row_chunk_count_r;
 	reg next_wr_buf_r;
+	reg next_wr_buf_n;
 
 	reg [1:0] exp_state_r, exp_state_n;
 	reg exp_req_buf_r, exp_active_buf_r;
+	reg exp_req_buf_n, exp_active_buf_n;
 	reg [29:0] exp_req_id_r, exp_active_id_r;
+	reg [29:0] exp_req_id_n, exp_active_id_n;
 	reg [`PT_SIZE_W-1:0] exp_req_row_chunk_count_r, exp_active_row_chunk_count_r;
+	reg [`PT_SIZE_W-1:0] exp_req_row_chunk_count_n, exp_active_row_chunk_count_n;
 	reg [M_AW-1:0] exp_next_row_idx_r, exp_fetch_row_idx_r;
+	reg [M_AW-1:0] exp_next_row_idx_n, exp_fetch_row_idx_n;
 	reg [EXP_ROW_FILL_W-1:0] exp_fill_count_r;
+	reg [EXP_ROW_FILL_W-1:0] exp_fill_count_n;
 	reg [M_EXPORT_LANES*DATA_WIDTH-1:0] exp_beat_data_r;
+	reg [M_EXPORT_LANES*DATA_WIDTH-1:0] exp_beat_data_n;
 	reg [M_EXPORT_LANES*DATA_WIDTH/8-1:0] exp_beat_strb_r;
+	reg [M_EXPORT_LANES*DATA_WIDTH/8-1:0] exp_beat_strb_n;
 	reg exp_beat_valid_r, exp_beat_last_r, exp_row_fetch_pending_r;
+	reg exp_beat_valid_n, exp_beat_last_n, exp_row_fetch_pending_n;
 
 	wire m_buf0_free = (m_buf_state0_r == MBUF_FREE);
 	wire m_buf1_free = (m_buf_state1_r == MBUF_FREE);
@@ -460,8 +471,143 @@ module PT_MD_V3 #(
 		endcase
 	end
 
-	integer ri;
 	integer fi;
+	always @(*) begin
+		fill_recv_count_n = fill_recv_count_r;
+		m_buf_state0_n = m_buf_state0_r;
+		m_buf_state1_n = m_buf_state1_r;
+		next_wr_buf_n = next_wr_buf_r;
+		exp_req_buf_n = exp_req_buf_r;
+		exp_req_id_n = exp_req_id_r;
+		exp_req_row_chunk_count_n = exp_req_row_chunk_count_r;
+		exp_active_buf_n = exp_active_buf_r;
+		exp_active_id_n = exp_active_id_r;
+		exp_active_row_chunk_count_n = exp_active_row_chunk_count_r;
+		exp_next_row_idx_n = exp_next_row_idx_r;
+		exp_fetch_row_idx_n = exp_fetch_row_idx_r;
+		exp_fill_count_n = exp_fill_count_r;
+		exp_beat_data_n = exp_beat_data_r;
+		exp_beat_strb_n = exp_beat_strb_r;
+		exp_beat_valid_n = exp_beat_valid_r;
+		exp_beat_last_n = exp_beat_last_r;
+		exp_row_fetch_pending_n = exp_row_fetch_pending_r;
+
+		if (m_alloc_take && m_alloc_ready) begin
+			if (m_alloc_buf) begin
+				m_buf_state1_n = MBUF_EXEC;
+			end else begin
+				m_buf_state0_n = MBUF_EXEC;
+			end
+		end
+
+		if ((fill_state_r == FILL_IDLE) && fill_req_valid && fill_req_ready) begin
+			fill_recv_count_n = {`PT_SIZE_W{1'b0}};
+		end
+
+		if (fill_state_r == FILL_RECV) begin
+			if (!(dma_error || fill_tuser_mismatch) && s_axis_tvalid) begin
+				fill_recv_count_n = fill_recv_count_r + fill_beat_elems_size;
+			end
+		end
+
+		if (ce_resp_valid) begin
+			if (!ce_resp[31]) begin
+				next_wr_buf_n = ~ce_resp[30];
+				if (ce_resp[30]) begin
+					m_buf_state1_n = MBUF_READY;
+				end else begin
+					m_buf_state0_n = MBUF_READY;
+				end
+			end else if (ce_resp[30]) begin
+				m_buf_state1_n = MBUF_FREE;
+			end else begin
+				m_buf_state0_n = MBUF_FREE;
+			end
+		end
+
+		if (exp_row_fetch_pending_r) begin
+			exp_row_fetch_pending_n = exp_chain_req;
+			exp_next_row_idx_n      = exp_fetch_row_idx_r + 1'b1;
+			if (exp_chain_req) begin
+				exp_fetch_row_idx_n = exp_fetch_row_idx_r + 1'b1;
+			end
+			for (fi = 0; fi < EXP_PACKED_WORDS_PER_ROW; fi = fi + 1) begin
+				exp_beat_data_n[((exp_fill_count_r * EXP_PACKED_WORDS_PER_ROW) + fi)*DATA_WIDTH +: DATA_WIDTH] =
+					exp_packed_row_data[fi*DATA_WIDTH +: DATA_WIDTH];
+				exp_beat_strb_n[((exp_fill_count_r * EXP_PACKED_WORDS_PER_ROW) + fi)*(DATA_WIDTH/8) +: (DATA_WIDTH/8)] =
+					{(DATA_WIDTH/8){1'b1}};
+			end
+			exp_fill_count_n = exp_fill_count_next[EXP_ROW_FILL_W-1:0];
+			if (exp_capture_group_done) begin
+				exp_beat_valid_n = 1'b1;
+				exp_beat_last_n  = exp_capture_last_row;
+			end
+		end
+
+		case (exp_state_r)
+			EXP_IDLE: begin
+				if (exp_has_ready) begin
+					exp_req_buf_n = exp_pick_buf;
+					exp_req_id_n  = exp_pick_id;
+					exp_req_row_chunk_count_n = exp_pick_row_chunks;
+				end
+			end
+			EXP_REQ: begin
+				if (m_dma_req_ready) begin
+					exp_active_buf_n = exp_req_buf_r;
+					exp_active_id_n  = exp_req_id_r;
+					exp_active_row_chunk_count_n = exp_req_row_chunk_count_r;
+					exp_next_row_idx_n      = {M_AW{1'b0}};
+					exp_fill_count_n        = {EXP_ROW_FILL_W{1'b0}};
+					exp_beat_data_n         = {M_EXPORT_LANES*DATA_WIDTH{1'b0}};
+					exp_beat_strb_n         = {M_EXPORT_LANES*DATA_WIDTH/8{1'b0}};
+					exp_beat_valid_n        = 1'b0;
+					exp_beat_last_n         = 1'b0;
+					exp_row_fetch_pending_n = 1'b0;
+					exp_fetch_row_idx_n     = {M_AW{1'b0}};
+					if (exp_req_buf_r) begin
+						m_buf_state1_n = MBUF_EXPORTING;
+					end else begin
+						m_buf_state0_n = MBUF_EXPORTING;
+					end
+				end
+			end
+			EXP_STREAM: begin
+				if (exp_prime_req) begin
+					exp_row_fetch_pending_n = 1'b1;
+					exp_fetch_row_idx_n     = exp_req_row_addr;
+				end else if (exp_fire) begin
+					exp_beat_valid_n = 1'b0;
+					if (!exp_beat_last_r) begin
+						exp_beat_data_n  = {M_EXPORT_LANES*DATA_WIDTH{1'b0}};
+						exp_beat_strb_n  = {M_EXPORT_LANES*DATA_WIDTH/8{1'b0}};
+						exp_fill_count_n = {EXP_ROW_FILL_W{1'b0}};
+						exp_beat_last_n  = 1'b0;
+					end else begin
+						exp_beat_last_n = 1'b0;
+					end
+				end
+			end
+			EXP_WAIT_DONE: begin
+				if (m_dma_done || m_dma_error) begin
+					exp_beat_valid_n        = 1'b0;
+					exp_beat_last_n         = 1'b0;
+					exp_row_fetch_pending_n = 1'b0;
+					exp_fill_count_n        = {EXP_ROW_FILL_W{1'b0}};
+					exp_beat_data_n         = {M_EXPORT_LANES*DATA_WIDTH{1'b0}};
+					exp_beat_strb_n         = {M_EXPORT_LANES*DATA_WIDTH/8{1'b0}};
+					if (exp_active_buf_r) begin
+						m_buf_state1_n = MBUF_FREE;
+					end else begin
+						m_buf_state0_n = MBUF_FREE;
+					end
+				end
+			end
+			default: begin end
+		endcase
+	end
+
+	integer ri;
 	always @(posedge clk or negedge rstn) begin
 		if (!rstn) begin
 			md_cmd_resp_valid         <= 1'b0;
@@ -608,6 +754,24 @@ module PT_MD_V3 #(
 			csr_b_base_lo_we    <= 1'b0;
 			csr_b_base_hi_we    <= 1'b0;
 			csr_quant_commit_we <= 1'b0;
+			fill_recv_count_r   <= fill_recv_count_n;
+			m_buf_state0_r      <= m_buf_state0_n;
+			m_buf_state1_r      <= m_buf_state1_n;
+			next_wr_buf_r       <= next_wr_buf_n;
+			exp_req_buf_r       <= exp_req_buf_n;
+			exp_req_id_r        <= exp_req_id_n;
+			exp_req_row_chunk_count_r <= exp_req_row_chunk_count_n;
+			exp_active_buf_r    <= exp_active_buf_n;
+			exp_active_id_r     <= exp_active_id_n;
+			exp_active_row_chunk_count_r <= exp_active_row_chunk_count_n;
+			exp_next_row_idx_r  <= exp_next_row_idx_n;
+			exp_fetch_row_idx_r <= exp_fetch_row_idx_n;
+			exp_fill_count_r    <= exp_fill_count_n;
+			exp_beat_data_r     <= exp_beat_data_n;
+			exp_beat_strb_r     <= exp_beat_strb_n;
+			exp_beat_valid_r    <= exp_beat_valid_n;
+			exp_beat_last_r     <= exp_beat_last_n;
+			exp_row_fetch_pending_r <= exp_row_fetch_pending_n;
 
 			if (md_cmd_valid && md_cmd_ready) begin
 				case (md_cmd_kind)
@@ -657,7 +821,7 @@ module PT_MD_V3 #(
 							if ((qcfg_recv_cnt_r + 1'b1) >= qcfg_expect_cnt_r) begin
 								csr_quant_mode_wdata <= qcfg_shadow_mode_r;
 									for (ri = 0; ri < MAX_DIM; ri = ri + 1) begin
-										if (ri[QCFG_CNT_W-1:0] == qcfg_recv_cnt_r) begin
+										if (ri == qcfg_recv_cnt_r) begin
 										csr_quant_inv_scale_wdata[ri*32 +: 32] <= md_cmd_inst;
 									end else begin
 										csr_quant_inv_scale_wdata[ri*32 +: 32] <= qcfg_shadow_inv_scale_r[ri*32 +: 32];
@@ -677,20 +841,11 @@ module PT_MD_V3 #(
 				endcase
 			end
 
-			if (m_alloc_take && m_alloc_ready) begin
-				if (m_alloc_buf) begin
-					m_buf_state1_r <= MBUF_EXEC;
-				end else begin
-					m_buf_state0_r <= MBUF_EXEC;
-				end
-			end
-
 			if ((fill_state_r == FILL_IDLE) && fill_req_valid && fill_req_ready) begin
 				fill_kind_r       <= fill_req_kind;
 				fill_id_r         <= fill_req_id;
 				fill_local_base_r <= fill_req_local_base;
 				fill_len_r        <= fill_req_len;
-				fill_recv_count_r <= {`PT_SIZE_W{1'b0}};
 				fill_m_tiles_r    <= fill_req_m_tiles;
 				fill_n_tiles_r    <= fill_req_n_tiles;
 				fill_k_tiles_r    <= fill_req_k_tiles;
@@ -738,7 +893,6 @@ module PT_MD_V3 #(
 								end
 							end
 					end
-						fill_recv_count_r <= fill_recv_count_r + fill_beat_elems_size;
 						if ((fill_recv_count_r + fill_beat_elems_size) >= fill_len_r) begin
 						fill_done_valid <= 1'b1;
 						fill_done_kind  <= fill_kind_r;
@@ -750,101 +904,34 @@ module PT_MD_V3 #(
 
 			if (ce_resp_valid) begin
 				if (!ce_resp[31]) begin
-					next_wr_buf_r <= ~ce_resp[30];
 					if (ce_resp[30]) begin
-						m_buf_state1_r <= MBUF_READY;
 						m_buf_id1_r    <= ce_resp[29:0];
 						m_buf1_single_output_r <= ce_resp_single_output;
 						m_buf1_row_chunk_count_r <= ce_resp_row_chunk_count;
 					end else begin
-						m_buf_state0_r <= MBUF_READY;
 						m_buf_id0_r    <= ce_resp[29:0];
 						m_buf0_single_output_r <= ce_resp_single_output;
 						m_buf0_row_chunk_count_r <= ce_resp_row_chunk_count;
 					end
-				end else if (ce_resp[30]) begin
-					m_buf_state1_r <= MBUF_FREE;
-				end else begin
-					m_buf_state0_r <= MBUF_FREE;
-				end
-			end
-
-			if (exp_row_fetch_pending_r) begin
-				exp_row_fetch_pending_r <= exp_chain_req;
-				exp_next_row_idx_r      <= exp_fetch_row_idx_r + 1'b1;
-				if (exp_chain_req) begin
-					exp_fetch_row_idx_r <= exp_fetch_row_idx_r + 1'b1;
-				end
-				for (fi = 0; fi < EXP_PACKED_WORDS_PER_ROW; fi = fi + 1) begin
-					exp_beat_data_r[((exp_fill_count_r * EXP_PACKED_WORDS_PER_ROW) + fi)*DATA_WIDTH +: DATA_WIDTH] <=
-						exp_packed_row_data[fi*DATA_WIDTH +: DATA_WIDTH];
-					exp_beat_strb_r[((exp_fill_count_r * EXP_PACKED_WORDS_PER_ROW) + fi)*(DATA_WIDTH/8) +: (DATA_WIDTH/8)] <=
-						{(DATA_WIDTH/8){1'b1}};
-				end
-				exp_fill_count_r <= exp_fill_count_next[EXP_ROW_FILL_W-1:0];
-				if (exp_capture_group_done) begin
-					exp_beat_valid_r <= 1'b1;
-					exp_beat_last_r  <= exp_capture_last_row;
 				end
 			end
 
 			case (exp_state_r)
 				EXP_IDLE: begin
 					if (exp_has_ready) begin
-						exp_req_buf_r <= exp_pick_buf;
-						exp_req_id_r  <= exp_pick_id;
-						exp_req_row_chunk_count_r <= exp_pick_row_chunks;
 					end
 				end
 				EXP_REQ: begin
 					if (m_dma_req_ready) begin
-						exp_active_buf_r        <= exp_req_buf_r;
-						exp_active_id_r         <= exp_req_id_r;
-						exp_active_row_chunk_count_r <= exp_req_row_chunk_count_r;
-						exp_next_row_idx_r      <= {M_AW{1'b0}};
-						exp_fill_count_r        <= {EXP_ROW_FILL_W{1'b0}};
-						exp_beat_data_r         <= {M_EXPORT_LANES*DATA_WIDTH{1'b0}};
-						exp_beat_strb_r         <= {M_EXPORT_LANES*DATA_WIDTH/8{1'b0}};
-						exp_beat_valid_r        <= 1'b0;
-						exp_beat_last_r         <= 1'b0;
-						exp_row_fetch_pending_r <= 1'b0;
-						exp_fetch_row_idx_r     <= {M_AW{1'b0}};
-						if (exp_req_buf_r) begin
-							m_buf_state1_r <= MBUF_EXPORTING;
-						end else begin
-							m_buf_state0_r <= MBUF_EXPORTING;
-						end
 					end
 				end
 				EXP_STREAM: begin
 					if (exp_prime_req) begin
-						exp_row_fetch_pending_r <= 1'b1;
-						exp_fetch_row_idx_r     <= exp_req_row_addr;
 					end else if (exp_fire) begin
-						exp_beat_valid_r <= 1'b0;
-						if (!exp_beat_last_r) begin
-							exp_beat_data_r  <= {M_EXPORT_LANES*DATA_WIDTH{1'b0}};
-							exp_beat_strb_r  <= {M_EXPORT_LANES*DATA_WIDTH/8{1'b0}};
-							exp_fill_count_r <= {EXP_ROW_FILL_W{1'b0}};
-							exp_beat_last_r  <= 1'b0;
-						end else begin
-							exp_beat_last_r <= 1'b0;
-						end
 					end
 				end
 				EXP_WAIT_DONE: begin
 					if (m_dma_done || m_dma_error) begin
-						exp_beat_valid_r        <= 1'b0;
-						exp_beat_last_r         <= 1'b0;
-						exp_row_fetch_pending_r <= 1'b0;
-						exp_fill_count_r        <= {EXP_ROW_FILL_W{1'b0}};
-						exp_beat_data_r         <= {M_EXPORT_LANES*DATA_WIDTH{1'b0}};
-						exp_beat_strb_r         <= {M_EXPORT_LANES*DATA_WIDTH/8{1'b0}};
-						if (exp_active_buf_r) begin
-							m_buf_state1_r <= MBUF_FREE;
-						end else begin
-							m_buf_state0_r <= MBUF_FREE;
-						end
 						if (m_dma_error) begin
 							md_async_resp       <= pack_resp(1'b1, exp_active_buf_r, {2'b00, exp_active_id_r});
 							md_async_resp_valid <= 1'b1;

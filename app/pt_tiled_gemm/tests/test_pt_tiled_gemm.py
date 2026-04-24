@@ -17,7 +17,14 @@ if str(REPO_ROOT) not in sys.path:
 if str(COCOTB_ROOT) not in sys.path:
 	sys.path.insert(0, str(COCOTB_ROOT))
 
-from app.pt_tiled_gemm import ProblemSpec, TILE_DIM, app_target_label, normalize_app_target
+from app.pt_tiled_gemm import (
+	ProblemSpec,
+	TILE_DIM,
+	app_target_label,
+	is_v3_wrapper_target,
+	is_wrapper_target,
+	normalize_app_target,
+)
 from app.pt_tiled_gemm.submission import CommandSubmitter, normalize_submission_mode
 from tests.pt_model import (
 	PT_SCALE_FULL,
@@ -36,7 +43,7 @@ from tests.pt_model import (
 
 APP_TARGET = normalize_app_target(os.getenv("PT_APP_TARGET", "pt"))
 SUBMISSION_MODE = normalize_submission_mode(os.getenv("PT_APP_SUBMISSION_MODE", "legacy"))
-if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"}:
+if is_wrapper_target(APP_TARGET):
 	from tests.pt_dma_top_env import create_env, setup_bases_and_passthrough_qcfg
 else:
 	from tests.pt_blackbox_env import create_env, setup_bases_and_passthrough_qcfg
@@ -64,6 +71,7 @@ EXPORT_BEATS_PER_TILE = export_beat_count(PT_X_DIM, PT_Y_DIM, PT_M_EXPORT_LANES,
 CTRL_ID_POOL_SIZE = env_int("PT_APP_CTRL_ID_POOL_SIZE", env_int("PT_LUT_DEPTH", 8))
 CTRL_ID_POOL_BASE = env_int("PT_APP_CTRL_ID_BASE", 0x500)
 RECYCLE_INTERVAL = env_int("PT_VERIFY_RECYCLE_INTERVAL", env_int("PT_LUT_DEPTH", 8))
+ACTIVE_CHANNEL_MASK = env_int("PT_ACTIVE_CHANNEL_MASK", 0)
 
 
 def cycle_now() -> int:
@@ -106,8 +114,10 @@ def build_submitter(env, *, ctrl_id_base: int) -> CommandSubmitter:
 
 async def recycle_runtime_if_needed(env, commands_in_window: int, commands_needed: int, *, phase: str) -> int:
 	if (commands_in_window != 0) and ((commands_in_window + commands_needed) > RECYCLE_INTERVAL):
-		if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"}:
+		if is_wrapper_target(APP_TARGET):
 			await env.soft_clear()
+			if ACTIVE_CHANNEL_MASK and hasattr(env, "set_active_channel_mask"):
+				await env.set_active_channel_mask(ACTIVE_CHANNEL_MASK)
 		else:
 			await env.pulse_clear(phase=phase)
 			await setup_bases_and_passthrough_qcfg(env)
@@ -123,7 +133,7 @@ async def submission_metrics(env, submitter: CommandSubmitter, perf_counter_base
 		"axil_writes_per_command": submitter.stats.axil_writes_per_command,
 		"descriptor_push_count": submitter.stats.descriptor_push_count,
 	}
-	if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters"):
+	if is_wrapper_target(APP_TARGET) and hasattr(env, "read_perf_counters"):
 		counters = await env.read_perf_counters()
 		if perf_counter_base is not None:
 			counters = counters.delta(perf_counter_base)
@@ -247,6 +257,8 @@ async def run_matadd_tile(env, submitter: CommandSubmitter, ctrl_id: int, m_buf:
 async def prepare_env(env) -> Tuple[List[int], List[int], List[int]]:
 	await env.reset()
 	await setup_bases_and_passthrough_qcfg(env)
+	if ACTIVE_CHANNEL_MASK and is_wrapper_target(APP_TARGET) and hasattr(env, "set_active_channel_mask"):
+		await env.set_active_channel_mask(ACTIVE_CHANNEL_MASK)
 	a_full, b_full = build_problem(PROBLEM)
 	golden = [to_unsigned(value, 32) for value in matmul_row_major(a_full, b_full, PROBLEM.m_dim, PROBLEM.n_dim, PROBLEM.k_dim)]
 	record_metric(
@@ -256,6 +268,7 @@ async def prepare_env(env) -> Tuple[List[int], List[int], List[int]]:
 			"target": APP_TARGET,
 			"target_label": app_target_label(APP_TARGET),
 			"submission_mode": SUBMISSION_MODE,
+			"active_channel_mask": ACTIVE_CHANNEL_MASK,
 			"m_dim": PROBLEM.m_dim,
 			"k_dim": PROBLEM.k_dim,
 			"n_dim": PROBLEM.n_dim,
@@ -492,7 +505,7 @@ async def test_numeric_host_reduce_per_tensor(dut) -> None:
 	try:
 		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE)
 		a_full, b_full, golden = await prepare_env(env)
-		perf_counter_base = await env.read_perf_counters() if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters") else None
+		perf_counter_base = await env.read_perf_counters() if is_wrapper_target(APP_TARGET) and hasattr(env, "read_perf_counters") else None
 		result = await run_host_reduce_direct(env, submitter, a_full, b_full)
 		assert result["final_matrix"] == golden
 		metric_payload = {"status": "passed", "total_cycles": result["total_cycles"]}
@@ -508,7 +521,7 @@ async def test_numeric_host_reduce_pipelined(dut) -> None:
 	try:
 		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x100)
 		a_full, b_full, golden = await prepare_env(env)
-		perf_counter_base = await env.read_perf_counters() if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters") else None
+		perf_counter_base = await env.read_perf_counters() if is_wrapper_target(APP_TARGET) and hasattr(env, "read_perf_counters") else None
 		result = await run_host_reduce_direct_pipelined(env, submitter, a_full, b_full)
 		assert result["final_matrix"] == golden
 		metric_payload = {"status": "passed", "total_cycles": result["total_cycles"]}
@@ -524,7 +537,7 @@ async def test_numeric_pt_matadd_reduce_per_tensor(dut) -> None:
 	try:
 		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x200)
 		a_full, b_full, golden = await prepare_env(env)
-		perf_counter_base = await env.read_perf_counters() if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters") else None
+		perf_counter_base = await env.read_perf_counters() if is_wrapper_target(APP_TARGET) and hasattr(env, "read_perf_counters") else None
 		result = await run_pt_matadd_reduce(env, submitter, a_full, b_full)
 		assert result["final_matrix"] == golden
 		metric_payload = {"status": "passed", "total_cycles": result["total_cycles"]}
@@ -593,7 +606,7 @@ async def test_algorithm_compare_reduction_strategies(dut) -> None:
 	try:
 		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x400)
 		a_full, b_full, golden = await prepare_env(env)
-		perf_counter_base = await env.read_perf_counters() if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters") else None
+		perf_counter_base = await env.read_perf_counters() if is_wrapper_target(APP_TARGET) and hasattr(env, "read_perf_counters") else None
 		direct = await run_host_reduce_direct(env, submitter, a_full, b_full)
 		assert direct["final_matrix"] == golden
 		record_metric(
@@ -611,7 +624,7 @@ async def test_algorithm_compare_reduction_strategies(dut) -> None:
 
 		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x500)
 		a_full, b_full, golden = await prepare_env(env)
-		perf_counter_base = await env.read_perf_counters() if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters") else None
+		perf_counter_base = await env.read_perf_counters() if is_wrapper_target(APP_TARGET) and hasattr(env, "read_perf_counters") else None
 		load_then = await run_host_reduce_load_then_matmul(env, submitter, a_full, b_full)
 		assert load_then["final_matrix"] == golden
 		record_metric(
@@ -629,7 +642,7 @@ async def test_algorithm_compare_reduction_strategies(dut) -> None:
 
 		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x600)
 		a_full, b_full, golden = await prepare_env(env)
-		perf_counter_base = await env.read_perf_counters() if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters") else None
+		perf_counter_base = await env.read_perf_counters() if is_wrapper_target(APP_TARGET) and hasattr(env, "read_perf_counters") else None
 		pt_reduce = await run_pt_matadd_reduce(env, submitter, a_full, b_full)
 		assert pt_reduce["final_matrix"] == golden
 		record_metric(
@@ -647,7 +660,7 @@ async def test_algorithm_compare_reduction_strategies(dut) -> None:
 
 		submitter = build_submitter(env, ctrl_id_base=CTRL_ID_POOL_BASE + 0x700)
 		a_full, b_full, golden = await prepare_env(env)
-		perf_counter_base = await env.read_perf_counters() if APP_TARGET in {"pt_dma_top", "pt_dma_top_v3"} and hasattr(env, "read_perf_counters") else None
+		perf_counter_base = await env.read_perf_counters() if is_wrapper_target(APP_TARGET) and hasattr(env, "read_perf_counters") else None
 		pipelined = await run_host_reduce_direct_pipelined(env, submitter, a_full, b_full)
 		assert pipelined["final_matrix"] == golden
 		record_metric(
@@ -674,24 +687,19 @@ async def test_algorithm_compare_reduction_strategies(dut) -> None:
 
 @cocotb.test()
 async def test_pt_dma_top_ce_md_block_breakdown(dut) -> None:
-	if APP_TARGET not in {"pt_dma_top", "pt_dma_top_v3"}:
+	if not is_wrapper_target(APP_TARGET):
 		record_metric(
 			"diagnostics",
 			"pt_ce_md_block_breakdown",
 			{"status": "skipped", "reason": "PT_DMA_TOP only"},
 		)
 		return
-	if APP_TARGET == "pt_dma_top_v3":
-		record_metric(
-			"diagnostics",
-			"pt_ce_md_block_breakdown",
-			{"status": "skipped", "reason": "PT_DMA_TOP_V3 export/diag alignment pending"},
-		)
-		return
 
 	env = await create_env(dut)
 	try:
 		await setup_bases_and_passthrough_qcfg(env)
+		md_key = "pt_md_v3" if is_v3_wrapper_target(APP_TARGET) else "pt_md_v2"
+		ce_key = "pt_ce_v3" if is_v3_wrapper_target(APP_TARGET) else "pt_ce_v2"
 
 		cases = [
 			{
@@ -782,6 +790,9 @@ async def test_pt_dma_top_ce_md_block_breakdown(dut) -> None:
 			ctrl_resp = await env.wait_resp_visible(plan.response_word, after_cycle=ce_resp.cycle)
 			await env.wait_and_pop_resp(plan.response_word, 40000)
 			await env.wait_export_done(export_done_target, 80000)
+			row_chunks_per_export_beat = (
+				0.0 if wr_transfer.beats == 0 else (plan.row_chunk_count / wr_transfer.beats)
+			)
 
 			results[case["name"]] = {
 				"shape_tiles": {
@@ -794,9 +805,11 @@ async def test_pt_dma_top_ce_md_block_breakdown(dut) -> None:
 					"ce_resp_to_ctrl_resp": ctrl_resp.cycle - ce_resp.cycle,
 					"ctrl_resp_to_wr_desc": wr_transfer.desc_cycle - ctrl_resp.cycle,
 				},
-				"pt_md_v2": {
+				md_key: {
 					"accept_to_malloc_issue": malloc_issue.cycle - accept.cycle,
 					"a_fill": {
+						"dma_beats": rd_a.beats,
+						"dma_elems": rd_a.elems,
 						"fill_req_to_rd_desc": rd_a.desc_cycle - fill_req_a.cycle,
 						"rd_desc_to_first_beat": rd_a.first_beat_cycle - rd_a.desc_cycle,
 						"first_beat_to_last_beat": rd_a.last_beat_cycle - rd_a.first_beat_cycle,
@@ -804,6 +817,8 @@ async def test_pt_dma_top_ce_md_block_breakdown(dut) -> None:
 						"fill_req_to_fill_done": fill_done_a.cycle - fill_req_a.cycle,
 					},
 					"b_fill": {
+						"dma_beats": rd_b.beats,
+						"dma_elems": rd_b.elems,
 						"fill_req_to_rd_desc": rd_b.desc_cycle - fill_req_b.cycle,
 						"rd_desc_to_first_beat": rd_b.first_beat_cycle - rd_b.desc_cycle,
 						"first_beat_to_last_beat": rd_b.last_beat_cycle - rd_b.first_beat_cycle,
@@ -811,6 +826,9 @@ async def test_pt_dma_top_ce_md_block_breakdown(dut) -> None:
 						"fill_req_to_fill_done": fill_done_b.cycle - fill_req_b.cycle,
 					},
 					"export": {
+						"row_chunk_count": plan.row_chunk_count,
+						"dma_beats": wr_transfer.beats,
+						"row_chunks_per_export_beat": row_chunks_per_export_beat,
 						"ce_resp_to_wr_desc": wr_transfer.desc_cycle - ce_resp.cycle,
 						"wr_desc_to_first_beat": wr_transfer.first_beat_cycle - wr_transfer.desc_cycle,
 						"first_beat_to_last_beat": wr_transfer.last_beat_cycle - wr_transfer.first_beat_cycle,
@@ -818,7 +836,7 @@ async def test_pt_dma_top_ce_md_block_breakdown(dut) -> None:
 						"ce_resp_to_wr_done": wr_transfer.done_cycle - ce_resp.cycle,
 					},
 				},
-				"pt_ce_v2": {
+				ce_key: {
 					"exec_req_count": len(ce_exec_reqs),
 					"exec_rsp_count": len(ce_exec_rsps),
 					"drain_accept_count": len(ce_drain_accepts),
