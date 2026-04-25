@@ -259,6 +259,8 @@ class FABaselineEnv:
         self._wr_data_ready_pattern = ConstantPattern(1)
         self._rd_active = None
         self._wr_active = None
+        self._rd_fault_early_last_word: int | None = None
+        self._rd_fault_suppress_final_last = False
 
     async def start(self) -> None:
         if self._started:
@@ -335,6 +337,19 @@ class FABaselineEnv:
             self._wr_desc_ready_pattern = desc_ready
         if data_ready is not None:
             self._wr_data_ready_pattern = data_ready
+
+    def set_read_faults(
+        self,
+        *,
+        early_last_word: int | None = None,
+        suppress_final_last: bool = False,
+    ) -> None:
+        self._rd_fault_early_last_word = early_last_word
+        self._rd_fault_suppress_final_last = suppress_final_last
+
+    def clear_read_faults(self) -> None:
+        self._rd_fault_early_last_word = None
+        self._rd_fault_suppress_final_last = False
 
     def load_qkv(
         self,
@@ -445,6 +460,7 @@ class FABaselineEnv:
         active_words = 0
         word_offset = 0
         valid_held = False
+        last_held = False
         self.dut.rd_desc_ready.value = 1
         self.dut.rd_data_valid.value = 0
         self.dut.rd_data_last.value = 0
@@ -457,12 +473,15 @@ class FABaselineEnv:
                     active_kind = value_to_int(self.dut.rd_desc_tag.value)
                     word_offset = 0
                     valid_held = False
+                    last_held = False
                     self.rd_desc_log.append(ReadDescLog(addr=active_addr, words=active_words, tag=active_kind))
             else:
                 if value_to_int(self.dut.rd_data_valid.value) and value_to_int(self.dut.rd_data_ready.value):
+                    sent_last = last_held
                     word_offset += 1
                     valid_held = False
-                    if word_offset >= active_words:
+                    last_held = False
+                    if sent_last or word_offset >= active_words:
                         active_words = 0
 
             self.dut.rd_desc_ready.value = self._rd_desc_ready_pattern.next()
@@ -477,8 +496,15 @@ class FABaselineEnv:
                     valid_held = bool(self._rd_data_valid_pattern.next())
                 self.dut.rd_data_valid.value = 1 if valid_held else 0
                 if valid_held:
+                    is_final_word = word_offset == (active_words - 1)
+                    emit_last = is_final_word
+                    if self._rd_fault_early_last_word is not None and word_offset == self._rd_fault_early_last_word:
+                        emit_last = True
+                    if is_final_word and self._rd_fault_suppress_final_last:
+                        emit_last = False
+                    last_held = emit_last
                     self.dut.rd_data.value = source_words[start_word + word_offset]
-                    self.dut.rd_data_last.value = int(word_offset == (active_words - 1))
+                    self.dut.rd_data_last.value = int(emit_last)
                 else:
                     self.dut.rd_data_last.value = 0
 
