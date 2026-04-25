@@ -207,12 +207,12 @@ module FA_PV_CORE_REAL (
     input  wire          clear,
     input  wire          req_valid,
     output wire          req_ready,
-    output reg           p_rd_en,
-    output reg  [2:0]    p_rd_addr,
+    output wire          p_rd_en,
+    output wire [2:0]    p_rd_addr,
     input  wire          p_rd_valid,
     input  wire [511:0]  p_rd_data,
-    output reg           v_rd_en,
-    output reg  [4:0]    v_rd_addr,
+    output wire          v_rd_en,
+    output wire [4:0]    v_rd_addr,
     input  wire          v_rd_valid,
     input  wire [511:0]  v_rd_data,
     output reg           resp_valid,
@@ -221,22 +221,15 @@ module FA_PV_CORE_REAL (
     output reg           done_pulse
 );
 
-    localparam [2:0] ST_IDLE = 3'd0;
-    localparam [2:0] ST_ISSUE = 3'd1;
-    localparam [2:0] ST_WAIT_RD = 3'd2;
-    localparam [2:0] ST_FEED = 3'd3;
-    localparam [2:0] ST_COLLECT = 3'd4;
+    localparam [1:0] ST_IDLE = 2'd0;
+    localparam [1:0] ST_STREAM = 2'd1;
+    localparam [1:0] ST_COLLECT = 2'd2;
 
-    reg [2:0] state_r;
-    reg [2:0] feed_idx_r;
+    reg [1:0] state_r;
+    reg [3:0] issue_count_r;
+    reg [3:0] feed_count_r;
     reg [1:0] col_blk_r;
-    reg [511:0] a_feed_r;
-    reg [511:0] b_feed_r;
     reg [31:0] result_words_r [0:511];
-
-    reg          gemm_start_r;
-    reg          gemm_a_valid_r;
-    reg          gemm_b_valid_r;
     wire         gemm_a_ready_w;
     wire         gemm_b_ready_w;
     wire         gemm_start_ready_w;
@@ -245,6 +238,13 @@ module FA_PV_CORE_REAL (
     wire [31:0]  gemm_group_idx_w;
     wire         gemm_last_w;
     wire         gemm_stream_fire_w;
+    wire         first_feed_w;
+    wire         rd_feed_valid_w;
+    wire         gemm_feed_ready_w;
+    wire         gemm_feed_fire_w;
+    wire         issue_more_w;
+    wire         read_issue_w;
+    wire [2:0]   issue_addr_w;
 
     integer wi;
     integer col_idx;
@@ -281,6 +281,17 @@ module FA_PV_CORE_REAL (
 
     assign req_ready = (state_r == ST_IDLE) && !resp_valid;
     assign gemm_stream_fire_w = gemm_group_valid_w;
+    assign first_feed_w = (feed_count_r == 4'd0);
+    assign rd_feed_valid_w = (state_r == ST_STREAM) && p_rd_valid && v_rd_valid;
+    assign gemm_feed_ready_w = gemm_a_ready_w && gemm_b_ready_w && (!first_feed_w || gemm_start_ready_w);
+    assign gemm_feed_fire_w = rd_feed_valid_w && gemm_feed_ready_w;
+    assign issue_more_w = (issue_count_r < 4'd8);
+    assign read_issue_w = (state_r == ST_STREAM) && issue_more_w && (issue_count_r <= (feed_count_r + 4'd1));
+    assign issue_addr_w = issue_count_r[2:0];
+    assign p_rd_en = read_issue_w;
+    assign p_rd_addr = issue_addr_w;
+    assign v_rd_en = read_issue_w;
+    assign v_rd_addr = {col_blk_r, issue_addr_w};
 
     GEMM_V3 #(
         .WIDTH(32),
@@ -293,14 +304,14 @@ module FA_PV_CORE_REAL (
         .clk(clk),
         .rstn(rstn),
         .clear(clear),
-        .start(gemm_start_r),
+        .start(gemm_feed_fire_w && first_feed_w),
         .num_acc(8),
-        .a_valid(gemm_a_valid_r),
+        .a_valid(gemm_feed_fire_w),
         .a_ready(gemm_a_ready_w),
-        .a(a_feed_r),
-        .b_valid(gemm_b_valid_r),
+        .a(p_rd_data),
+        .b_valid(gemm_feed_fire_w),
         .b_ready(gemm_b_ready_w),
-        .b(b_feed_r),
+        .b(v_rd_data),
         .start_ready(gemm_start_ready_w),
         .m_group_data(gemm_group_data_w),
         .m_group_valid(gemm_group_valid_w),
@@ -312,17 +323,9 @@ module FA_PV_CORE_REAL (
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
             state_r <= ST_IDLE;
-            feed_idx_r <= 3'd0;
+            issue_count_r <= 4'd0;
+            feed_count_r <= 4'd0;
             col_blk_r <= 2'd0;
-            p_rd_en <= 1'b0;
-            p_rd_addr <= 3'd0;
-            v_rd_en <= 1'b0;
-            v_rd_addr <= 5'd0;
-            a_feed_r <= 512'd0;
-            b_feed_r <= 512'd0;
-            gemm_start_r <= 1'b0;
-            gemm_a_valid_r <= 1'b0;
-            gemm_b_valid_r <= 1'b0;
             resp_valid <= 1'b0;
             done_pulse <= 1'b0;
             for (wi = 0; wi < 512; wi = wi + 1) begin
@@ -330,28 +333,15 @@ module FA_PV_CORE_REAL (
             end
         end else if (clear) begin
             state_r <= ST_IDLE;
-            feed_idx_r <= 3'd0;
+            issue_count_r <= 4'd0;
+            feed_count_r <= 4'd0;
             col_blk_r <= 2'd0;
-            p_rd_en <= 1'b0;
-            p_rd_addr <= 3'd0;
-            v_rd_en <= 1'b0;
-            v_rd_addr <= 5'd0;
-            a_feed_r <= 512'd0;
-            b_feed_r <= 512'd0;
-            gemm_start_r <= 1'b0;
-            gemm_a_valid_r <= 1'b0;
-            gemm_b_valid_r <= 1'b0;
             resp_valid <= 1'b0;
             done_pulse <= 1'b0;
             for (wi = 0; wi < 512; wi = wi + 1) begin
                 result_words_r[wi] <= 32'd0;
             end
         end else begin
-            p_rd_en <= 1'b0;
-            v_rd_en <= 1'b0;
-            gemm_start_r <= 1'b0;
-            gemm_a_valid_r <= 1'b0;
-            gemm_b_valid_r <= 1'b0;
             done_pulse <= 1'b0;
 
             if (resp_valid && resp_ready) begin
@@ -371,8 +361,9 @@ module FA_PV_CORE_REAL (
                         state_r <= ST_IDLE;
                     end else begin
                         col_blk_r <= col_blk_r + 1'b1;
-                        feed_idx_r <= 3'd0;
-                        state_r <= ST_ISSUE;
+                        issue_count_r <= 4'd0;
+                        feed_count_r <= 4'd0;
+                        state_r <= ST_STREAM;
                     end
                 end
             end
@@ -381,37 +372,24 @@ module FA_PV_CORE_REAL (
                 ST_IDLE: begin
                     if (req_valid && req_ready) begin
                         col_blk_r <= 2'd0;
-                        feed_idx_r <= 3'd0;
+                        issue_count_r <= 4'd0;
+                        feed_count_r <= 4'd0;
                         for (wi = 0; wi < 512; wi = wi + 1) begin
                             result_words_r[wi] <= 32'd0;
                         end
-                        state_r <= ST_ISSUE;
+                        state_r <= ST_STREAM;
                     end
                 end
-                ST_ISSUE: begin
-                    p_rd_en <= 1'b1;
-                    p_rd_addr <= feed_idx_r;
-                    v_rd_en <= 1'b1;
-                    v_rd_addr <= {col_blk_r, feed_idx_r};
-                    state_r <= ST_WAIT_RD;
-                end
-                ST_WAIT_RD: begin
-                    if (p_rd_valid && v_rd_valid) begin
-                        a_feed_r <= p_rd_data;
-                        b_feed_r <= v_rd_data;
-                        state_r <= ST_FEED;
+                ST_STREAM: begin
+                    if (read_issue_w) begin
+                        issue_count_r <= issue_count_r + 4'd1;
                     end
-                end
-                ST_FEED: begin
-                    if (gemm_a_ready_w && gemm_b_ready_w && ((feed_idx_r != 3'd0) || gemm_start_ready_w)) begin
-                        gemm_start_r <= (feed_idx_r == 3'd0);
-                        gemm_a_valid_r <= 1'b1;
-                        gemm_b_valid_r <= 1'b1;
-                        if (feed_idx_r == 3'd7) begin
+                    if (gemm_feed_fire_w) begin
+                        if (feed_count_r == 4'd7) begin
+                            feed_count_r <= 4'd8;
                             state_r <= ST_COLLECT;
                         end else begin
-                            feed_idx_r <= feed_idx_r + 1'b1;
-                            state_r <= ST_ISSUE;
+                            feed_count_r <= feed_count_r + 4'd1;
                         end
                     end
                 end
