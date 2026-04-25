@@ -147,15 +147,14 @@ module FA_TOP_BASELINE_SIM #(
     wire [4095:0] row_p_tile_flat;
     wire [511:0] row_rescale_vec_flat;
     wire         row_proxy_ready_w;
+    wire [511:0] row_debug_m_state_flat;
+    wire [511:0] row_debug_l_state_flat;
+    wire [15:0]  row_debug_seen_flat;
     wire         pv_resp_valid;
     wire [16383:0] pv_result_tile_flat;
-    wire         oacc_resp_valid;
-    wire [16383:0] oacc_updated_tile_flat;
-    wire         oacc_proxy_ready_w;
+    wire         oacc_real_ready_w;
     wire         p_buf_load_ready;
     wire         p_buf_load_done_pulse;
-    wire         oacc_buf_load_ready;
-    wire         oacc_buf_load_done_pulse;
     wire         oacc_clear_req_ready_w;
     wire         oacc_clear_done_pulse_w;
     wire         q_qk_rd_en;
@@ -179,7 +178,14 @@ module FA_TOP_BASELINE_SIM #(
     wire         oacc_exp_rd_valid;
     wire [1023:0] oacc_exp_rd_data;
     wire         row_proxy_done_pulse;
-    wire         oacc_proxy_done_pulse;
+    wire         oacc_real_done_pulse;
+    wire         oacc_row_rd_en;
+    wire [3:0]   oacc_row_rd_addr;
+    wire         oacc_row_rd_valid;
+    wire [1023:0] oacc_row_rd_data;
+    wire         oacc_row_wr_en;
+    wire [3:0]   oacc_row_wr_addr;
+    wire [1023:0] oacc_row_wr_data;
 
     wire runtime_clear = clear || csr_soft_reset_pulse;
 
@@ -407,14 +413,17 @@ module FA_TOP_BASELINE_SIM #(
         .clear_req_valid(oacc_clear_valid),
         .clear_req_ready(oacc_clear_req_ready_w),
         .clear_done_pulse(oacc_clear_done_pulse_w),
-        .load_valid(oacc_proxy_done_pulse),
-        .load_ready(oacc_buf_load_ready),
-        .tile_load_data(oacc_updated_tile_flat),
-        .load_done_pulse(oacc_buf_load_done_pulse),
-        .row_rd_en(1'b0),
-        .row_rd_addr(4'd0),
-        .row_rd_valid(),
-        .row_rd_data(),
+        .load_valid(1'b0),
+        .load_ready(),
+        .tile_load_data(ZERO_TILE_16X64),
+        .load_done_pulse(),
+        .row_rd_en(oacc_row_rd_en),
+        .row_rd_addr(oacc_row_rd_addr),
+        .row_rd_valid(oacc_row_rd_valid),
+        .row_rd_data(oacc_row_rd_data),
+        .row_wr_en(oacc_row_wr_en),
+        .row_wr_addr(oacc_row_wr_addr),
+        .row_wr_data(oacc_row_wr_data),
         .exp_rd_en(oacc_exp_rd_en),
         .exp_rd_addr(oacc_exp_rd_row),
         .exp_rd_valid(oacc_exp_rd_valid),
@@ -453,9 +462,7 @@ module FA_TOP_BASELINE_SIM #(
         .done_pulse(qk_done_pulse)
     );
 
-    FA_SCORE_POST_PROXY #(
-        .LATENCY(4)
-    ) u_score_post (
+    FA_SCORE_POST_REAL u_score_post (
         .clk(clk),
         .rstn(rstn),
         .clear(runtime_clear),
@@ -473,9 +480,7 @@ module FA_TOP_BASELINE_SIM #(
         .done_pulse(score_done_pulse)
     );
 
-    FA_ROW_STATE_PROXY #(
-        .LATENCY(2)
-    ) u_row_state (
+    FA_ROW_STATE_REAL u_row_state (
         .clk(clk),
         .rstn(rstn),
         .clear(runtime_clear),
@@ -490,7 +495,10 @@ module FA_TOP_BASELINE_SIM #(
         .resp_ready(1'b1),
         .p_tile_flat(row_p_tile_flat),
         .rescale_vec_flat(row_rescale_vec_flat),
-        .done_pulse(row_proxy_done_pulse)
+        .done_pulse(row_proxy_done_pulse),
+        .debug_m_state_flat(row_debug_m_state_flat),
+        .debug_l_state_flat(row_debug_l_state_flat),
+        .debug_row_seen(row_debug_seen_flat)
     );
 
     assign row_update_ready = row_proxy_ready_w && p_buf_load_ready;
@@ -516,25 +524,28 @@ module FA_TOP_BASELINE_SIM #(
         .done_pulse(pv_done_pulse)
     );
 
-    FA_OACC_UPDATE_PROXY #(
-        .LATENCY(4)
-    ) u_oacc_update (
+    FA_OACC_UPDATE_REAL u_oacc_update (
         .clk(clk),
         .rstn(rstn),
         .clear(runtime_clear),
         .req_valid(oacc_update_valid),
-        .req_ready(oacc_proxy_ready_w),
+        .req_ready(oacc_real_ready_w),
         .rescale_vec_flat(row_rescale_vec_flat),
-        .old_oacc_tile_flat(oacc_tile_flat),
         .partial_o_tile_flat(pv_result_tile_flat),
-        .resp_valid(oacc_resp_valid),
+        .oacc_row_rd_en(oacc_row_rd_en),
+        .oacc_row_rd_addr(oacc_row_rd_addr),
+        .oacc_row_rd_valid(oacc_row_rd_valid),
+        .oacc_row_rd_data(oacc_row_rd_data),
+        .oacc_row_wr_en(oacc_row_wr_en),
+        .oacc_row_wr_addr(oacc_row_wr_addr),
+        .oacc_row_wr_data(oacc_row_wr_data),
+        .resp_valid(),
         .resp_ready(1'b1),
-        .updated_oacc_tile_flat(oacc_updated_tile_flat),
-        .done_pulse(oacc_proxy_done_pulse)
+        .done_pulse(oacc_real_done_pulse)
     );
 
-    assign oacc_update_ready = oacc_proxy_ready_w && oacc_buf_load_ready;
-    assign oacc_update_done_pulse = oacc_buf_load_done_pulse;
+    assign oacc_update_ready = oacc_real_ready_w;
+    assign oacc_update_done_pulse = oacc_real_done_pulse;
 
     FA_WR_DMA u_wr_dma (
         .clk(clk),

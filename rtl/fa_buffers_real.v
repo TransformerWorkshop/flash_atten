@@ -427,6 +427,9 @@ module FA_OACC_BUF_REAL (
     input  wire [3:0]      row_rd_addr,
     output reg             row_rd_valid,
     output wire [1023:0]   row_rd_data,
+    input  wire            row_wr_en,
+    input  wire [3:0]      row_wr_addr,
+    input  wire [1023:0]   row_wr_data,
     input  wire            exp_rd_en,
     input  wire [3:0]      exp_rd_addr,
     output reg             exp_rd_valid,
@@ -442,7 +445,10 @@ module FA_OACC_BUF_REAL (
     reg [3:0] row_idx_r;
     reg [16383:0] load_data_r;
     reg [31:0] shadow_words_r [0:511];
-    reg [1023:0] row_wr_data_r;
+    reg [1023:0] mem_wr_data_r;
+    reg [3:0]    mem_wr_addr_r;
+    reg [31:0]   mem_wr_mask_r;
+    reg          mem_wr_en_r;
     integer wi;
     integer li;
 
@@ -465,11 +471,11 @@ module FA_OACC_BUF_REAL (
         .clk(clk),
         .rstn(rstn),
         .clear(clear),
-        .wr_en((state_r == ST_CLEAR) || (state_r == ST_LOAD)),
+        .wr_en(mem_wr_en_r),
         .wr_buf(1'b0),
-        .wr_mask(32'hFFFF_FFFF),
-        .wr_addr(row_idx_r),
-        .wr_data(row_wr_data_r),
+        .wr_mask(mem_wr_mask_r),
+        .wr_addr(mem_wr_addr_r),
+        .wr_data(mem_wr_data_r),
         .rd_b_en(row_rd_en),
         .rd_b_buf(1'b0),
         .rd_b_addr(row_rd_addr),
@@ -481,11 +487,28 @@ module FA_OACC_BUF_REAL (
     );
 
     always @(*) begin
-        row_wr_data_r = 1024'd0;
-        if (state_r == ST_LOAD) begin
+        mem_wr_en_r = 1'b0;
+        mem_wr_addr_r = 4'd0;
+        mem_wr_data_r = 1024'd0;
+        mem_wr_mask_r = 32'd0;
+        if (state_r == ST_CLEAR) begin
+            mem_wr_en_r = 1'b1;
+            mem_wr_addr_r = row_idx_r;
+            mem_wr_data_r = 1024'd0;
+            mem_wr_mask_r = 32'hFFFF_FFFF;
+        end else if (state_r == ST_LOAD) begin
+            mem_wr_en_r = 1'b1;
+            mem_wr_addr_r = row_idx_r;
+            mem_wr_mask_r = 32'hFFFF_FFFF;
+            mem_wr_data_r = 1024'd0;
             for (li = 0; li < 32; li = li + 1) begin
-                row_wr_data_r[(li * 32) +: 32] = load_data_r[((row_idx_r * 32) + li) * 32 +: 32];
+                mem_wr_data_r[(li * 32) +: 32] = load_data_r[((row_idx_r * 32) + li) * 32 +: 32];
             end
+        end else if (row_wr_en) begin
+            mem_wr_en_r = 1'b1;
+            mem_wr_addr_r = row_wr_addr;
+            mem_wr_data_r = row_wr_data;
+            mem_wr_mask_r = 32'hFFFF_FFFF;
         end
     end
 
@@ -517,6 +540,11 @@ module FA_OACC_BUF_REAL (
             load_done_pulse <= 1'b0;
             row_rd_valid <= row_rd_en;
             exp_rd_valid <= exp_rd_en;
+            if (row_wr_en && (state_r == ST_IDLE)) begin
+                for (wi = 0; wi < 32; wi = wi + 1) begin
+                    shadow_words_r[(row_wr_addr * 32) + wi] <= row_wr_data[(wi * 32) +: 32];
+                end
+            end
             case (state_r)
                 ST_IDLE: begin
                     if (clear_req_valid) begin
