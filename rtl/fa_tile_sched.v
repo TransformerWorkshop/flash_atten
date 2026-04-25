@@ -68,6 +68,8 @@ module FA_TILE_SCHED (
     reg [4:0] state_r;
     reg [3:0] q_blk_r;
     reg [3:0] kv_blk_r;
+    reg       v_load_pending_r;
+    reg       v_load_done_r;
 
     assign q_blk_idx = q_blk_r;
     assign kv_blk_idx = kv_blk_r;
@@ -77,23 +79,35 @@ module FA_TILE_SCHED (
             state_r <= ST_IDLE;
             q_blk_r <= 4'd0;
             kv_blk_r <= 4'd0;
+            v_load_pending_r <= 1'b0;
+            v_load_done_r <= 1'b0;
         end else if (clear || !run_active) begin
             if (run_start_pulse) begin
                 state_r <= ST_Q_LOAD_REQ;
                 q_blk_r <= 4'd0;
                 kv_blk_r <= 4'd0;
+                v_load_pending_r <= 1'b0;
+                v_load_done_r <= 1'b0;
             end else begin
                 state_r <= ST_IDLE;
                 q_blk_r <= 4'd0;
                 kv_blk_r <= 4'd0;
+                v_load_pending_r <= 1'b0;
+                v_load_done_r <= 1'b0;
             end
         end else begin
+            if (v_load_pending_r && load_done_pulse) begin
+                v_load_pending_r <= 1'b0;
+                v_load_done_r <= 1'b1;
+            end
             case (state_r)
                 ST_IDLE: begin
                     if (run_start_pulse) begin
                         state_r <= ST_Q_LOAD_REQ;
                         q_blk_r <= 4'd0;
                         kv_blk_r <= 4'd0;
+                        v_load_pending_r <= 1'b0;
+                        v_load_done_r <= 1'b0;
                     end
                 end
                 ST_Q_LOAD_REQ:      if (load_req_ready) state_r <= ST_Q_LOAD_WAIT;
@@ -103,15 +117,39 @@ module FA_TILE_SCHED (
                 ST_OACC_CLEAR_REQ:  if (oacc_clear_ready) state_r <= ST_OACC_CLEAR_WAIT;
                 ST_OACC_CLEAR_WAIT: if (oacc_clear_done_pulse) state_r <= ST_K_LOAD_REQ;
                 ST_K_LOAD_REQ:      if (load_req_ready) state_r <= ST_K_LOAD_WAIT;
-                ST_K_LOAD_WAIT:     if (load_done_pulse) state_r <= ST_V_LOAD_REQ;
-                ST_V_LOAD_REQ:      if (load_req_ready) state_r <= ST_V_LOAD_WAIT;
-                ST_V_LOAD_WAIT:     if (load_done_pulse) state_r <= ST_QK_REQ;
+                ST_K_LOAD_WAIT: begin
+                    if (load_done_pulse) begin
+                        v_load_pending_r <= 1'b0;
+                        v_load_done_r <= 1'b0;
+                        state_r <= ST_V_LOAD_REQ;
+                    end
+                end
+                ST_V_LOAD_REQ: begin
+                    if (load_req_ready) begin
+                        v_load_pending_r <= 1'b1;
+                        v_load_done_r <= 1'b0;
+                        state_r <= ST_QK_REQ;
+                    end
+                end
+                ST_V_LOAD_WAIT: begin
+                    if (v_load_done_r) begin
+                        state_r <= ST_PV_REQ;
+                    end
+                end
                 ST_QK_REQ:          if (qk_req_ready) state_r <= ST_QK_WAIT;
                 ST_QK_WAIT:         if (qk_done_pulse) state_r <= ST_SCORE_REQ;
                 ST_SCORE_REQ:       if (score_req_ready) state_r <= ST_SCORE_WAIT;
                 ST_SCORE_WAIT:      if (score_done_pulse) state_r <= ST_ROW_UPDATE_REQ;
                 ST_ROW_UPDATE_REQ:  if (row_update_ready) state_r <= ST_ROW_UPDATE_WAIT;
-                ST_ROW_UPDATE_WAIT: if (row_update_done_pulse) state_r <= ST_PV_REQ;
+                ST_ROW_UPDATE_WAIT: begin
+                    if (row_update_done_pulse) begin
+                        if (v_load_done_r) begin
+                            state_r <= ST_PV_REQ;
+                        end else begin
+                            state_r <= ST_V_LOAD_WAIT;
+                        end
+                    end
+                end
                 ST_PV_REQ:          if (pv_req_ready) state_r <= ST_PV_WAIT;
                 ST_PV_WAIT:         if (pv_done_pulse) state_r <= ST_OACC_UPDATE_REQ;
                 ST_OACC_UPDATE_REQ: if (oacc_update_ready) state_r <= ST_OACC_UPDATE_WAIT;
@@ -122,6 +160,8 @@ module FA_TILE_SCHED (
                         end else begin
                             state_r <= ST_K_LOAD_REQ;
                             kv_blk_r <= kv_blk_r + 1'b1;
+                            v_load_pending_r <= 1'b0;
+                            v_load_done_r <= 1'b0;
                         end
                     end
                 end
@@ -138,6 +178,8 @@ module FA_TILE_SCHED (
                             state_r <= ST_Q_LOAD_REQ;
                             q_blk_r <= q_blk_r + 1'b1;
                             kv_blk_r <= 4'd0;
+                            v_load_pending_r <= 1'b0;
+                            v_load_done_r <= 1'b0;
                         end
                     end
                 end

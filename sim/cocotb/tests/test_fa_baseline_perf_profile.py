@@ -257,15 +257,40 @@ def build_report(samples: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
         "observed_count": sum(entry["observed_count"] for entry in row_update_cycles.values()),
     }
 
-    total_cycles = sum(entry["total_cycles"] for entry in top_stage_totals.values())
+    serial_total_cycles = sum(entry["total_cycles"] for entry in top_stage_totals.values())
     for entry in top_stage_totals.values():
-        entry["share_pct"] = (entry["total_cycles"] * 100.0 / total_cycles) if total_cycles else 0.0
+        entry["share_pct"] = (entry["total_cycles"] * 100.0 / serial_total_cycles) if serial_total_cycles else 0.0
     for entry in row_update_breakdown.values():
-        entry["share_pct"] = (entry["total_cycles"] * 100.0 / total_cycles) if total_cycles else 0.0
+        entry["share_pct"] = (entry["total_cycles"] * 100.0 / serial_total_cycles) if serial_total_cycles else 0.0
     for entry in row_state_breakdown.values():
-        entry["share_pct"] = (entry["total_cycles"] * 100.0 / total_cycles) if total_cycles else 0.0
+        entry["share_pct"] = (entry["total_cycles"] * 100.0 / serial_total_cycles) if serial_total_cycles else 0.0
     for entry in p_load_breakdown.values():
-        entry["share_pct"] = (entry["total_cycles"] * 100.0 / total_cycles) if total_cycles else 0.0
+        entry["share_pct"] = (entry["total_cycles"] * 100.0 / serial_total_cycles) if serial_total_cycles else 0.0
+
+    k_load_cycles = int(const_stage_cycles["k_load"]["selected_cycles"])
+    v_load_cycles = int(const_stage_cycles["v_load"]["selected_cycles"])
+    qk_cycles = int(const_stage_cycles["qk"]["selected_cycles"])
+    score_cycles = int(const_stage_cycles["score_post"]["selected_cycles"])
+    pv_cycles = int(const_stage_cycles["pv"]["selected_cycles"])
+    oacc_update_cycles = int(const_stage_cycles["oacc_update"]["selected_cycles"])
+    scheduler_overlap_total_cycles = (
+        int(top_stage_totals["q_load"]["total_cycles"])
+        + int(top_stage_totals["row_init"]["total_cycles"])
+        + int(top_stage_totals["oacc_clear"]["total_cycles"])
+        + int(top_stage_totals["store"]["total_cycles"])
+    )
+    scheduler_overlap_breakdown: dict[str, dict[str, Any]] = {}
+    for relation, count in ROW_RELATION_COUNTS.items():
+        row_update_sel = int(row_update_cycles[relation]["selected_cycles"])
+        overlapped_cycles = max(v_load_cycles, qk_cycles + score_cycles + row_update_sel)
+        kv_iteration_cycles = k_load_cycles + overlapped_cycles + pv_cycles + oacc_update_cycles
+        scheduler_overlap_breakdown[relation] = {
+            "count": count,
+            "per_iteration_cycles": kv_iteration_cycles,
+            "hidden_v_load_cycles": max(0, v_load_cycles - (qk_cycles + score_cycles + row_update_sel)),
+            "total_cycles": kv_iteration_cycles * count,
+        }
+        scheduler_overlap_total_cycles += kv_iteration_cycles * count
 
     return {
         "method": "sampled_stage_latency_plus_scheduler_count_extrapolation",
@@ -280,7 +305,11 @@ def build_report(samples: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
         "extrapolated_row_update_breakdown": row_update_breakdown,
         "extrapolated_row_state_breakdown": row_state_breakdown,
         "extrapolated_p_load_breakdown": p_load_breakdown,
-        "extrapolated_total_cycles": total_cycles,
+        "extrapolated_total_cycles": serial_total_cycles,
+        "scheduler_overlap_model": "v_load_overlapped_with_qk_score_row_update",
+        "scheduler_overlap_breakdown": scheduler_overlap_breakdown,
+        "scheduler_overlap_total_cycles": scheduler_overlap_total_cycles,
+        "scheduler_overlap_savings_cycles": serial_total_cycles - scheduler_overlap_total_cycles,
         "extrapolated_row_state_total_cycles": row_state_total,
         "extrapolated_p_load_total_cycles": p_load_total,
     }
