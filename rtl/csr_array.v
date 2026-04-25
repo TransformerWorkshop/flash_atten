@@ -5,7 +5,7 @@
 
 module csr_array #(
     parameter DATA_W   = 32,
-    parameter ADDR_W   = 7,       // covers 0x00 – 0x40
+    parameter ADDR_W   = 7,       // covers 0x00 – 0x48
     parameter STRB_W   = DATA_W/8
 )(
     input  wire                 aclk,
@@ -57,7 +57,9 @@ module csr_array #(
     input  wire                i_busy,
     input  wire                i_done,
     input  wire                i_error,
-    input  wire [DATA_W-1:0]   i_cycles
+    input  wire [DATA_W-1:0]   i_cycles,
+    input  wire [DATA_W-1:0]   i_rd_bytes,
+    input  wire [DATA_W-1:0]   i_wr_bytes
 );
 
     // =========================================================================
@@ -78,6 +80,8 @@ module csr_array #(
     localparam ADDR_NEG_LARGE    = 7'h38;
     localparam ADDR_SCALE        = 7'h3C;
     localparam ADDR_CYCLES       = 7'h40;
+    localparam ADDR_RD_BYTES     = 7'h44;
+    localparam ADDR_WR_BYTES     = 7'h48;
 
     // =========================================================================
     // R/W Registers
@@ -297,6 +301,8 @@ module csr_array #(
             ADDR_NEG_LARGE:    reg_rdata = reg_neg_large;
             ADDR_SCALE:        reg_rdata = reg_scale;
             ADDR_CYCLES:       reg_rdata = i_cycles;
+            ADDR_RD_BYTES:     reg_rdata = i_rd_bytes;
+            ADDR_WR_BYTES:     reg_rdata = i_wr_bytes;
             default:           reg_rdata = {DATA_W{1'b0}};
         endcase
     end

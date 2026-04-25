@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import cocotb
 from cocotb.handle import Force, Release
 from cocotb.triggers import ClockCycles
@@ -33,6 +35,10 @@ from tests.fa_baseline_env import (
 
 def first_rows(matrix, rows: int):
     return matrix[:rows]
+
+
+def core(dut):
+    return dut.u_core
 
 
 def make_single_tile_case(seed_base: int):
@@ -399,12 +405,12 @@ async def test_fa_baseline_csr_and_framework_smoke(dut) -> None:
         status = await env.axil_read(ADDR_STATUS)
         assert (status & 0x7) == 0
 
-        assert len(dut.u_q_buf.tile_flat) == 16384
-        assert len(dut.u_k_buf.tile_flat) == 16384
-        assert len(dut.u_v_buf.tile_flat) == 16384
-        assert len(dut.u_p_buf.tile_flat) == 4096
-        assert len(dut.u_oacc_buf.tile_flat) == 16384
-        assert len(dut.u_score_post.masked_score_tile_flat) == 8192
+        assert len(core(dut).u_q_buf.tile_flat) == 16384
+        assert len(core(dut).u_k_buf.tile_flat) == 16384
+        assert len(core(dut).u_v_buf.tile_flat) == 16384
+        assert len(core(dut).u_p_buf.tile_flat) == 4096
+        assert len(core(dut).u_oacc_buf.tile_flat) == 16384
+        assert len(core(dut).u_score_post.masked_score_tile_flat) == 8192
     finally:
         env.shutdown()
 
@@ -441,7 +447,7 @@ async def test_fa_baseline_vbuf_pv_layout(dut) -> None:
             await ClockCycles(dut.clk, 1)
         for _ in range(700):
             await ClockCycles(dut.clk, 1)
-        actual_words = flat_words(int(dut.u_v_buf_pv.layout_flat.value), 32 * 16)
+        actual_words = flat_words(int(core(dut).u_v_buf_pv.layout_flat.value), 32 * 16)
         expected_words = expected_v_pv_layout_words(v[:16])
         assert actual_words == expected_words
     finally:
@@ -456,8 +462,8 @@ async def test_fa_baseline_qk_core_real_tile(dut) -> None:
         q, k, v = make_single_tile_case(260)
         env.load_qkv(q, k, v)
         await env.start_run(causal=False)
-        await wait_signal_high(dut, dut.u_qk_core.resp_valid, timeout_cycles=6000)
-        actual_words = flat_words(int(dut.u_qk_core.result_tile_flat.value), 16 * 16)
+        await wait_signal_high(dut, core(dut).u_qk_core.resp_valid, timeout_cycles=6000)
+        actual_words = flat_words(int(core(dut).u_qk_core.result_tile_flat.value), 16 * 16)
         expected_words = expected_qk_tile_words(q[:16], k[:16])
         assert actual_words == expected_words
     finally:
@@ -472,9 +478,9 @@ async def test_fa_baseline_pv_core_real_tile(dut) -> None:
         q, k, v = make_single_tile_case(270)
         env.load_qkv(q, k, v)
         await env.start_run(causal=False)
-        await wait_signal_high(dut, dut.u_pv_core.resp_valid, timeout_cycles=12000)
-        p_words = flat_words(int(dut.u_p_buf.tile_flat.value), 16 * 8)
-        actual_words = flat_words(int(dut.u_pv_core.result_tile_flat.value), 16 * 32)
+        await wait_signal_high(dut, core(dut).u_pv_core.resp_valid, timeout_cycles=12000)
+        p_words = flat_words(int(core(dut).u_p_buf.tile_flat.value), 16 * 8)
+        actual_words = flat_words(int(core(dut).u_pv_core.result_tile_flat.value), 16 * 32)
         expected_words = expected_pv_tile_words(p_words, v[:16])
         assert actual_words == expected_words
     finally:
@@ -489,9 +495,9 @@ async def test_fa_baseline_score_post_real_scale_mask(dut) -> None:
         q, k, v = make_single_tile_case(280)
         env.load_qkv(q, k, v)
         await env.start_run(causal=True)
-        await wait_signal_high(dut, dut.u_score_post.resp_valid, timeout_cycles=12000)
-        score_words = flat_words(int(dut.u_qk_core.result_tile_flat.value), 16 * 16)
-        actual_words = flat_words(int(dut.u_score_post.masked_score_tile_flat.value), 16 * 16)
+        await wait_signal_high(dut, core(dut).u_score_post.resp_valid, timeout_cycles=12000)
+        score_words = flat_words(int(core(dut).u_qk_core.result_tile_flat.value), 16 * 16)
+        actual_words = flat_words(int(core(dut).u_score_post.masked_score_tile_flat.value), 16 * 16)
         expected_words = expected_score_post_words(
             score_words,
             0,
@@ -511,13 +517,13 @@ async def test_fa_baseline_row_state_real_init(dut) -> None:
     try:
         await env.reset()
         await env.program_common_regs(causal=False)
-        dut.u_row_state.init_valid.value = Force(1)
+        core(dut).u_row_state.init_valid.value = Force(1)
         await ClockCycles(dut.clk, 1)
-        dut.u_row_state.init_valid.value = Release()
-        await wait_signal_high(dut, dut.u_row_state.init_done_pulse, timeout_cycles=200)
-        m_words = flat_words(int(dut.u_row_state.debug_m_state_flat.value), 16)
-        l_words = flat_words(int(dut.u_row_state.debug_l_state_flat.value), 16)
-        seen_bits = int(dut.u_row_state.debug_row_seen.value)
+        core(dut).u_row_state.init_valid.value = Release()
+        await wait_signal_high(dut, core(dut).u_row_state.init_done_pulse, timeout_cycles=200)
+        m_words = flat_words(int(core(dut).u_row_state.debug_m_state_flat.value), 16)
+        l_words = flat_words(int(core(dut).u_row_state.debug_l_state_flat.value), 16)
+        seen_bits = int(core(dut).u_row_state.debug_row_seen.value)
         assert m_words == [env.neg_large_word & 0xFFFF_FFFF for _ in range(16)]
         assert l_words == [0 for _ in range(16)]
         assert seen_bits == 0
@@ -533,13 +539,13 @@ async def test_fa_baseline_row_state_real_update_single_tile(dut) -> None:
         q, k, v = make_single_tile_case(290)
         env.load_qkv(q, k, v)
         await env.start_run(causal=False)
-        await wait_signal_high(dut, dut.u_row_state.resp_valid, timeout_cycles=12000)
-        masked_words = flat_words(int(dut.u_score_post.masked_score_tile_flat.value), 16 * 16)
-        actual_p_words = flat_words(int(dut.u_row_state.p_tile_flat.value), 16 * 8)
-        actual_rescale_words = flat_words(int(dut.u_row_state.rescale_vec_flat.value), 16)
-        actual_m_words = flat_words(int(dut.u_row_state.debug_m_state_flat.value), 16)
-        actual_l_words = flat_words(int(dut.u_row_state.debug_l_state_flat.value), 16)
-        actual_seen = int(dut.u_row_state.debug_row_seen.value)
+        await wait_signal_high(dut, core(dut).u_row_state.resp_valid, timeout_cycles=12000)
+        masked_words = flat_words(int(core(dut).u_score_post.masked_score_tile_flat.value), 16 * 16)
+        actual_p_words = flat_words(int(core(dut).u_row_state.p_tile_flat.value), 16 * 8)
+        actual_rescale_words = flat_words(int(core(dut).u_row_state.rescale_vec_flat.value), 16)
+        actual_m_words = flat_words(int(core(dut).u_row_state.debug_m_state_flat.value), 16)
+        actual_l_words = flat_words(int(core(dut).u_row_state.debug_l_state_flat.value), 16)
+        actual_seen = int(core(dut).u_row_state.debug_row_seen.value)
         expected_p_words, expected_rescale_words, expected_m_words, expected_l_words, expected_seen = expected_row_state_update(
             masked_words,
             neg_large_word=env.neg_large_word,
@@ -568,74 +574,74 @@ async def test_fa_baseline_row_state_real_masked_tile(dut) -> None:
         all_masked_int = pack_words_to_int(all_masked_words)
         all_zero_int = 0
 
-        dut.u_row_state.init_valid.value = Force(1)
+        core(dut).u_row_state.init_valid.value = Force(1)
         await ClockCycles(dut.clk, 1)
-        dut.u_row_state.init_valid.value = Release()
-        await wait_signal_high(dut, dut.u_row_state.init_done_pulse, timeout_cycles=200)
+        core(dut).u_row_state.init_valid.value = Release()
+        await wait_signal_high(dut, core(dut).u_row_state.init_done_pulse, timeout_cycles=200)
 
-        dut.u_row_state.masked_score_tile_flat.value = Force(all_masked_int)
-        dut.u_row_state.update_valid.value = Force(1)
+        core(dut).u_row_state.masked_score_tile_flat.value = Force(all_masked_int)
+        core(dut).u_row_state.update_valid.value = Force(1)
         await ClockCycles(dut.clk, 1)
-        dut.u_row_state.update_valid.value = Release()
-        await wait_signal_high(dut, dut.u_row_state.done_pulse, timeout_cycles=500)
+        core(dut).u_row_state.update_valid.value = Release()
+        await wait_signal_high(dut, core(dut).u_row_state.done_pulse, timeout_cycles=500)
 
-        actual_p_words = flat_words(int(dut.u_row_state.p_tile_flat.value), 16 * 8)
-        actual_rescale_words = flat_words(int(dut.u_row_state.rescale_vec_flat.value), 16)
-        actual_m_words = flat_words(int(dut.u_row_state.debug_m_state_flat.value), 16)
-        actual_l_words = flat_words(int(dut.u_row_state.debug_l_state_flat.value), 16)
-        actual_seen = int(dut.u_row_state.debug_row_seen.value)
+        actual_p_words = flat_words(int(core(dut).u_row_state.p_tile_flat.value), 16 * 8)
+        actual_rescale_words = flat_words(int(core(dut).u_row_state.rescale_vec_flat.value), 16)
+        actual_m_words = flat_words(int(core(dut).u_row_state.debug_m_state_flat.value), 16)
+        actual_l_words = flat_words(int(core(dut).u_row_state.debug_l_state_flat.value), 16)
+        actual_seen = int(core(dut).u_row_state.debug_row_seen.value)
         assert actual_p_words == [0 for _ in range(16 * 8)]
         assert actual_rescale_words == [0 for _ in range(16)]
         assert actual_m_words == [env.neg_large_word & 0xFFFF_FFFF for _ in range(16)]
         assert actual_l_words == [0 for _ in range(16)]
         assert actual_seen == 0
 
-        dut.u_row_state.masked_score_tile_flat.value = Force(all_zero_int)
-        dut.u_row_state.update_valid.value = Force(1)
+        core(dut).u_row_state.masked_score_tile_flat.value = Force(all_zero_int)
+        core(dut).u_row_state.update_valid.value = Force(1)
         await ClockCycles(dut.clk, 1)
-        dut.u_row_state.update_valid.value = Release()
-        await wait_signal_high(dut, dut.u_row_state.done_pulse, timeout_cycles=1000)
+        core(dut).u_row_state.update_valid.value = Release()
+        await wait_signal_high(dut, core(dut).u_row_state.done_pulse, timeout_cycles=1000)
 
-        actual_p_words = flat_words(int(dut.u_row_state.p_tile_flat.value), 16 * 8)
-        actual_rescale_words = flat_words(int(dut.u_row_state.rescale_vec_flat.value), 16)
-        actual_m_words = flat_words(int(dut.u_row_state.debug_m_state_flat.value), 16)
-        actual_l_words = flat_words(int(dut.u_row_state.debug_l_state_flat.value), 16)
-        actual_seen = int(dut.u_row_state.debug_row_seen.value)
+        actual_p_words = flat_words(int(core(dut).u_row_state.p_tile_flat.value), 16 * 8)
+        actual_rescale_words = flat_words(int(core(dut).u_row_state.rescale_vec_flat.value), 16)
+        actual_m_words = flat_words(int(core(dut).u_row_state.debug_m_state_flat.value), 16)
+        actual_l_words = flat_words(int(core(dut).u_row_state.debug_l_state_flat.value), 16)
+        actual_seen = int(core(dut).u_row_state.debug_row_seen.value)
         assert actual_p_words == [0x0010_0010 for _ in range(16 * 8)]
         assert actual_rescale_words == [0 for _ in range(16)]
         assert actual_m_words == [0 for _ in range(16)]
         assert actual_l_words == [0x0010_0000 for _ in range(16)]
         assert actual_seen == 0xFFFF
 
-        dut.u_row_state.masked_score_tile_flat.value = Force(all_masked_int)
-        dut.u_row_state.update_valid.value = Force(1)
+        core(dut).u_row_state.masked_score_tile_flat.value = Force(all_masked_int)
+        core(dut).u_row_state.update_valid.value = Force(1)
         await ClockCycles(dut.clk, 1)
-        dut.u_row_state.update_valid.value = Release()
-        await wait_signal_high(dut, dut.u_row_state.done_pulse, timeout_cycles=500)
+        core(dut).u_row_state.update_valid.value = Release()
+        await wait_signal_high(dut, core(dut).u_row_state.done_pulse, timeout_cycles=500)
 
-        actual_p_words = flat_words(int(dut.u_row_state.p_tile_flat.value), 16 * 8)
-        actual_rescale_words = flat_words(int(dut.u_row_state.rescale_vec_flat.value), 16)
-        actual_m_words = flat_words(int(dut.u_row_state.debug_m_state_flat.value), 16)
-        actual_l_words = flat_words(int(dut.u_row_state.debug_l_state_flat.value), 16)
-        actual_seen = int(dut.u_row_state.debug_row_seen.value)
+        actual_p_words = flat_words(int(core(dut).u_row_state.p_tile_flat.value), 16 * 8)
+        actual_rescale_words = flat_words(int(core(dut).u_row_state.rescale_vec_flat.value), 16)
+        actual_m_words = flat_words(int(core(dut).u_row_state.debug_m_state_flat.value), 16)
+        actual_l_words = flat_words(int(core(dut).u_row_state.debug_l_state_flat.value), 16)
+        actual_seen = int(core(dut).u_row_state.debug_row_seen.value)
         assert actual_p_words == [0 for _ in range(16 * 8)]
         assert actual_rescale_words == [0x0001_0000 for _ in range(16)]
         assert actual_m_words == [0 for _ in range(16)]
         assert actual_l_words == [0x0010_0000 for _ in range(16)]
         assert actual_seen == 0xFFFF
 
-        dut.u_row_state.masked_score_tile_flat.value = Release()
+        core(dut).u_row_state.masked_score_tile_flat.value = Release()
     finally:
         try:
-            dut.u_row_state.update_valid.value = Release()
+            core(dut).u_row_state.update_valid.value = Release()
         except Exception:
             pass
         try:
-            dut.u_row_state.init_valid.value = Release()
+            core(dut).u_row_state.init_valid.value = Release()
         except Exception:
             pass
         try:
-            dut.u_row_state.masked_score_tile_flat.value = Release()
+            core(dut).u_row_state.masked_score_tile_flat.value = Release()
         except Exception:
             pass
         env.shutdown()
@@ -657,31 +663,31 @@ async def test_fa_baseline_oacc_update_real_tile(dut) -> None:
 
         for row in range(16):
             row_words = old_words[row * 32 : (row + 1) * 32]
-            dut.u_oacc_buf.row_wr_addr.value = Force(row)
-            dut.u_oacc_buf.row_wr_data.value = Force(pack_row_words_to_int(row_words))
-            dut.u_oacc_buf.row_wr_en.value = Force(1)
+            core(dut).u_oacc_buf.row_wr_addr.value = Force(row)
+            core(dut).u_oacc_buf.row_wr_data.value = Force(pack_row_words_to_int(row_words))
+            core(dut).u_oacc_buf.row_wr_en.value = Force(1)
             await ClockCycles(dut.clk, 1)
-            dut.u_oacc_buf.row_wr_en.value = Release()
-            dut.u_oacc_buf.row_wr_addr.value = Release()
-            dut.u_oacc_buf.row_wr_data.value = Release()
+            core(dut).u_oacc_buf.row_wr_en.value = Release()
+            core(dut).u_oacc_buf.row_wr_addr.value = Release()
+            core(dut).u_oacc_buf.row_wr_data.value = Release()
 
-        dut.u_oacc_update.rescale_vec_flat.value = Force(pack_words_to_int(rescale_words))
-        dut.u_oacc_update.partial_o_tile_flat.value = Force(pack_words_to_int(partial_words))
-        dut.u_oacc_update.req_valid.value = Force(1)
+        core(dut).u_oacc_update.rescale_vec_flat.value = Force(pack_words_to_int(rescale_words))
+        core(dut).u_oacc_update.partial_o_tile_flat.value = Force(pack_words_to_int(partial_words))
+        core(dut).u_oacc_update.req_valid.value = Force(1)
         await ClockCycles(dut.clk, 1)
-        dut.u_oacc_update.req_valid.value = Release()
+        core(dut).u_oacc_update.req_valid.value = Release()
 
-        await wait_signal_high(dut, dut.u_oacc_update.done_pulse, timeout_cycles=5000)
-        actual_words = flat_words(int(dut.u_oacc_buf.tile_flat.value), 16 * 32)
+        await wait_signal_high(dut, core(dut).u_oacc_update.done_pulse, timeout_cycles=5000)
+        actual_words = flat_words(int(core(dut).u_oacc_buf.tile_flat.value), 16 * 32)
         assert actual_words == expected_words
     finally:
         for handle in (
-            dut.u_oacc_update.rescale_vec_flat,
-            dut.u_oacc_update.partial_o_tile_flat,
-            dut.u_oacc_update.req_valid,
-            dut.u_oacc_buf.row_wr_en,
-            dut.u_oacc_buf.row_wr_addr,
-            dut.u_oacc_buf.row_wr_data,
+            core(dut).u_oacc_update.rescale_vec_flat,
+            core(dut).u_oacc_update.partial_o_tile_flat,
+            core(dut).u_oacc_update.req_valid,
+            core(dut).u_oacc_buf.row_wr_en,
+            core(dut).u_oacc_buf.row_wr_addr,
+            core(dut).u_oacc_buf.row_wr_data,
         ):
             try:
                 handle.value = Release()
@@ -703,34 +709,34 @@ async def test_fa_baseline_oacc_update_real_rescale_zero_one(dut) -> None:
 
         for row in range(16):
             row_words = old_words[row * 32 : (row + 1) * 32]
-            dut.u_oacc_buf.row_wr_addr.value = Force(row)
-            dut.u_oacc_buf.row_wr_data.value = Force(pack_row_words_to_int(row_words))
-            dut.u_oacc_buf.row_wr_en.value = Force(1)
+            core(dut).u_oacc_buf.row_wr_addr.value = Force(row)
+            core(dut).u_oacc_buf.row_wr_data.value = Force(pack_row_words_to_int(row_words))
+            core(dut).u_oacc_buf.row_wr_en.value = Force(1)
             await ClockCycles(dut.clk, 1)
-            dut.u_oacc_buf.row_wr_en.value = Release()
-            dut.u_oacc_buf.row_wr_addr.value = Release()
-            dut.u_oacc_buf.row_wr_data.value = Release()
+            core(dut).u_oacc_buf.row_wr_en.value = Release()
+            core(dut).u_oacc_buf.row_wr_addr.value = Release()
+            core(dut).u_oacc_buf.row_wr_data.value = Release()
 
         rescale_words = [0x0001_0000 for _ in range(8)] + [0 for _ in range(8)]
         expected_words = expected_oacc_update_words(old_words, rescale_words, partial_words)
 
-        dut.u_oacc_update.rescale_vec_flat.value = Force(pack_words_to_int(rescale_words))
-        dut.u_oacc_update.partial_o_tile_flat.value = Force(pack_words_to_int(partial_words))
-        dut.u_oacc_update.req_valid.value = Force(1)
+        core(dut).u_oacc_update.rescale_vec_flat.value = Force(pack_words_to_int(rescale_words))
+        core(dut).u_oacc_update.partial_o_tile_flat.value = Force(pack_words_to_int(partial_words))
+        core(dut).u_oacc_update.req_valid.value = Force(1)
         await ClockCycles(dut.clk, 1)
-        dut.u_oacc_update.req_valid.value = Release()
+        core(dut).u_oacc_update.req_valid.value = Release()
 
-        await wait_signal_high(dut, dut.u_oacc_update.done_pulse, timeout_cycles=5000)
-        actual_words = flat_words(int(dut.u_oacc_buf.tile_flat.value), 16 * 32)
+        await wait_signal_high(dut, core(dut).u_oacc_update.done_pulse, timeout_cycles=5000)
+        actual_words = flat_words(int(core(dut).u_oacc_buf.tile_flat.value), 16 * 32)
         assert actual_words == expected_words
     finally:
         for handle in (
-            dut.u_oacc_update.rescale_vec_flat,
-            dut.u_oacc_update.partial_o_tile_flat,
-            dut.u_oacc_update.req_valid,
-            dut.u_oacc_buf.row_wr_en,
-            dut.u_oacc_buf.row_wr_addr,
-            dut.u_oacc_buf.row_wr_data,
+            core(dut).u_oacc_update.rescale_vec_flat,
+            core(dut).u_oacc_update.partial_o_tile_flat,
+            core(dut).u_oacc_update.req_valid,
+            core(dut).u_oacc_buf.row_wr_en,
+            core(dut).u_oacc_buf.row_wr_addr,
+            core(dut).u_oacc_buf.row_wr_data,
         ):
             try:
                 handle.value = Release()
@@ -756,39 +762,39 @@ async def test_fa_baseline_oacc_buf_real_row_write_export_coherence(dut) -> None
 
         for row in range(16):
             zero_row_words = old_words[row * 32 : (row + 1) * 32]
-            dut.u_oacc_buf.row_wr_addr.value = Force(row)
-            dut.u_oacc_buf.row_wr_data.value = Force(pack_row_words_to_int(zero_row_words))
-            dut.u_oacc_buf.row_wr_en.value = Force(1)
+            core(dut).u_oacc_buf.row_wr_addr.value = Force(row)
+            core(dut).u_oacc_buf.row_wr_data.value = Force(pack_row_words_to_int(zero_row_words))
+            core(dut).u_oacc_buf.row_wr_en.value = Force(1)
             await ClockCycles(dut.clk, 1)
-            dut.u_oacc_buf.row_wr_en.value = Release()
-            dut.u_oacc_buf.row_wr_addr.value = Release()
-            dut.u_oacc_buf.row_wr_data.value = Release()
+            core(dut).u_oacc_buf.row_wr_en.value = Release()
+            core(dut).u_oacc_buf.row_wr_addr.value = Release()
+            core(dut).u_oacc_buf.row_wr_data.value = Release()
 
-        dut.u_oacc_update.rescale_vec_flat.value = Force(pack_words_to_int(rescale_words))
-        dut.u_oacc_update.partial_o_tile_flat.value = Force(pack_words_to_int(partial_words))
-        dut.u_oacc_update.req_valid.value = Force(1)
+        core(dut).u_oacc_update.rescale_vec_flat.value = Force(pack_words_to_int(rescale_words))
+        core(dut).u_oacc_update.partial_o_tile_flat.value = Force(pack_words_to_int(partial_words))
+        core(dut).u_oacc_update.req_valid.value = Force(1)
         await ClockCycles(dut.clk, 1)
-        dut.u_oacc_update.req_valid.value = Release()
-        await wait_signal_high(dut, dut.u_oacc_update.done_pulse, timeout_cycles=5000)
+        core(dut).u_oacc_update.req_valid.value = Release()
+        await wait_signal_high(dut, core(dut).u_oacc_update.done_pulse, timeout_cycles=5000)
 
-        flat_snapshot = flat_words(int(dut.u_oacc_buf.tile_flat.value), 16 * 32)
+        flat_snapshot = flat_words(int(core(dut).u_oacc_buf.tile_flat.value), 16 * 32)
         assert flat_snapshot == expected_words
         assert flat_snapshot[4 * 32 : (4 + 1) * 32] == target_row_words
 
-        dut.store_req_valid.value = Force(1)
+        core(dut).u_wr_dma.req_valid.value = Force(1)
         await ClockCycles(dut.clk, 1)
-        dut.store_req_valid.value = Release()
-        await wait_signal_high(dut, dut.store_done_pulse, timeout_cycles=5000)
+        core(dut).u_wr_dma.req_valid.value = Release()
+        await wait_signal_high(dut, core(dut).u_wr_dma.done_pulse, timeout_cycles=5000)
         assert env.o_words[4 * 32 : (4 + 1) * 32] == target_row_words
     finally:
         for handle in (
-            dut.u_oacc_update.rescale_vec_flat,
-            dut.u_oacc_update.partial_o_tile_flat,
-            dut.u_oacc_update.req_valid,
-            dut.u_oacc_buf.row_wr_en,
-            dut.u_oacc_buf.row_wr_addr,
-            dut.u_oacc_buf.row_wr_data,
-            dut.store_req_valid,
+            core(dut).u_oacc_update.rescale_vec_flat,
+            core(dut).u_oacc_update.partial_o_tile_flat,
+            core(dut).u_oacc_update.req_valid,
+            core(dut).u_oacc_buf.row_wr_en,
+            core(dut).u_oacc_buf.row_wr_addr,
+            core(dut).u_oacc_buf.row_wr_data,
+            core(dut).u_wr_dma.req_valid,
         ):
             try:
                 handle.value = Release()

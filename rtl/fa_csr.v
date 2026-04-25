@@ -25,10 +25,13 @@ module FA_CSR (
     input  wire         status_done,
     input  wire         status_error,
     input  wire [31:0]  status_cycles,
+    input  wire [31:0]  status_rd_bytes,
+    input  wire [31:0]  status_wr_bytes,
     output wire         start_level,
     output wire         start_pulse,
     output wire         soft_reset_level,
     output wire         soft_reset_pulse,
+    output wire         config_error,
     output wire         irq_en,
     output wire         causal_en,
     output wire [63:0]  q_base,
@@ -45,11 +48,19 @@ module FA_CSR (
 
     wire start_level_w;
     wire soft_reset_level_w;
+    wire config_error_w;
 
     assign start_level = start_level_w;
     assign soft_reset_level = soft_reset_level_w;
-    assign start_pulse = start_level_w && !start_prev_r;
+    assign config_error = config_error_w;
+    assign start_pulse = start_level_w && !start_prev_r && !config_error_w;
     assign soft_reset_pulse = soft_reset_level_w && !soft_reset_prev_r;
+    assign config_error_w =
+        (q_base[3:0] != 4'd0) ||
+        (k_base[3:0] != 4'd0) ||
+        (v_base[3:0] != 4'd0) ||
+        (o_base[3:0] != 4'd0) ||
+        (stride_bytes[3:0] != 4'd0);
 
     csr_array #(
         .DATA_W(32),
@@ -90,8 +101,10 @@ module FA_CSR (
         .o_scale(scale),
         .i_busy(status_busy),
         .i_done(status_done),
-        .i_error(status_error),
-        .i_cycles(status_cycles)
+        .i_error(status_error | config_error_w),
+        .i_cycles(status_cycles),
+        .i_rd_bytes(status_rd_bytes),
+        .i_wr_bytes(status_wr_bytes)
     );
 
     always @(posedge aclk or negedge aresetn) begin

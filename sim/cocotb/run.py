@@ -143,7 +143,7 @@ class RunConfig:
 
 def parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(description="Run PT cocotb blackbox regressions")
-	parser.add_argument("suite", choices=["smoke", "full", "randomized", "extended", "ci", "stress", "soak", "coverage", "perf", "axil", "axil_perf", "shell_sim", "fa_baseline"])
+	parser.add_argument("suite", choices=["smoke", "full", "randomized", "extended", "ci", "stress", "soak", "coverage", "perf", "axil", "axil_perf", "shell_sim", "fa_baseline", "fa_baseline_axi"])
 	parser.add_argument("--sim", default=os.getenv("SIM", "icarus"))
 	parser.add_argument("--target", default=os.getenv("TARGET", DEFAULT_RUN_TARGET), help="Regression target: pt or pt_dma_top")
 	parser.add_argument("--seed", type=int, default=None, help="Override random seed for the selected suite")
@@ -590,6 +590,20 @@ def suite_configs(suite: str, seed_override: Optional[int], target: str) -> List
 				y_dim=16,
 				test_modules=["tests.test_fa_baseline"],
 				hdl_toplevel="FA_TOP_BASELINE_SIM",
+				seeds=[default_seed],
+				rtl_params={},
+			)
+		]
+
+	if suite == "fa_baseline_axi":
+		return [
+			RunConfig(
+				name="fa_baseline_axi",
+				build_name="fa_baseline_axi",
+				x_dim=16,
+				y_dim=16,
+				test_modules=["tests.test_fa_baseline_axi"],
+				hdl_toplevel="FA_TOP_BASELINE",
 				seeds=[default_seed],
 				rtl_params={},
 			)

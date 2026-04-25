@@ -1,4 +1,4 @@
-module FA_TOP_BASELINE_SIM #(
+module FA_TOP_BASELINE #(
     parameter DATA_WIDTH = 32,
     parameter GEMM_X_DIM = 16,
     parameter GEMM_Y_DIM = 16,
@@ -37,23 +37,31 @@ module FA_TOP_BASELINE_SIM #(
     output wire [1:0]   s_axil_rresp,
     output wire         s_axil_rvalid,
     input  wire         s_axil_rready,
-    output wire         rd_desc_valid,
-    input  wire         rd_desc_ready,
-    output wire [63:0]  rd_desc_addr,
-    output wire [15:0]  rd_desc_words,
-    output wire [3:0]   rd_desc_tag,
-    input  wire         rd_data_valid,
-    output wire         rd_data_ready,
-    input  wire [31:0]  rd_data,
-    input  wire         rd_data_last,
-    output wire         wr_desc_valid,
-    input  wire         wr_desc_ready,
-    output wire [63:0]  wr_desc_addr,
-    output wire [15:0]  wr_desc_words,
-    output wire         wr_data_valid,
-    input  wire         wr_data_ready,
-    output wire [31:0]  wr_data,
-    output wire         wr_data_last,
+    output wire [63:0]  m_axi_araddr,
+    output wire [7:0]   m_axi_arlen,
+    output wire [2:0]   m_axi_arsize,
+    output wire [1:0]   m_axi_arburst,
+    output wire         m_axi_arvalid,
+    input  wire         m_axi_arready,
+    input  wire [127:0] m_axi_rdata,
+    input  wire [1:0]   m_axi_rresp,
+    input  wire         m_axi_rlast,
+    input  wire         m_axi_rvalid,
+    output wire         m_axi_rready,
+    output wire [63:0]  m_axi_awaddr,
+    output wire [7:0]   m_axi_awlen,
+    output wire [2:0]   m_axi_awsize,
+    output wire [1:0]   m_axi_awburst,
+    output wire         m_axi_awvalid,
+    input  wire         m_axi_awready,
+    output wire [127:0] m_axi_wdata,
+    output wire [15:0]  m_axi_wstrb,
+    output wire         m_axi_wlast,
+    output wire         m_axi_wvalid,
+    input  wire         m_axi_wready,
+    input  wire [1:0]   m_axi_bresp,
+    input  wire         m_axi_bvalid,
+    output wire         m_axi_bready,
     output wire         irq
 );
 
@@ -72,30 +80,36 @@ module FA_TOP_BASELINE_SIM #(
     wire [31:0] csr_neg_large;
     wire [31:0] csr_scale;
 
-    wire        status_busy;
-    wire        status_done;
-    wire        status_error_core;
-    wire [31:0] status_cycles;
-    wire [31:0] status_rd_bytes;
-    wire [31:0] status_wr_bytes;
+    wire        core_busy;
+    wire        core_done;
+    wire        core_error;
+    wire [31:0] core_cycles;
+    wire [31:0] core_rd_bytes;
+    wire [31:0] core_wr_bytes;
+    wire        core_irq;
 
-    wire [16383:0] q_tile_flat;
-    wire [16383:0] k_tile_flat;
-    wire [16383:0] v_tile_flat;
-    wire [16383:0] v_pv_layout_flat;
-    wire [4095:0]  p_tile_flat;
-    wire [16383:0] oacc_tile_flat;
-    wire [8191:0]  qk_result_tile_flat;
-    wire [8191:0]  score_masked_tile_flat;
-    wire [16383:0] pv_result_tile_flat;
-    wire [511:0]   row_debug_m_state_flat;
-    wire [511:0]   row_debug_l_state_flat;
-    wire [15:0]    row_debug_seen_flat;
-    wire           store_req_valid;
-    wire           store_done_pulse;
-    wire           core_irq;
+    wire        rd_desc_valid;
+    wire        rd_desc_ready;
+    wire [63:0] rd_desc_addr;
+    wire [15:0] rd_desc_words;
+    wire [3:0]  rd_desc_tag;
+    wire        rd_data_valid;
+    wire        rd_data_ready;
+    wire [31:0] rd_data;
+    wire        rd_data_last;
+    wire        wr_desc_valid;
+    wire        wr_desc_ready;
+    wire [63:0] wr_desc_addr;
+    wire [15:0] wr_desc_words;
+    wire        wr_data_valid;
+    wire        wr_data_ready;
+    wire [31:0] wr_data;
+    wire        wr_data_last;
+    wire        rd_axi_error_pulse;
+    wire        wr_axi_error_pulse;
 
-    wire status_error = status_error_core | csr_config_error;
+    reg axi_error_sticky_r;
+    wire status_error = core_error | axi_error_sticky_r;
 
     FA_CSR u_fa_csr (
         .aclk(clk),
@@ -120,12 +134,12 @@ module FA_TOP_BASELINE_SIM #(
         .s_axi_rresp(s_axil_rresp),
         .s_axi_rvalid(s_axil_rvalid),
         .s_axi_rready(s_axil_rready),
-        .status_busy(status_busy),
-        .status_done(status_done),
+        .status_busy(core_busy),
+        .status_done(core_done),
         .status_error(status_error),
-        .status_cycles(status_cycles),
-        .status_rd_bytes(status_rd_bytes),
-        .status_wr_bytes(status_wr_bytes),
+        .status_cycles(core_cycles),
+        .status_rd_bytes(core_rd_bytes),
+        .status_wr_bytes(core_wr_bytes),
         .start_level(csr_start_level),
         .start_pulse(csr_start_pulse),
         .soft_reset_level(csr_soft_reset_level),
@@ -175,7 +189,7 @@ module FA_TOP_BASELINE_SIM #(
         .stride_bytes(csr_stride_bytes),
         .neg_large(csr_neg_large),
         .scale(csr_scale),
-        .ext_error_pulse(1'b0),
+        .ext_error_pulse(rd_axi_error_pulse | wr_axi_error_pulse),
         .rd_desc_valid(rd_desc_valid),
         .rd_desc_ready(rd_desc_ready),
         .rd_desc_addr(rd_desc_addr),
@@ -193,28 +207,94 @@ module FA_TOP_BASELINE_SIM #(
         .wr_data_ready(wr_data_ready),
         .wr_data(wr_data),
         .wr_data_last(wr_data_last),
-        .busy(status_busy),
-        .done(status_done),
-        .error(status_error_core),
-        .cycles(status_cycles),
-        .rd_bytes(status_rd_bytes),
-        .wr_bytes(status_wr_bytes),
+        .busy(core_busy),
+        .done(core_done),
+        .error(core_error),
+        .cycles(core_cycles),
+        .rd_bytes(core_rd_bytes),
+        .wr_bytes(core_wr_bytes),
         .irq(core_irq),
-        .q_tile_flat(q_tile_flat),
-        .k_tile_flat(k_tile_flat),
-        .v_tile_flat(v_tile_flat),
-        .v_pv_layout_flat(v_pv_layout_flat),
-        .p_tile_flat(p_tile_flat),
-        .oacc_tile_flat(oacc_tile_flat),
-        .qk_result_tile_flat(qk_result_tile_flat),
-        .score_masked_tile_flat(score_masked_tile_flat),
-        .pv_result_tile_flat(pv_result_tile_flat),
-        .row_debug_m_state_flat(row_debug_m_state_flat),
-        .row_debug_l_state_flat(row_debug_l_state_flat),
-        .row_debug_seen_flat(row_debug_seen_flat),
-        .debug_store_req_valid(store_req_valid),
-        .debug_store_done_pulse(store_done_pulse)
+        .q_tile_flat(),
+        .k_tile_flat(),
+        .v_tile_flat(),
+        .v_pv_layout_flat(),
+        .p_tile_flat(),
+        .oacc_tile_flat(),
+        .qk_result_tile_flat(),
+        .score_masked_tile_flat(),
+        .pv_result_tile_flat(),
+        .row_debug_m_state_flat(),
+        .row_debug_l_state_flat(),
+        .row_debug_seen_flat(),
+        .debug_store_req_valid(),
+        .debug_store_done_pulse()
     );
+
+    FA_AXI_RD_MASTER u_axi_rd (
+        .clk(clk),
+        .rstn(rstn),
+        .clear(clear | csr_soft_reset_pulse),
+        .rd_desc_valid(rd_desc_valid),
+        .rd_desc_ready(rd_desc_ready),
+        .rd_desc_addr(rd_desc_addr),
+        .rd_desc_words(rd_desc_words),
+        .rd_desc_tag(rd_desc_tag),
+        .rd_data_valid(rd_data_valid),
+        .rd_data_ready(rd_data_ready),
+        .rd_data(rd_data),
+        .rd_data_last(rd_data_last),
+        .axi_arvalid(m_axi_arvalid),
+        .axi_arready(m_axi_arready),
+        .axi_araddr(m_axi_araddr),
+        .axi_arlen(m_axi_arlen),
+        .axi_arsize(m_axi_arsize),
+        .axi_arburst(m_axi_arburst),
+        .axi_rdata(m_axi_rdata),
+        .axi_rresp(m_axi_rresp),
+        .axi_rlast(m_axi_rlast),
+        .axi_rvalid(m_axi_rvalid),
+        .axi_rready(m_axi_rready),
+        .error_pulse(rd_axi_error_pulse)
+    );
+
+    FA_AXI_WR_MASTER u_axi_wr (
+        .clk(clk),
+        .rstn(rstn),
+        .clear(clear | csr_soft_reset_pulse),
+        .wr_desc_valid(wr_desc_valid),
+        .wr_desc_ready(wr_desc_ready),
+        .wr_desc_addr(wr_desc_addr),
+        .wr_desc_words(wr_desc_words),
+        .wr_data_valid(wr_data_valid),
+        .wr_data_ready(wr_data_ready),
+        .wr_data(wr_data),
+        .wr_data_last(wr_data_last),
+        .axi_awvalid(m_axi_awvalid),
+        .axi_awready(m_axi_awready),
+        .axi_awaddr(m_axi_awaddr),
+        .axi_awlen(m_axi_awlen),
+        .axi_awsize(m_axi_awsize),
+        .axi_awburst(m_axi_awburst),
+        .axi_wvalid(m_axi_wvalid),
+        .axi_wready(m_axi_wready),
+        .axi_wdata(m_axi_wdata),
+        .axi_wstrb(m_axi_wstrb),
+        .axi_wlast(m_axi_wlast),
+        .axi_bresp(m_axi_bresp),
+        .axi_bvalid(m_axi_bvalid),
+        .axi_bready(m_axi_bready),
+        .error_pulse(wr_axi_error_pulse)
+    );
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            axi_error_sticky_r <= 1'b0;
+        end else if (clear || csr_soft_reset_pulse || csr_start_pulse) begin
+            axi_error_sticky_r <= 1'b0;
+        end else if (rd_axi_error_pulse || wr_axi_error_pulse) begin
+            axi_error_sticky_r <= 1'b1;
+        end
+    end
 
     assign irq = core_irq;
 
