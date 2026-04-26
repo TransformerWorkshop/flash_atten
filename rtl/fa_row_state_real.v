@@ -106,6 +106,7 @@ module FA_ROW_STATE_REAL (
         input signed [31:0] rhs;
         reg signed [63:0] prod;
         reg signed [63:0] rounded;
+        reg signed [63:0] shifted;
         begin
             prod = lhs * rhs;
             if (prod >= 0) begin
@@ -113,12 +114,13 @@ module FA_ROW_STATE_REAL (
             end else begin
                 rounded = prod - 64'sd32768;
             end
-            if ((rounded >>> 16) > 64'sh7FFF_FFFF) begin
+            shifted = rounded >>> 16;
+            if (shifted > 64'sh7FFF_FFFF) begin
                 q16_mul_rn_sat = 32'sh7FFF_FFFF;
-            end else if ((rounded >>> 16) < -64'sh8000_0000) begin
+            end else if (shifted < -64'sh8000_0000) begin
                 q16_mul_rn_sat = -32'sh8000_0000;
             end else begin
-                q16_mul_rn_sat = rounded >>> 16;
+                q16_mul_rn_sat = shifted[31:0];
             end
         end
     endfunction
@@ -162,14 +164,16 @@ module FA_ROW_STATE_REAL (
         reg signed [31:0] clamped;
         reg [31:0] abs_mag;
         reg [31:0] rounded;
+        reg [31:0] shifted;
         begin
             clamped = q16_clamp_nonpos_neg8(delta);
             abs_mag = -clamped;
             rounded = abs_mag + 32'd1024;
-            if ((rounded >> 11) > 32'd256) begin
+            shifted = rounded >> 11;
+            if (shifted > 32'd256) begin
                 q16_delta_to_exp_idx = 9'd256;
             end else begin
-                q16_delta_to_exp_idx = (rounded >> 11);
+                q16_delta_to_exp_idx = shifted[8:0];
             end
         end
     endfunction

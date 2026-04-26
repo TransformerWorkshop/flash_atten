@@ -43,6 +43,7 @@ module FA_SCORE_POST_REAL (
         input signed [31:0] rhs;
         reg signed [63:0] prod;
         reg signed [63:0] rounded;
+        reg signed [63:0] shifted;
         begin
             prod = lhs * rhs;
             if (prod >= 0) begin
@@ -50,12 +51,13 @@ module FA_SCORE_POST_REAL (
             end else begin
                 rounded = prod - 64'sd32768;
             end
-            if ((rounded >>> 16) > 64'sh7FFF_FFFF) begin
+            shifted = rounded >>> 16;
+            if (shifted > 64'sh7FFF_FFFF) begin
                 q16_mul_rn_sat = 32'sh7FFF_FFFF;
-            end else if ((rounded >>> 16) < -64'sh8000_0000) begin
+            end else if (shifted < -64'sh8000_0000) begin
                 q16_mul_rn_sat = -32'sh8000_0000;
             end else begin
-                q16_mul_rn_sat = rounded >>> 16;
+                q16_mul_rn_sat = shifted[31:0];
             end
         end
     endfunction
