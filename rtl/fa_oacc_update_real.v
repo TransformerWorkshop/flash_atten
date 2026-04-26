@@ -25,23 +25,19 @@ module FA_OACC_UPDATE_REAL (
     localparam [2:0] ST_DONE      = 3'd4;
 
     reg [2:0]   state_r;
+    reg [2:0]   state_n;
     reg [3:0]   row_idx_r;
+    reg [3:0]   row_idx_n;
     reg [1023:0] row_new_data_w;
+    reg          oacc_row_rd_en_n;
+    reg [3:0]    oacc_row_rd_addr_n;
+    reg          oacc_row_wr_en_n;
+    reg [3:0]    oacc_row_wr_addr_n;
+    reg [1023:0] oacc_row_wr_data_n;
+    reg          resp_valid_n;
+    reg          done_pulse_n;
     reg signed [31:0] scale_raw_s;
     integer word_i;
-    reg signed [15:0] old_lo_s;
-    reg signed [15:0] old_hi_s;
-    reg signed [15:0] part_lo_s;
-    reg signed [15:0] part_hi_s;
-    reg signed [63:0] scaled_lo_q24_24_s;
-    reg signed [63:0] scaled_hi_q24_24_s;
-    reg signed [31:0] scaled_lo_q8_8_s;
-    reg signed [31:0] scaled_hi_q8_8_s;
-    reg signed [31:0] new_lo_s;
-    reg signed [31:0] new_hi_s;
-    reg signed [15:0] clamped_lo_s;
-    reg signed [15:0] clamped_hi_s;
-    reg [31:0] partial_word_s;
 
     function automatic signed [15:0] clamp_q88_from_int;
         input signed [31:0] value;
@@ -77,31 +73,173 @@ module FA_OACC_UPDATE_REAL (
         end
     endfunction
 
+    function automatic [31:0] update_oacc_word;
+        input [31:0] old_word;
+        input signed [31:0] scale_word;
+        input [31:0] partial_word;
+        reg signed [15:0] old_lo_v;
+        reg signed [15:0] old_hi_v;
+        reg signed [15:0] part_lo_v;
+        reg signed [15:0] part_hi_v;
+        reg signed [63:0] scaled_lo_q24_24_v;
+        reg signed [63:0] scaled_hi_q24_24_v;
+        reg signed [31:0] scaled_lo_q8_8_v;
+        reg signed [31:0] scaled_hi_q8_8_v;
+        reg signed [31:0] new_lo_v;
+        reg signed [31:0] new_hi_v;
+        reg signed [15:0] clamped_lo_v;
+        reg signed [15:0] clamped_hi_v;
+        begin
+            old_lo_v = old_word[15:0];
+            old_hi_v = old_word[31:16];
+            part_lo_v = partial_word[15:0];
+            part_hi_v = partial_word[31:16];
+
+            scaled_lo_q24_24_v = $signed({{16{old_lo_v[15]}}, old_lo_v}) * scale_word;
+            scaled_hi_q24_24_v = $signed({{16{old_hi_v[15]}}, old_hi_v}) * scale_word;
+            scaled_lo_q8_8_v = q24_24_to_q8_8_rn_sat(scaled_lo_q24_24_v);
+            scaled_hi_q8_8_v = q24_24_to_q8_8_rn_sat(scaled_hi_q24_24_v);
+
+            new_lo_v = scaled_lo_q8_8_v + {{16{part_lo_v[15]}}, part_lo_v};
+            new_hi_v = scaled_hi_q8_8_v + {{16{part_hi_v[15]}}, part_hi_v};
+            clamped_lo_v = clamp_q88_from_int(new_lo_v);
+            clamped_hi_v = clamp_q88_from_int(new_hi_v);
+            update_oacc_word = {clamped_hi_v, clamped_lo_v};
+        end
+    endfunction
+
+    function automatic [2:0] next_state_fn;
+        input [2:0] state_cur;
+        input req_valid_i;
+        input req_ready_i;
+        input oacc_row_rd_valid_i;
+        input resp_valid_i;
+        input resp_ready_i;
+        input row_is_last_i;
+        begin
+            case (state_cur)
+                ST_IDLE: begin
+                    if (req_valid_i && req_ready_i) begin
+                        next_state_fn = ST_ROW_REQ;
+                    end else begin
+                        next_state_fn = ST_IDLE;
+                    end
+                end
+                ST_ROW_REQ: begin
+                    next_state_fn = ST_ROW_WAIT;
+                end
+                ST_ROW_WAIT: begin
+                    if (oacc_row_rd_valid_i) begin
+                        next_state_fn = ST_ROW_WRITE;
+                    end else begin
+                        next_state_fn = ST_ROW_WAIT;
+                    end
+                end
+                ST_ROW_WRITE: begin
+                    if (row_is_last_i) begin
+                        next_state_fn = ST_DONE;
+                    end else begin
+                        next_state_fn = ST_ROW_REQ;
+                    end
+                end
+                ST_DONE: begin
+                    if (resp_valid_i && resp_ready_i) begin
+                        next_state_fn = ST_IDLE;
+                    end else begin
+                        next_state_fn = ST_DONE;
+                    end
+                end
+                default: begin
+                    next_state_fn = ST_IDLE;
+                end
+            endcase
+        end
+    endfunction
+
+    function automatic next_resp_valid_fn;
+        input resp_valid_cur;
+        input resp_ready_i;
+        input [2:0] state_cur;
+        input row_is_last_i;
+        begin
+            if (resp_valid_cur && resp_ready_i) begin
+                next_resp_valid_fn = 1'b0;
+            end else if ((state_cur == ST_ROW_WRITE) && row_is_last_i) begin
+                next_resp_valid_fn = 1'b1;
+            end else begin
+                next_resp_valid_fn = resp_valid_cur;
+            end
+        end
+    endfunction
+
     assign req_ready = (state_r == ST_IDLE) && !resp_valid;
+
+    always @(*) begin
+        state_n = next_state_fn(
+            state_r,
+            req_valid,
+            req_ready,
+            oacc_row_rd_valid,
+            resp_valid,
+            resp_ready,
+            row_idx_r == 4'd15
+        );
+        row_idx_n = row_idx_r;
+        oacc_row_rd_en_n = 1'b0;
+        oacc_row_rd_addr_n = oacc_row_rd_addr;
+        oacc_row_wr_en_n = 1'b0;
+        oacc_row_wr_addr_n = oacc_row_wr_addr;
+        oacc_row_wr_data_n = oacc_row_wr_data;
+        resp_valid_n = next_resp_valid_fn(
+            resp_valid,
+            resp_ready,
+            state_r,
+            row_idx_r == 4'd15
+        );
+        done_pulse_n = 1'b0;
+
+        if (resp_valid && resp_ready) begin
+            done_pulse_n = 1'b1;
+        end
+
+        case (state_r)
+            ST_IDLE: begin
+                if (req_valid && req_ready) begin
+                    row_idx_n = 4'd0;
+                end
+            end
+            ST_ROW_REQ: begin
+                oacc_row_rd_en_n = 1'b1;
+                oacc_row_rd_addr_n = row_idx_r;
+            end
+            ST_ROW_WAIT: begin
+                if (oacc_row_rd_valid) begin
+                    oacc_row_wr_addr_n = row_idx_r;
+                    oacc_row_wr_data_n = row_new_data_w;
+                end
+            end
+            ST_ROW_WRITE: begin
+                oacc_row_wr_en_n = 1'b1;
+                if (row_idx_r != 4'd15) begin
+                    row_idx_n = row_idx_r + 1'b1;
+                end
+            end
+            ST_DONE: begin
+            end
+            default: begin
+            end
+        endcase
+    end
 
     always @(*) begin
         row_new_data_w = 1024'd0;
         scale_raw_s = rescale_vec_flat[(row_idx_r * 32) +: 32];
         for (word_i = 0; word_i < 32; word_i = word_i + 1) begin
-            old_lo_s = oacc_row_rd_data[(word_i * 32) +: 16];
-            old_hi_s = oacc_row_rd_data[(word_i * 32) + 16 +: 16];
-            partial_word_s = partial_o_tile_flat[(((row_idx_r * 32) + word_i) * 32) +: 32];
-            part_lo_s = partial_word_s[15:0];
-            part_hi_s = partial_word_s[31:16];
-
-            scaled_lo_q24_24_s = $signed({{16{old_lo_s[15]}}, old_lo_s}) * scale_raw_s;
-            scaled_hi_q24_24_s = $signed({{16{old_hi_s[15]}}, old_hi_s}) * scale_raw_s;
-
-            scaled_lo_q8_8_s = q24_24_to_q8_8_rn_sat(scaled_lo_q24_24_s);
-            scaled_hi_q8_8_s = q24_24_to_q8_8_rn_sat(scaled_hi_q24_24_s);
-
-            new_lo_s = scaled_lo_q8_8_s + {{16{part_lo_s[15]}}, part_lo_s};
-            new_hi_s = scaled_hi_q8_8_s + {{16{part_hi_s[15]}}, part_hi_s};
-            clamped_lo_s = clamp_q88_from_int(new_lo_s);
-            clamped_hi_s = clamp_q88_from_int(new_hi_s);
-
-            row_new_data_w[(word_i * 32) +: 16] = clamped_lo_s;
-            row_new_data_w[(word_i * 32) + 16 +: 16] = clamped_hi_s;
+            row_new_data_w[(word_i * 32) +: 32] = update_oacc_word(
+                oacc_row_rd_data[(word_i * 32) +: 32],
+                scale_raw_s,
+                partial_o_tile_flat[(((row_idx_r * 32) + word_i) * 32) +: 32]
+            );
         end
     end
 
@@ -127,53 +265,15 @@ module FA_OACC_UPDATE_REAL (
             resp_valid <= 1'b0;
             done_pulse <= 1'b0;
         end else begin
-            oacc_row_rd_en <= 1'b0;
-            oacc_row_wr_en <= 1'b0;
-            done_pulse <= 1'b0;
-
-            if (resp_valid && resp_ready) begin
-                resp_valid <= 1'b0;
-                done_pulse <= 1'b1;
-                if (state_r == ST_DONE) begin
-                    state_r <= ST_IDLE;
-                end
-            end
-
-            case (state_r)
-                ST_IDLE: begin
-                    if (req_valid && req_ready) begin
-                        row_idx_r <= 4'd0;
-                        state_r <= ST_ROW_REQ;
-                    end
-                end
-                ST_ROW_REQ: begin
-                    oacc_row_rd_en <= 1'b1;
-                    oacc_row_rd_addr <= row_idx_r;
-                    state_r <= ST_ROW_WAIT;
-                end
-                ST_ROW_WAIT: begin
-                    if (oacc_row_rd_valid) begin
-                        oacc_row_wr_addr <= row_idx_r;
-                        oacc_row_wr_data <= row_new_data_w;
-                        state_r <= ST_ROW_WRITE;
-                    end
-                end
-                ST_ROW_WRITE: begin
-                    oacc_row_wr_en <= 1'b1;
-                    if (row_idx_r == 4'd15) begin
-                        resp_valid <= 1'b1;
-                        state_r <= ST_DONE;
-                    end else begin
-                        row_idx_r <= row_idx_r + 1'b1;
-                        state_r <= ST_ROW_REQ;
-                    end
-                end
-                ST_DONE: begin
-                end
-                default: begin
-                    state_r <= ST_IDLE;
-                end
-            endcase
+            state_r <= state_n;
+            row_idx_r <= row_idx_n;
+            oacc_row_rd_en <= oacc_row_rd_en_n;
+            oacc_row_rd_addr <= oacc_row_rd_addr_n;
+            oacc_row_wr_en <= oacc_row_wr_en_n;
+            oacc_row_wr_addr <= oacc_row_wr_addr_n;
+            oacc_row_wr_data <= oacc_row_wr_data_n;
+            resp_valid <= resp_valid_n;
+            done_pulse <= done_pulse_n;
         end
     end
 
