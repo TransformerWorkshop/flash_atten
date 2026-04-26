@@ -34,11 +34,13 @@ module FA_AXI_RD_MASTER (
     localparam integer MAX_BURST_BEATS = 16;
 
     reg [2:0]  state_r;
+    reg [2:0]  state_n;
     reg [63:0] desc_addr_r;
     reg [15:0] words_remaining_r;
     reg [15:0] burst_beats_r;
     reg [15:0] beats_seen_r;
-    wire [2:0]  words_in_beat_w = (words_remaining_r >= WORDS_PER_BEAT) ? WORDS_PER_BEAT[2:0] : words_remaining_r[2:0];
+    wire [15:0] words_in_beat_w = (words_remaining_r >= WORDS_PER_BEAT) ? 16'd4 : words_remaining_r;
+    wire [2:0]  rd_beat_word_count_next_w = words_in_beat_w[2:0];
     wire [15:0] remaining_words_after_beat_w = (words_remaining_r > words_in_beat_w) ? (words_remaining_r - words_in_beat_w) : 16'd0;
     wire [15:0] next_total_beats_after_w = (remaining_words_after_beat_w + WORDS_PER_BEAT - 1) >> 2;
     wire        rd_beat_fire_w = rd_beat_valid && rd_beat_ready;
@@ -49,9 +51,62 @@ module FA_AXI_RD_MASTER (
     assign axi_arburst = 2'b01;
     assign axi_rready = (state_r == ST_R) && !rd_beat_valid;
 
+    always @(*) begin
+        state_n = state_r;
+        case (state_r)
+            ST_IDLE: begin
+                if (rd_desc_valid && rd_desc_ready) begin
+                    state_n = ST_AR;
+                end
+            end
+            ST_AR: begin
+                if (axi_arvalid && axi_arready) begin
+                    state_n = ST_R;
+                end
+            end
+            ST_R: begin
+                if (axi_r_fire_w) begin
+                    if (axi_rresp != 2'b00) begin
+                        state_n = ST_ABORT;
+                    end else if (((beats_seen_r + 1'b1) == burst_beats_r) && !axi_rlast) begin
+                        state_n = ST_ABORT;
+                    end else if (((beats_seen_r + 1'b1) < burst_beats_r) && axi_rlast) begin
+                        state_n = ST_ABORT;
+                    end else if ((beats_seen_r + 1'b1) == burst_beats_r) begin
+                        if (remaining_words_after_beat_w != 16'd0) begin
+                            state_n = ST_AR;
+                        end else begin
+                            state_n = ST_R;
+                        end
+                    end
+                end
+                if ((words_remaining_r == 16'd0) && !rd_beat_valid && !axi_arvalid) begin
+                    state_n = ST_IDLE;
+                end
+            end
+            ST_ABORT: begin
+                if (!rd_beat_valid && (words_remaining_r == 16'd0)) begin
+                    state_n = ST_IDLE;
+                end
+            end
+            default: begin
+                state_n = ST_IDLE;
+            end
+        endcase
+    end
+
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
             state_r <= ST_IDLE;
+        end else if (clear) begin
+            state_r <= ST_IDLE;
+        end else begin
+            state_r <= state_n;
+        end
+    end
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
             desc_addr_r <= 64'd0;
             words_remaining_r <= 16'd0;
             burst_beats_r <= 16'd0;
@@ -65,7 +120,6 @@ module FA_AXI_RD_MASTER (
             axi_arlen <= 8'd0;
             error_pulse <= 1'b0;
         end else if (clear) begin
-            state_r <= ST_IDLE;
             desc_addr_r <= 64'd0;
             words_remaining_r <= 16'd0;
             burst_beats_r <= 16'd0;
@@ -104,13 +158,11 @@ module FA_AXI_RD_MASTER (
                         end
                         beats_seen_r <= 16'd0;
                         axi_arvalid <= 1'b1;
-                        state_r <= ST_AR;
                     end
                 end
                 ST_AR: begin
                     if (axi_arvalid && axi_arready) begin
                         axi_arvalid <= 1'b0;
-                        state_r <= ST_R;
                     end
                 end
                 ST_R: begin
@@ -122,19 +174,16 @@ module FA_AXI_RD_MASTER (
                             rd_beat_word_count <= 3'd1;
                             rd_beat_last <= 1'b1;
                             words_remaining_r <= 16'd1;
-                            state_r <= ST_ABORT;
                         end else begin
                             rd_beat_valid <= 1'b1;
                             rd_beat_data <= axi_rdata;
-                            rd_beat_word_count <= words_in_beat_w;
+                            rd_beat_word_count <= rd_beat_word_count_next_w;
                             rd_beat_last <= (remaining_words_after_beat_w == 16'd0);
                             beats_seen_r <= beats_seen_r + 1'b1;
                             if (((beats_seen_r + 1'b1) == burst_beats_r) && !axi_rlast) begin
                                 error_pulse <= 1'b1;
-                                state_r <= ST_ABORT;
                             end else if (((beats_seen_r + 1'b1) < burst_beats_r) && axi_rlast) begin
                                 error_pulse <= 1'b1;
-                                state_r <= ST_ABORT;
                             end else if ((beats_seen_r + 1'b1) == burst_beats_r) begin
                                 if (remaining_words_after_beat_w != 16'd0) begin
                                     desc_addr_r <= desc_addr_r + (burst_beats_r * 16);
@@ -148,21 +197,15 @@ module FA_AXI_RD_MASTER (
                                     end
                                     beats_seen_r <= 16'd0;
                                     axi_arvalid <= 1'b1;
-                                    state_r <= ST_AR;
                                 end
                             end
                         end
                     end
-                    if ((words_remaining_r == 16'd0) && !rd_beat_valid && !axi_arvalid) begin
-                        state_r <= ST_IDLE;
-                    end
                 end
                 ST_ABORT: begin
-                    if (!rd_beat_valid && (words_remaining_r == 16'd0)) begin
-                        state_r <= ST_IDLE;
-                    end
                 end
-                default: state_r <= ST_IDLE;
+                default: begin
+                end
             endcase
         end
     end
@@ -207,6 +250,7 @@ module FA_AXI_WR_MASTER (
     localparam integer MAX_BURST_BEATS = 16;
 
     reg [2:0]  state_r;
+    reg [2:0]  state_n;
     reg [63:0] desc_addr_r;
     reg [15:0] words_remaining_r;
     reg [15:0] burst_beats_r;
@@ -222,9 +266,62 @@ module FA_AXI_WR_MASTER (
     assign axi_awsize = 3'b100;
     assign axi_awburst = 2'b01;
 
+    always @(*) begin
+        state_n = state_r;
+        case (state_r)
+            ST_IDLE: begin
+                if (wr_desc_valid && wr_desc_ready) begin
+                    state_n = ST_AW;
+                end
+            end
+            ST_AW: begin
+                if (axi_awvalid && axi_awready) begin
+                    state_n = ST_GATHER;
+                end
+            end
+            ST_GATHER: begin
+                if (wr_data_valid && wr_data_ready) begin
+                    if ((beat_word_count_r == 3'd3) || (words_in_burst_r == 16'd1)) begin
+                        state_n = ST_W;
+                    end
+                end
+            end
+            ST_W: begin
+                if (axi_wvalid && axi_wready) begin
+                    if (axi_wlast) begin
+                        state_n = ST_B;
+                    end else begin
+                        state_n = ST_GATHER;
+                    end
+                end
+            end
+            ST_B: begin
+                if (axi_bvalid && axi_bready) begin
+                    if (words_remaining_r != 16'd0) begin
+                        state_n = ST_AW;
+                    end else begin
+                        state_n = ST_IDLE;
+                    end
+                end
+            end
+            default: begin
+                state_n = ST_IDLE;
+            end
+        endcase
+    end
+
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
             state_r <= ST_IDLE;
+        end else if (clear) begin
+            state_r <= ST_IDLE;
+        end else begin
+            state_r <= state_n;
+        end
+    end
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
             desc_addr_r <= 64'd0;
             words_remaining_r <= 16'd0;
             burst_beats_r <= 16'd0;
@@ -243,7 +340,6 @@ module FA_AXI_WR_MASTER (
             axi_bready <= 1'b0;
             error_pulse <= 1'b0;
         end else if (clear) begin
-            state_r <= ST_IDLE;
             desc_addr_r <= 64'd0;
             words_remaining_r <= 16'd0;
             burst_beats_r <= 16'd0;
@@ -281,7 +377,6 @@ module FA_AXI_WR_MASTER (
                         end
                         beats_sent_r <= 16'd0;
                         axi_awvalid <= 1'b1;
-                        state_r <= ST_AW;
                     end
                 end
                 ST_AW: begin
@@ -290,7 +385,6 @@ module FA_AXI_WR_MASTER (
                         beat_word_count_r <= 3'd0;
                         beat_buf_r <= 128'd0;
                         beat_strb_r <= 16'd0;
-                        state_r <= ST_GATHER;
                     end
                 end
                 ST_GATHER: begin
@@ -304,7 +398,6 @@ module FA_AXI_WR_MASTER (
                             axi_wlast <= (beats_sent_r == (burst_beats_r - 1));
                             words_in_burst_r <= words_in_burst_r - 1'b1;
                             words_remaining_r <= words_remaining_r - 1'b1;
-                            state_r <= ST_W;
                         end else begin
                             beat_word_count_r <= beat_word_count_r + 1'b1;
                             words_in_burst_r <= words_in_burst_r - 1'b1;
@@ -320,10 +413,8 @@ module FA_AXI_WR_MASTER (
                         beat_strb_r <= 16'd0;
                         if (axi_wlast) begin
                             axi_bready <= 1'b1;
-                            state_r <= ST_B;
                         end else begin
                             beats_sent_r <= beats_sent_r + 1'b1;
-                            state_r <= ST_GATHER;
                         end
                     end
                 end
@@ -347,13 +438,11 @@ module FA_AXI_WR_MASTER (
                             end
                             beats_sent_r <= 16'd0;
                             axi_awvalid <= 1'b1;
-                            state_r <= ST_AW;
-                        end else begin
-                            state_r <= ST_IDLE;
                         end
                     end
                 end
-                default: state_r <= ST_IDLE;
+                default: begin
+                end
             endcase
         end
     end

@@ -32,7 +32,9 @@ module FA_ROW_STATE_REAL (
     localparam signed [31:0] Q16_NEG_EIGHT = -32'sd524288;
 
     reg [2:0] state_r;
+    reg [2:0] state_n;
     reg [3:0] row_idx_r;
+    reg [3:0] row_idx_n;
     reg [31:0] neg_large_word_r;
     reg [8191:0] masked_score_tile_r;
 
@@ -201,6 +203,73 @@ module FA_ROW_STATE_REAL (
     assign init_ready = (state_r == ST_IDLE) && !resp_valid;
     assign update_ready = ((state_r == ST_IDLE) && !resp_valid) || rowstate_unused_zero_w;
 
+    always @(*) begin
+        state_n = state_r;
+        row_idx_n = row_idx_r;
+
+        if ((state_r == ST_DONE) && resp_valid && resp_ready) begin
+            state_n = ST_IDLE;
+        end
+
+        case (state_r)
+            ST_IDLE: begin
+                if (init_valid && init_ready) begin
+                    state_n = ST_INIT;
+                end else if (update_valid && update_ready) begin
+                    state_n = ST_ROW_PREP;
+                    row_idx_n = 4'd0;
+                end
+            end
+            ST_INIT: begin
+                state_n = ST_IDLE;
+            end
+            ST_ROW_PREP: begin
+                if (!row_has_valid_next) begin
+                    state_n = ST_ROW_COMMIT;
+                end else begin
+                    state_n = ST_ROW_EXP;
+                end
+            end
+            ST_ROW_EXP: begin
+                if (recip_req_ready_w) begin
+                    state_n = ST_ROW_DIV_WAIT;
+                end
+            end
+            ST_ROW_DIV_WAIT: begin
+                if (recip_resp_valid_w) begin
+                    state_n = ST_ROW_COMMIT;
+                end
+            end
+            ST_ROW_COMMIT: begin
+                if (row_idx_r == 4'd15) begin
+                    state_n = ST_DONE;
+                end else begin
+                    row_idx_n = row_idx_r + 1'b1;
+                    state_n = ST_ROW_PREP;
+                end
+            end
+            ST_DONE: begin
+            end
+            default: begin
+                state_n = ST_IDLE;
+                row_idx_n = 4'd0;
+            end
+        endcase
+    end
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            state_r <= ST_IDLE;
+            row_idx_r <= 4'd0;
+        end else if (clear) begin
+            state_r <= ST_IDLE;
+            row_idx_r <= 4'd0;
+        end else begin
+            state_r <= state_n;
+            row_idx_r <= row_idx_n;
+        end
+    end
+
     FA_RECIP_Q16_16 u_recip (
         .clk(clk),
         .rstn(rstn),
@@ -263,8 +332,6 @@ module FA_ROW_STATE_REAL (
 
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
-            state_r <= ST_IDLE;
-            row_idx_r <= 4'd0;
             neg_large_word_r <= 32'd0;
             masked_score_tile_r <= 8192'd0;
             row_valid_mask_r <= 16'd0;
@@ -294,8 +361,6 @@ module FA_ROW_STATE_REAL (
                 beta_r[col_i] <= Q16_ZERO;
             end
         end else if (clear) begin
-            state_r <= ST_IDLE;
-            row_idx_r <= 4'd0;
             neg_large_word_r <= 32'd0;
             masked_score_tile_r <= 8192'd0;
             row_valid_mask_r <= 16'd0;
@@ -331,9 +396,6 @@ module FA_ROW_STATE_REAL (
             if (resp_valid && resp_ready) begin
                 resp_valid <= 1'b0;
                 done_pulse <= 1'b1;
-                if (state_r == ST_DONE) begin
-                    state_r <= ST_IDLE;
-                end
             end
 
             case (state_r)
@@ -347,19 +409,15 @@ module FA_ROW_STATE_REAL (
                             l_state_r[row_i] <= Q16_ZERO;
                             row_seen_r[row_i] <= 1'b0;
                         end
-                        state_r <= ST_INIT;
                     end else if (update_valid && update_ready) begin
                         neg_large_word_r <= neg_large_word;
                         masked_score_tile_r <= masked_score_tile_flat;
                         p_tile_flat <= 4096'd0;
                         rescale_vec_flat <= 512'd0;
-                        row_idx_r <= 4'd0;
-                        state_r <= ST_ROW_PREP;
                     end
                 end
                 ST_INIT: begin
                     init_done_pulse <= 1'b1;
-                    state_r <= ST_IDLE;
                 end
                 ST_ROW_PREP: begin
                     row_valid_mask_r <= valid_mask_next;
@@ -370,11 +428,6 @@ module FA_ROW_STATE_REAL (
                     tile_row_max_r <= tile_row_max_next;
                     for (col_i = 0; col_i < 16; col_i = col_i + 1) begin
                         row_score_r[col_i] <= masked_score_tile_r[((row_idx_r * 16) + col_i) * 32 +: 32];
-                    end
-                    if (!row_has_valid_next) begin
-                        state_r <= ST_ROW_COMMIT;
-                    end else begin
-                        state_r <= ST_ROW_EXP;
                     end
                 end
                 ST_ROW_EXP: begin
@@ -387,13 +440,11 @@ module FA_ROW_STATE_REAL (
                         for (col_i = 0; col_i < 16; col_i = col_i + 1) begin
                             beta_r[col_i] <= beta_next[col_i];
                         end
-                        state_r <= ST_ROW_DIV_WAIT;
                     end
                 end
                 ST_ROW_DIV_WAIT: begin
                     if (recip_resp_valid_w) begin
                         recip_l_new_r <= recip_out_value_w;
-                        state_r <= ST_ROW_COMMIT;
                     end
                 end
                 ST_ROW_COMMIT: begin
@@ -428,16 +479,11 @@ module FA_ROW_STATE_REAL (
 
                     if (row_idx_r == 4'd15) begin
                         resp_valid <= 1'b1;
-                        state_r <= ST_DONE;
-                    end else begin
-                        row_idx_r <= row_idx_r + 1'b1;
-                        state_r <= ST_ROW_PREP;
                     end
                 end
                 ST_DONE: begin
                 end
                 default: begin
-                    state_r <= ST_IDLE;
                 end
             endcase
         end

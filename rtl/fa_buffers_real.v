@@ -339,7 +339,9 @@ module FA_P_BUF_REAL (
 );
 
     reg [1:0] state_r;
+    reg [1:0] state_n;
     reg [2:0] load_addr_r;
+    reg [2:0] load_addr_n;
     reg [4095:0] load_data_r;
     reg [31:0] shadow_words_r [0:127];
     reg [511:0] bank_wr_data_r;
@@ -350,6 +352,43 @@ module FA_P_BUF_REAL (
     localparam [1:0] ST_LOAD = 2'd1;
 
     assign load_ready = (state_r == ST_IDLE);
+
+    always @(*) begin
+        state_n = state_r;
+        load_addr_n = load_addr_r;
+        case (state_r)
+            ST_IDLE: begin
+                if (load_valid) begin
+                    state_n = ST_LOAD;
+                    load_addr_n = 3'd0;
+                end
+            end
+            ST_LOAD: begin
+                if (load_addr_r == 3'd7) begin
+                    state_n = ST_IDLE;
+                end else begin
+                    load_addr_n = load_addr_r + 1'b1;
+                end
+            end
+            default: begin
+                state_n = ST_IDLE;
+                load_addr_n = 3'd0;
+            end
+        endcase
+    end
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            state_r <= ST_IDLE;
+            load_addr_r <= 3'd0;
+        end else if (clear) begin
+            state_r <= ST_IDLE;
+            load_addr_r <= 3'd0;
+        end else begin
+            state_r <= state_n;
+            load_addr_r <= load_addr_n;
+        end
+    end
 
     generate
         genvar gi;
@@ -386,8 +425,6 @@ module FA_P_BUF_REAL (
 
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
-            state_r <= ST_IDLE;
-            load_addr_r <= 3'd0;
             load_data_r <= 4096'd0;
             load_done_pulse <= 1'b0;
             pv_rd_valid <= 1'b0;
@@ -395,8 +432,6 @@ module FA_P_BUF_REAL (
                 shadow_words_r[wi] <= 32'd0;
             end
         end else if (clear) begin
-            state_r <= ST_IDLE;
-            load_addr_r <= 3'd0;
             load_data_r <= 4096'd0;
             load_done_pulse <= 1'b0;
             pv_rd_valid <= 1'b0;
@@ -404,25 +439,20 @@ module FA_P_BUF_REAL (
                 shadow_words_r[wi] <= 32'd0;
             end
         end else begin
-            load_done_pulse <= 1'b0;
-            pv_rd_valid <= pv_rd_en;
-            if ((state_r == ST_IDLE) && load_valid) begin
-                load_data_r <= tile_load_data;
-                for (wi = 0; wi < 128; wi = wi + 1) begin
-                    shadow_words_r[wi] <= tile_load_data[(wi * 32) +: 32];
-                end
-                load_addr_r <= 3'd0;
-                state_r <= ST_LOAD;
-            end else if (state_r == ST_LOAD) begin
-                if (load_addr_r == 3'd7) begin
-                    state_r <= ST_IDLE;
-                    load_done_pulse <= 1'b1;
-                end else begin
-                    load_addr_r <= load_addr_r + 1'b1;
+                load_done_pulse <= 1'b0;
+                pv_rd_valid <= pv_rd_en;
+                if ((state_r == ST_IDLE) && load_valid) begin
+                    load_data_r <= tile_load_data;
+                    for (wi = 0; wi < 128; wi = wi + 1) begin
+                        shadow_words_r[wi] <= tile_load_data[(wi * 32) +: 32];
+                    end
+                end else if (state_r == ST_LOAD) begin
+                    if (load_addr_r == 3'd7) begin
+                        load_done_pulse <= 1'b1;
+                    end
                 end
             end
         end
-    end
 
 endmodule
 
@@ -456,7 +486,9 @@ module FA_OACC_BUF_REAL (
     localparam [1:0] ST_LOAD = 2'd2;
 
     reg [1:0] state_r;
+    reg [1:0] state_n;
     reg [3:0] row_idx_r;
+    reg [3:0] row_idx_n;
     reg [16383:0] load_data_r;
     reg [31:0] shadow_words_r [0:511];
     reg [1023:0] mem_wr_data_r;
@@ -468,6 +500,53 @@ module FA_OACC_BUF_REAL (
 
     assign clear_req_ready = (state_r == ST_IDLE);
     assign load_ready = (state_r == ST_IDLE);
+
+    always @(*) begin
+        state_n = state_r;
+        row_idx_n = row_idx_r;
+        case (state_r)
+            ST_IDLE: begin
+                if (clear_req_valid) begin
+                    state_n = ST_CLEAR;
+                    row_idx_n = 4'd0;
+                end else if (load_valid) begin
+                    state_n = ST_LOAD;
+                    row_idx_n = 4'd0;
+                end
+            end
+            ST_CLEAR: begin
+                if (row_idx_r == 4'd15) begin
+                    state_n = ST_IDLE;
+                end else begin
+                    row_idx_n = row_idx_r + 1'b1;
+                end
+            end
+            ST_LOAD: begin
+                if (row_idx_r == 4'd15) begin
+                    state_n = ST_IDLE;
+                end else begin
+                    row_idx_n = row_idx_r + 1'b1;
+                end
+            end
+            default: begin
+                state_n = ST_IDLE;
+                row_idx_n = 4'd0;
+            end
+        endcase
+    end
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            state_r <= ST_IDLE;
+            row_idx_r <= 4'd0;
+        end else if (clear) begin
+            state_r <= ST_IDLE;
+            row_idx_r <= 4'd0;
+        end else begin
+            state_r <= state_n;
+            row_idx_r <= row_idx_n;
+        end
+    end
 
     generate
         genvar gi;
@@ -528,8 +607,6 @@ module FA_OACC_BUF_REAL (
 
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
-            state_r <= ST_IDLE;
-            row_idx_r <= 4'd0;
             load_data_r <= 16384'd0;
             clear_done_pulse <= 1'b0;
             load_done_pulse <= 1'b0;
@@ -539,8 +616,6 @@ module FA_OACC_BUF_REAL (
                 shadow_words_r[wi] <= 32'd0;
             end
         end else if (clear) begin
-            state_r <= ST_IDLE;
-            row_idx_r <= 4'd0;
             load_data_r <= 16384'd0;
             clear_done_pulse <= 1'b0;
             load_done_pulse <= 1'b0;
@@ -554,47 +629,38 @@ module FA_OACC_BUF_REAL (
             load_done_pulse <= 1'b0;
             row_rd_valid <= row_rd_en;
             exp_rd_valid <= exp_rd_en;
-            if (row_wr_en && (state_r == ST_IDLE)) begin
-                for (wi = 0; wi < 32; wi = wi + 1) begin
-                    shadow_words_r[(row_wr_addr * 32) + wi] <= row_wr_data[(wi * 32) +: 32];
+                if (row_wr_en && (state_r == ST_IDLE)) begin
+                    for (wi = 0; wi < 32; wi = wi + 1) begin
+                        shadow_words_r[(row_wr_addr * 32) + wi] <= row_wr_data[(wi * 32) +: 32];
+                    end
                 end
+                case (state_r)
+                    ST_IDLE: begin
+                        if (clear_req_valid) begin
+                            for (wi = 0; wi < 512; wi = wi + 1) begin
+                                shadow_words_r[wi] <= 32'd0;
+                            end
+                        end else if (load_valid) begin
+                            load_data_r <= tile_load_data;
+                            for (wi = 0; wi < 512; wi = wi + 1) begin
+                                shadow_words_r[wi] <= tile_load_data[(wi * 32) +: 32];
+                            end
+                        end
+                    end
+                    ST_CLEAR: begin
+                        if (row_idx_r == 4'd15) begin
+                            clear_done_pulse <= 1'b1;
+                        end
+                    end
+                    ST_LOAD: begin
+                        if (row_idx_r == 4'd15) begin
+                            load_done_pulse <= 1'b1;
+                        end
+                    end
+                    default: begin
+                    end
+                endcase
             end
-            case (state_r)
-                ST_IDLE: begin
-                    if (clear_req_valid) begin
-                        row_idx_r <= 4'd0;
-                        for (wi = 0; wi < 512; wi = wi + 1) begin
-                            shadow_words_r[wi] <= 32'd0;
-                        end
-                        state_r <= ST_CLEAR;
-                    end else if (load_valid) begin
-                        load_data_r <= tile_load_data;
-                        row_idx_r <= 4'd0;
-                        for (wi = 0; wi < 512; wi = wi + 1) begin
-                            shadow_words_r[wi] <= tile_load_data[(wi * 32) +: 32];
-                        end
-                        state_r <= ST_LOAD;
-                    end
-                end
-                ST_CLEAR: begin
-                    if (row_idx_r == 4'd15) begin
-                        state_r <= ST_IDLE;
-                        clear_done_pulse <= 1'b1;
-                    end else begin
-                        row_idx_r <= row_idx_r + 1'b1;
-                    end
-                end
-                ST_LOAD: begin
-                    if (row_idx_r == 4'd15) begin
-                        state_r <= ST_IDLE;
-                        load_done_pulse <= 1'b1;
-                    end else begin
-                        row_idx_r <= row_idx_r + 1'b1;
-                    end
-                end
-                default: state_r <= ST_IDLE;
-            endcase
         end
-    end
 
 endmodule

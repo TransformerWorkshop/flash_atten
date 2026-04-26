@@ -23,8 +23,11 @@ module FA_QK_CORE_REAL (
     localparam [1:0] ST_COLLECT = 2'd2;
 
     reg [1:0] state_r;
+    reg [1:0] state_n;
     reg [5:0] issue_count_r;
+    reg [5:0] issue_count_n;
     reg [5:0] feed_count_r;
+    reg [5:0] feed_count_n;
     reg [31:0] result_words_r [0:255];
     wire         gemm_a_ready_w;
     wire         gemm_b_ready_w;
@@ -80,6 +83,62 @@ module FA_QK_CORE_REAL (
     assign k_rd_en = read_issue_w;
     assign k_rd_addr = issue_addr_w;
 
+    always @(*) begin
+        state_n = state_r;
+        issue_count_n = issue_count_r;
+        feed_count_n = feed_count_r;
+
+        if (gemm_stream_fire_w && gemm_last_w) begin
+            state_n = ST_IDLE;
+        end
+
+        case (state_r)
+            ST_IDLE: begin
+                if (req_valid && req_ready) begin
+                    issue_count_n = 6'd0;
+                    feed_count_n = 6'd0;
+                    state_n = ST_STREAM;
+                end
+            end
+            ST_STREAM: begin
+                if (read_issue_w) begin
+                    issue_count_n = issue_count_r + 6'd1;
+                end
+                if (gemm_feed_fire_w) begin
+                    if (feed_count_r == 6'd31) begin
+                        feed_count_n = 6'd32;
+                        state_n = ST_COLLECT;
+                    end else begin
+                        feed_count_n = feed_count_r + 6'd1;
+                    end
+                end
+            end
+            ST_COLLECT: begin
+            end
+            default: begin
+                state_n = ST_IDLE;
+                issue_count_n = 6'd0;
+                feed_count_n = 6'd0;
+            end
+        endcase
+    end
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            state_r <= ST_IDLE;
+            issue_count_r <= 6'd0;
+            feed_count_r <= 6'd0;
+        end else if (clear) begin
+            state_r <= ST_IDLE;
+            issue_count_r <= 6'd0;
+            feed_count_r <= 6'd0;
+        end else begin
+            state_r <= state_n;
+            issue_count_r <= issue_count_n;
+            feed_count_r <= feed_count_n;
+        end
+    end
+
     GEMM_V3 #(
         .WIDTH(32),
         .ELEM_WIDTH(16),
@@ -109,18 +168,12 @@ module FA_QK_CORE_REAL (
 
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
-            state_r <= ST_IDLE;
-            issue_count_r <= 6'd0;
-            feed_count_r <= 6'd0;
             resp_valid <= 1'b0;
             done_pulse <= 1'b0;
             for (wi = 0; wi < 256; wi = wi + 1) begin
                 result_words_r[wi] <= 32'd0;
             end
         end else if (clear) begin
-            state_r <= ST_IDLE;
-            issue_count_r <= 6'd0;
-            feed_count_r <= 6'd0;
             resp_valid <= 1'b0;
             done_pulse <= 1'b0;
             for (wi = 0; wi < 256; wi = wi + 1) begin
@@ -141,37 +194,23 @@ module FA_QK_CORE_REAL (
                 end
                 if (gemm_last_w) begin
                     resp_valid <= 1'b1;
-                    state_r <= ST_IDLE;
                 end
             end
 
             case (state_r)
                 ST_IDLE: begin
                     if (req_valid && req_ready) begin
-                        issue_count_r <= 6'd0;
-                        feed_count_r <= 6'd0;
                         for (wi = 0; wi < 256; wi = wi + 1) begin
                             result_words_r[wi] <= 32'd0;
                         end
-                        state_r <= ST_STREAM;
                     end
                 end
                 ST_STREAM: begin
-                    if (read_issue_w) begin
-                        issue_count_r <= issue_count_r + 6'd1;
-                    end
-                    if (gemm_feed_fire_w) begin
-                        if (feed_count_r == 6'd31) begin
-                            feed_count_r <= 6'd32;
-                            state_r <= ST_COLLECT;
-                        end else begin
-                            feed_count_r <= feed_count_r + 6'd1;
-                        end
-                    end
                 end
                 ST_COLLECT: begin
                 end
-                default: state_r <= ST_IDLE;
+                default: begin
+                end
             endcase
         end
     end
@@ -203,9 +242,13 @@ module FA_PV_CORE_REAL (
     localparam [1:0] ST_COLLECT = 2'd2;
 
     reg [1:0] state_r;
+    reg [1:0] state_n;
     reg [3:0] issue_count_r;
+    reg [3:0] issue_count_n;
     reg [3:0] feed_count_r;
+    reg [3:0] feed_count_n;
     reg [1:0] col_blk_r;
+    reg [1:0] col_blk_n;
     reg [31:0] result_words_r [0:511];
     wire         gemm_a_ready_w;
     wire         gemm_b_ready_w;
@@ -270,6 +313,75 @@ module FA_PV_CORE_REAL (
     assign v_rd_en = read_issue_w;
     assign v_rd_addr = {col_blk_r, issue_addr_w};
 
+    always @(*) begin
+        state_n = state_r;
+        issue_count_n = issue_count_r;
+        feed_count_n = feed_count_r;
+        col_blk_n = col_blk_r;
+
+        if (gemm_stream_fire_w && gemm_last_w) begin
+            if (col_blk_r == 2'd3) begin
+                state_n = ST_IDLE;
+            end else begin
+                col_blk_n = col_blk_r + 1'b1;
+                issue_count_n = 4'd0;
+                feed_count_n = 4'd0;
+                state_n = ST_STREAM;
+            end
+        end
+
+        case (state_r)
+            ST_IDLE: begin
+                if (req_valid && req_ready) begin
+                    col_blk_n = 2'd0;
+                    issue_count_n = 4'd0;
+                    feed_count_n = 4'd0;
+                    state_n = ST_STREAM;
+                end
+            end
+            ST_STREAM: begin
+                if (read_issue_w) begin
+                    issue_count_n = issue_count_r + 4'd1;
+                end
+                if (gemm_feed_fire_w) begin
+                    if (feed_count_r == 4'd7) begin
+                        feed_count_n = 4'd8;
+                        state_n = ST_COLLECT;
+                    end else begin
+                        feed_count_n = feed_count_r + 4'd1;
+                    end
+                end
+            end
+            ST_COLLECT: begin
+            end
+            default: begin
+                state_n = ST_IDLE;
+                issue_count_n = 4'd0;
+                feed_count_n = 4'd0;
+                col_blk_n = 2'd0;
+            end
+        endcase
+    end
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            state_r <= ST_IDLE;
+            issue_count_r <= 4'd0;
+            feed_count_r <= 4'd0;
+            col_blk_r <= 2'd0;
+        end else if (clear) begin
+            state_r <= ST_IDLE;
+            issue_count_r <= 4'd0;
+            feed_count_r <= 4'd0;
+            col_blk_r <= 2'd0;
+        end else begin
+            state_r <= state_n;
+            issue_count_r <= issue_count_n;
+            feed_count_r <= feed_count_n;
+            col_blk_r <= col_blk_n;
+        end
+    end
+
     GEMM_V3 #(
         .WIDTH(32),
         .ELEM_WIDTH(16),
@@ -299,20 +411,12 @@ module FA_PV_CORE_REAL (
 
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
-            state_r <= ST_IDLE;
-            issue_count_r <= 4'd0;
-            feed_count_r <= 4'd0;
-            col_blk_r <= 2'd0;
             resp_valid <= 1'b0;
             done_pulse <= 1'b0;
             for (wi = 0; wi < 512; wi = wi + 1) begin
                 result_words_r[wi] <= 32'd0;
             end
         end else if (clear) begin
-            state_r <= ST_IDLE;
-            issue_count_r <= 4'd0;
-            feed_count_r <= 4'd0;
-            col_blk_r <= 2'd0;
             resp_valid <= 1'b0;
             done_pulse <= 1'b0;
             for (wi = 0; wi < 512; wi = wi + 1) begin
@@ -332,47 +436,25 @@ module FA_PV_CORE_REAL (
                     accum_word_s = gemm_group_data_w[(col_idx * 128) +: 128];
                     result_words_r[(gemm_group_idx_w * 32) + (global_col_idx >> 1)][((global_col_idx & 1) * 16) +: 16] <= q16_16_to_q88_sat128(accum_word_s);
                 end
-                if (gemm_last_w) begin
-                    if (col_blk_r == 2'd3) begin
-                        resp_valid <= 1'b1;
-                        state_r <= ST_IDLE;
-                    end else begin
-                        col_blk_r <= col_blk_r + 1'b1;
-                        issue_count_r <= 4'd0;
-                        feed_count_r <= 4'd0;
-                        state_r <= ST_STREAM;
-                    end
+                if (gemm_last_w && (col_blk_r == 2'd3)) begin
+                    resp_valid <= 1'b1;
                 end
             end
 
             case (state_r)
                 ST_IDLE: begin
                     if (req_valid && req_ready) begin
-                        col_blk_r <= 2'd0;
-                        issue_count_r <= 4'd0;
-                        feed_count_r <= 4'd0;
                         for (wi = 0; wi < 512; wi = wi + 1) begin
                             result_words_r[wi] <= 32'd0;
                         end
-                        state_r <= ST_STREAM;
                     end
                 end
                 ST_STREAM: begin
-                    if (read_issue_w) begin
-                        issue_count_r <= issue_count_r + 4'd1;
-                    end
-                    if (gemm_feed_fire_w) begin
-                        if (feed_count_r == 4'd7) begin
-                            feed_count_r <= 4'd8;
-                            state_r <= ST_COLLECT;
-                        end else begin
-                            feed_count_r <= feed_count_r + 4'd1;
-                        end
-                    end
                 end
                 ST_COLLECT: begin
                 end
-                default: state_r <= ST_IDLE;
+                default: begin
+                end
             endcase
         end
     end

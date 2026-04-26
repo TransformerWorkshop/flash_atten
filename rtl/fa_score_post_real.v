@@ -21,6 +21,7 @@ module FA_SCORE_POST_REAL (
     localparam [1:0] ST_DONE = 2'd2;
 
     reg [1:0] state_r;
+    reg [1:0] state_n;
     reg [3:0] q_blk_r;
     reg [3:0] kv_blk_r;
     reg       causal_r;
@@ -28,6 +29,7 @@ module FA_SCORE_POST_REAL (
     reg [31:0] neg_large_word_r;
     reg [8191:0] score_tile_r;
     reg [3:0] row_idx_r;
+    reg [3:0] row_idx_n;
 
     integer col_idx;
     integer global_q_idx;
@@ -64,28 +66,68 @@ module FA_SCORE_POST_REAL (
 
     assign req_ready = (state_r == ST_IDLE) && !resp_valid;
 
+    always @(*) begin
+        state_n = state_r;
+        row_idx_n = row_idx_r;
+
+        if ((state_r == ST_DONE) && resp_valid && resp_ready) begin
+            state_n = ST_IDLE;
+        end
+
+        case (state_r)
+            ST_IDLE: begin
+                if (req_valid && req_ready) begin
+                    state_n = ST_RUN;
+                    row_idx_n = 4'd0;
+                end
+            end
+            ST_RUN: begin
+                if (row_idx_r == 4'd15) begin
+                    state_n = ST_DONE;
+                end else begin
+                    row_idx_n = row_idx_r + 1'b1;
+                end
+            end
+            ST_DONE: begin
+            end
+            default: begin
+                state_n = ST_IDLE;
+                row_idx_n = 4'd0;
+            end
+        endcase
+    end
+
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
             state_r <= ST_IDLE;
+            row_idx_r <= 4'd0;
+        end else if (clear) begin
+            state_r <= ST_IDLE;
+            row_idx_r <= 4'd0;
+        end else begin
+            state_r <= state_n;
+            row_idx_r <= row_idx_n;
+        end
+    end
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
             q_blk_r <= 4'd0;
             kv_blk_r <= 4'd0;
             causal_r <= 1'b0;
             scale_word_r <= 32'd0;
             neg_large_word_r <= 32'd0;
             score_tile_r <= 8192'd0;
-            row_idx_r <= 4'd0;
             resp_valid <= 1'b0;
             masked_score_tile_flat <= 8192'd0;
             done_pulse <= 1'b0;
         end else if (clear) begin
-            state_r <= ST_IDLE;
             q_blk_r <= 4'd0;
             kv_blk_r <= 4'd0;
             causal_r <= 1'b0;
             scale_word_r <= 32'd0;
             neg_large_word_r <= 32'd0;
             score_tile_r <= 8192'd0;
-            row_idx_r <= 4'd0;
             resp_valid <= 1'b0;
             masked_score_tile_flat <= 8192'd0;
             done_pulse <= 1'b0;
@@ -95,9 +137,6 @@ module FA_SCORE_POST_REAL (
             if (resp_valid && resp_ready) begin
                 resp_valid <= 1'b0;
                 done_pulse <= 1'b1;
-                if (state_r == ST_DONE) begin
-                    state_r <= ST_IDLE;
-                end
             end
 
             case (state_r)
@@ -110,8 +149,6 @@ module FA_SCORE_POST_REAL (
                         neg_large_word_r <= neg_large_word;
                         score_tile_r <= score_tile_flat;
                         masked_score_tile_flat <= 8192'd0;
-                        row_idx_r <= 4'd0;
-                        state_r <= ST_RUN;
                     end
                 end
                 ST_RUN: begin
@@ -127,15 +164,11 @@ module FA_SCORE_POST_REAL (
                     end
                     if (row_idx_r == 4'd15) begin
                         resp_valid <= 1'b1;
-                        state_r <= ST_DONE;
-                    end else begin
-                        row_idx_r <= row_idx_r + 1'b1;
                     end
                 end
                 ST_DONE: begin
                 end
                 default: begin
-                    state_r <= ST_IDLE;
                 end
             endcase
         end
