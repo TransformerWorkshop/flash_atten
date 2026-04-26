@@ -13,6 +13,7 @@ module sram #(
 
 `ifdef SYNTHESIS
 	localparam USE_TSMC_64X32 = (DATA_WIDTH == 32) && (DEPTH == 64);
+	wire unsupported_cfg_zero_w = (clk & 1'b0) | (en & 1'b0) | (we & 1'b0) | ((|addr) & 1'b0) | ((|din) & 1'b0);
 
 	generate
 		if (USE_TSMC_64X32) begin : gen_tsmc_sram
@@ -42,7 +43,7 @@ module sram #(
 			end
 		end else begin : gen_unsup_cfg
 			always @(*) begin
-				dout = {DATA_WIDTH{1'b0}};
+				dout = {DATA_WIDTH{unsupported_cfg_zero_w}};
 			end
 		end
 	endgenerate

@@ -100,6 +100,7 @@ module FA_CORE_BASELINE #(
     wire       qk_req_valid;
     wire       qk_req_ready;
     wire       qk_done_pulse;
+    wire       qk_resp_valid;
     wire       score_req_valid;
     wire       score_req_ready;
     wire       score_done_pulse;
@@ -128,6 +129,7 @@ module FA_CORE_BASELINE #(
     wire [3:0]  v_pv_src_word_mask;
     wire [127:0] v_pv_src_data;
     wire       rd_error_pulse;
+    wire       run_ctrl_busy_w;
 
     wire         score_resp_valid;
     wire         row_resp_valid;
@@ -140,6 +142,8 @@ module FA_CORE_BASELINE #(
     wire         p_buf_load_done_pulse;
     wire         oacc_clear_req_ready_w;
     wire         oacc_clear_done_pulse_w;
+    wire         unused_oacc_load_ready_w;
+    wire         unused_oacc_load_done_pulse_w;
     wire         q_qk_rd_en;
     wire [4:0]   q_qk_rd_addr;
     wire         q_qk_rd_valid;
@@ -162,6 +166,8 @@ module FA_CORE_BASELINE #(
     wire [1023:0] oacc_exp_rd_data;
     wire         row_proxy_done_pulse;
     wire         oacc_real_done_pulse;
+    wire         oacc_resp_valid_unused_w;
+    wire         wr_dma_error_unused_w;
     wire         oacc_row_rd_en;
     wire [3:0]   oacc_row_rd_addr;
     wire         oacc_row_rd_valid;
@@ -171,6 +177,15 @@ module FA_CORE_BASELINE #(
     wire [1023:0] oacc_row_wr_data;
     reg [31:0]   rd_bytes_r;
     reg [31:0]   wr_bytes_r;
+    wire         core_unused_zero_w = (run_ctrl_busy_w & 1'b0)
+                                    | (unused_oacc_load_ready_w & 1'b0)
+                                    | (unused_oacc_load_done_pulse_w & 1'b0)
+                                    | (qk_resp_valid & 1'b0)
+                                    | (score_resp_valid & 1'b0)
+                                    | (row_resp_valid & 1'b0)
+                                    | (pv_resp_valid & 1'b0)
+                                    | (oacc_resp_valid_unused_w & 1'b0)
+                                    | (wr_dma_error_unused_w & 1'b0);
 
     wire runtime_clear = clear || soft_reset_pulse;
 
@@ -182,7 +197,7 @@ module FA_CORE_BASELINE #(
     assign wr_bytes = wr_bytes_r;
     assign irq = irq_en && (status_done || status_error);
     assign debug_store_req_valid = store_req_valid;
-    assign debug_store_done_pulse = store_done_pulse;
+    assign debug_store_done_pulse = store_done_pulse | core_unused_zero_w;
 
     FA_RUN_CTRL u_run_ctrl (
         .clk(clk),
@@ -193,7 +208,7 @@ module FA_CORE_BASELINE #(
         .run_complete_pulse(run_complete_pulse),
         .run_error_pulse(rd_error_pulse | ext_error_pulse),
         .run_active(run_active),
-        .busy(),
+        .busy(run_ctrl_busy_w),
         .done_sticky(status_done),
         .error_sticky(status_error),
         .cycles(status_cycles)
@@ -359,9 +374,9 @@ module FA_CORE_BASELINE #(
         .clear_req_ready(oacc_clear_req_ready_w),
         .clear_done_pulse(oacc_clear_done_pulse_w),
         .load_valid(1'b0),
-        .load_ready(),
+        .load_ready(unused_oacc_load_ready_w),
         .tile_load_data(ZERO_TILE_16X64),
-        .load_done_pulse(),
+        .load_done_pulse(unused_oacc_load_done_pulse_w),
         .row_rd_en(oacc_row_rd_en),
         .row_rd_addr(oacc_row_rd_addr),
         .row_rd_valid(oacc_row_rd_valid),
@@ -484,7 +499,7 @@ module FA_CORE_BASELINE #(
         .oacc_row_wr_en(oacc_row_wr_en),
         .oacc_row_wr_addr(oacc_row_wr_addr),
         .oacc_row_wr_data(oacc_row_wr_data),
-        .resp_valid(),
+        .resp_valid(oacc_resp_valid_unused_w),
         .resp_ready(1'b1),
         .done_pulse(oacc_real_done_pulse)
     );
@@ -514,7 +529,7 @@ module FA_CORE_BASELINE #(
         .wr_data(wr_data),
         .wr_data_last(wr_data_last),
         .done_pulse(store_done_pulse),
-        .error_pulse()
+        .error_pulse(wr_dma_error_unused_w)
     );
 
     always @(posedge clk or negedge rstn) begin

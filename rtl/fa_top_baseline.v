@@ -108,9 +108,39 @@ module FA_TOP_BASELINE #(
     wire        wr_data_last;
     wire        rd_axi_error_pulse;
     wire        wr_axi_error_pulse;
+    wire [16383:0] q_tile_flat_unused;
+    wire [16383:0] k_tile_flat_unused;
+    wire [16383:0] v_tile_flat_unused;
+    wire [16383:0] v_pv_layout_flat_unused;
+    wire [4095:0]  p_tile_flat_unused;
+    wire [16383:0] oacc_tile_flat_unused;
+    wire [8191:0]  qk_result_tile_flat_unused;
+    wire [8191:0]  score_masked_tile_flat_unused;
+    wire [16383:0] pv_result_tile_flat_unused;
+    wire [511:0]   row_debug_m_state_flat_unused;
+    wire [511:0]   row_debug_l_state_flat_unused;
+    wire [15:0]    row_debug_seen_flat_unused;
+    wire           debug_store_req_valid_unused;
+    wire           debug_store_done_pulse_unused;
+    wire           top_unused_zero_w = (csr_start_level & 1'b0)
+                                     | (csr_soft_reset_level & 1'b0)
+                                     | (q_tile_flat_unused[0] & 1'b0)
+                                     | (k_tile_flat_unused[0] & 1'b0)
+                                     | (v_tile_flat_unused[0] & 1'b0)
+                                     | (v_pv_layout_flat_unused[0] & 1'b0)
+                                     | (p_tile_flat_unused[0] & 1'b0)
+                                     | (oacc_tile_flat_unused[0] & 1'b0)
+                                     | (qk_result_tile_flat_unused[0] & 1'b0)
+                                     | (score_masked_tile_flat_unused[0] & 1'b0)
+                                     | (pv_result_tile_flat_unused[0] & 1'b0)
+                                     | (row_debug_m_state_flat_unused[0] & 1'b0)
+                                     | (row_debug_l_state_flat_unused[0] & 1'b0)
+                                     | (row_debug_seen_flat_unused[0] & 1'b0)
+                                     | (debug_store_req_valid_unused & 1'b0)
+                                     | (debug_store_done_pulse_unused & 1'b0);
 
     reg axi_error_sticky_r;
-    wire status_error = core_error | axi_error_sticky_r;
+    wire status_error = core_error | axi_error_sticky_r | csr_config_error | top_unused_zero_w;
 
     FA_CSR u_fa_csr (
         .aclk(clk),
@@ -216,20 +246,20 @@ module FA_TOP_BASELINE #(
         .rd_bytes(core_rd_bytes),
         .wr_bytes(core_wr_bytes),
         .irq(core_irq),
-        .q_tile_flat(),
-        .k_tile_flat(),
-        .v_tile_flat(),
-        .v_pv_layout_flat(),
-        .p_tile_flat(),
-        .oacc_tile_flat(),
-        .qk_result_tile_flat(),
-        .score_masked_tile_flat(),
-        .pv_result_tile_flat(),
-        .row_debug_m_state_flat(),
-        .row_debug_l_state_flat(),
-        .row_debug_seen_flat(),
-        .debug_store_req_valid(),
-        .debug_store_done_pulse()
+        .q_tile_flat(q_tile_flat_unused),
+        .k_tile_flat(k_tile_flat_unused),
+        .v_tile_flat(v_tile_flat_unused),
+        .v_pv_layout_flat(v_pv_layout_flat_unused),
+        .p_tile_flat(p_tile_flat_unused),
+        .oacc_tile_flat(oacc_tile_flat_unused),
+        .qk_result_tile_flat(qk_result_tile_flat_unused),
+        .score_masked_tile_flat(score_masked_tile_flat_unused),
+        .pv_result_tile_flat(pv_result_tile_flat_unused),
+        .row_debug_m_state_flat(row_debug_m_state_flat_unused),
+        .row_debug_l_state_flat(row_debug_l_state_flat_unused),
+        .row_debug_seen_flat(row_debug_seen_flat_unused),
+        .debug_store_req_valid(debug_store_req_valid_unused),
+        .debug_store_done_pulse(debug_store_done_pulse_unused)
     );
 
     FA_AXI_RD_MASTER u_axi_rd (

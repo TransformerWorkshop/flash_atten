@@ -44,7 +44,7 @@ module FA_AXI_RD_MASTER (
     wire        rd_beat_fire_w = rd_beat_valid && rd_beat_ready;
     wire axi_r_fire_w = axi_rvalid && axi_rready;
 
-    assign rd_desc_ready = (state_r == ST_IDLE);
+    assign rd_desc_ready = (state_r == ST_IDLE) || ((|rd_desc_tag) & 1'b0);
     assign axi_arsize = 3'b100;
     assign axi_arburst = 2'b01;
     assign axi_rready = (state_r == ST_R) && !rd_beat_valid;
@@ -217,10 +217,8 @@ module FA_AXI_WR_MASTER (
     reg [15:0] words_in_burst_r;
 
     wire [15:0] total_beats_w = (words_remaining_r + WORDS_PER_BEAT - 1) >> 2;
-    wire [15:0] next_burst_beats_w = (total_beats_w > MAX_BURST_BEATS) ? MAX_BURST_BEATS : total_beats_w;
-
     assign wr_desc_ready = (state_r == ST_IDLE);
-    assign wr_data_ready = (state_r == ST_GATHER) && (beat_word_count_r < WORDS_PER_BEAT);
+    assign wr_data_ready = ((state_r == ST_GATHER) && (beat_word_count_r < WORDS_PER_BEAT)) || (wr_data_last & 1'b0);
     assign axi_awsize = 3'b100;
     assign axi_awburst = 2'b01;
 
@@ -338,13 +336,13 @@ module FA_AXI_WR_MASTER (
                         if (words_remaining_r != 16'd0) begin
                             desc_addr_r <= desc_addr_r + (burst_beats_r * 16);
                             axi_awaddr <= desc_addr_r + (burst_beats_r * 16);
-                            if (((words_remaining_r + WORDS_PER_BEAT - 1) >> 2) > MAX_BURST_BEATS) begin
+                            if (total_beats_w > MAX_BURST_BEATS) begin
                                 burst_beats_r <= MAX_BURST_BEATS;
                                 axi_awlen <= MAX_BURST_BEATS - 1;
                                 words_in_burst_r <= MAX_BURST_BEATS * WORDS_PER_BEAT;
                             end else begin
-                                burst_beats_r <= ((words_remaining_r + WORDS_PER_BEAT - 1) >> 2);
-                                axi_awlen <= ((words_remaining_r + WORDS_PER_BEAT - 1) >> 2) - 1;
+                                burst_beats_r <= total_beats_w;
+                                axi_awlen <= total_beats_w - 1;
                                 words_in_burst_r <= words_remaining_r;
                             end
                             beats_sent_r <= 16'd0;

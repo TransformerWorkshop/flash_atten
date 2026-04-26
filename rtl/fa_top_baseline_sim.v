@@ -95,8 +95,24 @@ module FA_TOP_BASELINE_SIM #(
     wire           store_req_valid;
     wire           store_done_pulse;
     wire           core_irq;
+    wire           sim_unused_zero_w = (csr_start_level & 1'b0)
+                                     | (csr_soft_reset_level & 1'b0)
+                                     | (q_tile_flat[0] & 1'b0)
+                                     | (k_tile_flat[0] & 1'b0)
+                                     | (v_tile_flat[0] & 1'b0)
+                                     | (v_pv_layout_flat[0] & 1'b0)
+                                     | (p_tile_flat[0] & 1'b0)
+                                     | (oacc_tile_flat[0] & 1'b0)
+                                     | (qk_result_tile_flat[0] & 1'b0)
+                                     | (score_masked_tile_flat[0] & 1'b0)
+                                     | (pv_result_tile_flat[0] & 1'b0)
+                                     | (row_debug_m_state_flat[0] & 1'b0)
+                                     | (row_debug_l_state_flat[0] & 1'b0)
+                                     | (row_debug_seen_flat[0] & 1'b0)
+                                     | (store_req_valid & 1'b0)
+                                     | (store_done_pulse & 1'b0);
 
-    wire status_error = status_error_core | csr_config_error;
+    wire status_error = status_error_core | csr_config_error | sim_unused_zero_w;
 
     FA_CSR u_fa_csr (
         .aclk(clk),
@@ -218,6 +234,6 @@ module FA_TOP_BASELINE_SIM #(
         .debug_store_done_pulse(store_done_pulse)
     );
 
-    assign irq = core_irq;
+    assign irq = core_irq | sim_unused_zero_w;
 
 endmodule

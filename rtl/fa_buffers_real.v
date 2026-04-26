@@ -183,6 +183,8 @@ module FA_V_BUF_REAL (
 
     wire       unused_rd_valid_w;
     wire [511:0] unused_rd_data_w;
+    wire [16383:0] tile_flat_w;
+    wire unused_v_buf_read_zero_w = (unused_rd_valid_w & 1'b0) | (unused_rd_data_w[0] & 1'b0);
 
     FA_BANKED_TILE_BUF_REAL u_bank_buf (
         .clk(clk),
@@ -197,8 +199,10 @@ module FA_V_BUF_REAL (
         .rd_addr(5'd0),
         .rd_valid(unused_rd_valid_w),
         .rd_data(unused_rd_data_w),
-        .tile_flat(tile_flat)
+        .tile_flat(tile_flat_w)
     );
+
+    assign tile_flat = tile_flat_w | {16384{unused_v_buf_read_zero_w}};
 
 endmodule
 

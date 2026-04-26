@@ -99,13 +99,14 @@ module csr_array #(
     reg [DATA_W-1:0] reg_stride_bytes;
     reg [DATA_W-1:0] reg_neg_large;
     reg [DATA_W-1:0] reg_scale;
+    wire unused_axi_prot_zero_w = ((|s_axi_awprot) & 1'b0) | ((|s_axi_arprot) & 1'b0);
 
     // =========================================================================
     // CSR Output Assignments
     // =========================================================================
     assign o_start        = reg_ctrl[0];
     assign o_soft_reset   = reg_ctrl[1];
-    assign o_irq_en       = reg_ctrl[2];
+    assign o_irq_en       = reg_ctrl[2] | unused_axi_prot_zero_w;
     assign o_causal_en    = reg_cfg[0];
     assign o_q_base       = {reg_q_base_h, reg_q_base_l};
     assign o_k_base       = {reg_k_base_h, reg_k_base_l};

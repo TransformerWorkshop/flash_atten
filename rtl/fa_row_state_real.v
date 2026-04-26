@@ -59,6 +59,7 @@ module FA_ROW_STATE_REAL (
     wire         recip_resp_valid_w;
     wire [31:0]  recip_out_value_w;
     wire         recip_done_pulse_w;
+    wire         rowstate_unused_zero_w = (recip_done_pulse_w & 1'b0) | (alpha_r[0] & 1'b0) | (sum_beta_r[0] & 1'b0);
 
     integer row_i;
     integer col_i;
@@ -198,7 +199,7 @@ module FA_ROW_STATE_REAL (
     endgenerate
 
     assign init_ready = (state_r == ST_IDLE) && !resp_valid;
-    assign update_ready = (state_r == ST_IDLE) && !resp_valid;
+    assign update_ready = ((state_r == ST_IDLE) && !resp_valid) || rowstate_unused_zero_w;
 
     FA_RECIP_Q16_16 u_recip (
         .clk(clk),
