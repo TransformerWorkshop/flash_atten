@@ -86,8 +86,14 @@ soak:
 fa_baseline:
 	$(RUNNER) fa_baseline $(SIM_ARG) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG) $(TEST_FILTER_ARG) $(TESTCASE_ARG) $(KEEP_BUILD_ARG) $(REBUILD_ARG)
 
+fa_full:
+	$(RUNNER) fa_full $(SIM_ARG) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG) $(TEST_FILTER_ARG) $(TESTCASE_ARG) $(KEEP_BUILD_ARG) $(REBUILD_ARG)
+
 fa_baseline_axi:
 	$(RUNNER) fa_baseline_axi $(SIM_ARG) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG) $(TEST_FILTER_ARG) $(TESTCASE_ARG) $(KEEP_BUILD_ARG) $(REBUILD_ARG)
+
+fa_full_axi:
+	$(RUNNER) fa_full_axi $(SIM_ARG) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG) $(TEST_FILTER_ARG) $(TESTCASE_ARG) $(KEEP_BUILD_ARG) $(REBUILD_ARG)
 
 coverage:
 	$(RUNNER) coverage --sim verilator --target pt $(SEED_ARG) $(VERBOSE_ARG)
@@ -95,4 +101,4 @@ coverage:
 clean:
 	rm -rf build results logs waves coverage
 
-.PHONY: all smoke full ci stress randomized extended soak fa_baseline fa_baseline_axi coverage clean
+.PHONY: all smoke full ci stress randomized extended soak fa_baseline fa_full fa_baseline_axi fa_full_axi coverage clean

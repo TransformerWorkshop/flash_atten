@@ -24,12 +24,18 @@ def make_single_tile_case(seed_base: int):
 
 
 def make_single_q_full_kv_case(seed_base: int):
+    return make_single_q_full_kv_case_at_row(seed_base, 0)
+
+
+def make_single_q_full_kv_case_at_row(seed_base: int, q_row_start: int):
+    if q_row_start < 0 or q_row_start + 16 > SEQ_LEN:
+        raise ValueError(f"expected 0 <= q_row_start <= {SEQ_LEN - 16}, got {q_row_start}")
     q = zero_matrix(SEQ_LEN, HEAD_DIM)
     k = random_q88_matrix(SEQ_LEN, HEAD_DIM, seed_base + 11, amplitude=64)
     v = random_q88_matrix(SEQ_LEN, HEAD_DIM, seed_base + 12, amplitude=64)
     q_tile = random_q88_matrix(16, HEAD_DIM, seed_base + 10, amplitude=64)
     for row in range(16):
-        q[row] = q_tile[row]
+        q[q_row_start + row] = q_tile[row]
     return q, k, v
 
 

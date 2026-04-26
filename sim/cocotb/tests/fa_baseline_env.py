@@ -149,16 +149,27 @@ def random_q88_matrix(rows: int, cols: int, seed: int, amplitude: int = 96) -> L
     return result
 
 
-def attention_golden(
+def attention_golden_rows(
     q_matrix: Sequence[Sequence[float]],
     k_matrix: Sequence[Sequence[float]],
     v_matrix: Sequence[Sequence[float]],
     *,
     scale: float,
     causal: bool,
+    q_start: int = 0,
+    q_rows: int | None = None,
 ) -> List[List[float]]:
-    out = zero_matrix(SEQ_LEN, HEAD_DIM)
-    for qi in range(SEQ_LEN):
+    if q_start < 0 or q_start >= SEQ_LEN:
+        raise ValueError(f"expected 0 <= q_start < {SEQ_LEN}, got {q_start}")
+    if q_rows is None:
+        q_end = SEQ_LEN
+    else:
+        if q_rows < 0:
+            raise ValueError(f"expected q_rows >= 0, got {q_rows}")
+        q_end = min(q_start + q_rows, SEQ_LEN)
+
+    out = zero_matrix(q_end - q_start, HEAD_DIM)
+    for out_row, qi in enumerate(range(q_start, q_end)):
         scores: List[float] = []
         for kj in range(SEQ_LEN):
             if causal and kj > qi:
@@ -185,8 +196,27 @@ def attention_golden(
             if prob == 0.0:
                 continue
             for dim in range(HEAD_DIM):
-                out[qi][dim] += prob * v_matrix[kj][dim]
+                out[out_row][dim] += prob * v_matrix[kj][dim]
     return out
+
+
+def attention_golden(
+    q_matrix: Sequence[Sequence[float]],
+    k_matrix: Sequence[Sequence[float]],
+    v_matrix: Sequence[Sequence[float]],
+    *,
+    scale: float,
+    causal: bool,
+) -> List[List[float]]:
+    return attention_golden_rows(
+        q_matrix,
+        k_matrix,
+        v_matrix,
+        scale=scale,
+        causal=causal,
+        q_start=0,
+        q_rows=SEQ_LEN,
+    )
 
 
 def matrix_error(actual: Sequence[Sequence[float]], expected: Sequence[Sequence[float]]) -> tuple[float, float]:

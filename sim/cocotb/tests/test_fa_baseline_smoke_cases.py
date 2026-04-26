@@ -4,7 +4,7 @@ import cocotb
 from cocotb.triggers import ClockCycles
 
 from tests.fa_baseline_case_utils import assert_matrix_close, make_single_tile_case
-from tests.fa_baseline_env import ADDR_RD_BYTES, ADDR_STATUS, ADDR_WR_BYTES, STATUS_DONE, STATUS_ERROR, attention_golden, create_env
+from tests.fa_baseline_env import ADDR_RD_BYTES, ADDR_STATUS, ADDR_WR_BYTES, STATUS_DONE, STATUS_ERROR, attention_golden_rows, create_env
 
 
 @cocotb.test()
@@ -23,8 +23,8 @@ async def test_fa_smoke_basic_run_and_counters(dut) -> None:
         assert await env.axil_read(ADDR_RD_BYTES) > 0
         assert await env.axil_read(ADDR_WR_BYTES) > 0
         actual = env.read_output_matrix()
-        expected = attention_golden(q, k, v, scale=0.125, causal=False)
-        assert_matrix_close(actual, expected, rows=16)
+        expected = attention_golden_rows(q, k, v, scale=0.125, causal=False, q_start=0, q_rows=16)
+        assert_matrix_close(actual[:16], expected)
     finally:
         env.shutdown()
 

@@ -16,8 +16,6 @@ from tests.fa_baseline_env import (
     CTRL_START,
     STATUS_DONE,
     STATUS_ERROR,
-    attention_golden,
-    matrix_error,
     random_q88_matrix,
 )
 
@@ -138,26 +136,5 @@ async def test_fa_baseline_axi_alignment_error(dut) -> None:
         assert status & STATUS_ERROR
         assert not env.rd_bursts
         assert not env.wr_bursts
-    finally:
-        env.shutdown()
-
-
-@cocotb.test()
-async def test_fa_baseline_axi_full_causal_end_to_end(dut) -> None:
-    env = await create_env(dut)
-    try:
-        await env.reset()
-        q = random_q88_matrix(256, 64, 761, amplitude=40)
-        k = random_q88_matrix(256, 64, 762, amplitude=40)
-        v = random_q88_matrix(256, 64, 763, amplitude=40)
-        env.load_qkv(q, k, v)
-        await env.start_run(causal=True)
-        status = await env.wait_done()
-        assert (status & STATUS_ERROR) == 0
-        actual = env.read_output_matrix()
-        expected = attention_golden(q, k, v, scale=(1.0 / (64 ** 0.5)), causal=True)
-        mean_err, max_err = matrix_error(actual, expected)
-        assert mean_err <= 0.03, f"mean_err={mean_err}"
-        assert max_err <= 0.10, f"max_err={max_err}"
     finally:
         env.shutdown()

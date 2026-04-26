@@ -34,7 +34,7 @@ LOG_ROOT = REPO_ROOT / "sim" / "cocotb" / "logs"
 COVERAGE_ROOT = REPO_ROOT / "sim" / "cocotb" / "coverage"
 BUILD_METADATA_NAME = ".runner_build_metadata.json"
 DEFAULT_TIMESCALE = ("1ns", "1ps")
-FA_DEFAULT_VERILATOR_SUITES = {"fa_baseline", "fa_baseline_axi"}
+FA_DEFAULT_VERILATOR_SUITES = {"fa_baseline", "fa_baseline_axi", "fa_full", "fa_full_axi"}
 
 DEFAULT_SEED = 10
 DEFAULT_A_BANK_DEPTH = 16
@@ -155,7 +155,7 @@ class RunOptions:
 
 def parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(description="Run PT cocotb blackbox regressions")
-	parser.add_argument("suite", choices=["smoke", "full", "randomized", "extended", "ci", "stress", "soak", "coverage", "perf", "axil", "axil_perf", "shell_sim", "fa_baseline", "fa_baseline_axi"])
+	parser.add_argument("suite", choices=["smoke", "full", "randomized", "extended", "ci", "stress", "soak", "coverage", "perf", "axil", "axil_perf", "shell_sim", "fa_baseline", "fa_full", "fa_baseline_axi", "fa_full_axi"])
 	parser.add_argument("--sim", default=os.getenv("SIM"))
 	parser.add_argument("--target", default=os.getenv("TARGET", DEFAULT_RUN_TARGET), help="Regression target: pt or pt_dma_top")
 	parser.add_argument("--seed", type=int, default=None, help="Override random seed for the selected suite")
@@ -721,6 +721,31 @@ def suite_configs(suite: str, seed_override: Optional[int], target: str) -> List
 			)
 		]
 
+	if suite == "fa_full":
+		return [
+			RunConfig(
+				name="fa_full_sim",
+				build_name="fa_baseline_sim",
+				x_dim=16,
+				y_dim=16,
+				test_modules=[
+					"tests.test_fa_baseline_smoke_cases",
+					"tests.test_fa_baseline_numeric_cases",
+					"tests.test_fa_baseline_full_numeric_cases",
+					"tests.test_fa_baseline_csr_cases",
+					"tests.test_fa_baseline_protocol_cases",
+					"tests.test_fa_baseline_protocol_edge_cases",
+					"tests.test_fa_baseline_state_cases",
+					"tests.test_fa_baseline_backpressure_cases",
+					"tests.test_fa_baseline",
+					"tests.test_fa_baseline_full_cases",
+				],
+				hdl_toplevel="FA_TOP_BASELINE_SIM",
+				seeds=[default_seed],
+				rtl_params={},
+			)
+		]
+
 	if suite == "fa_baseline_axi":
 		return [
 			RunConfig(
@@ -729,6 +754,20 @@ def suite_configs(suite: str, seed_override: Optional[int], target: str) -> List
 				x_dim=16,
 				y_dim=16,
 				test_modules=["tests.test_fa_baseline_axi"],
+				hdl_toplevel="FA_TOP_BASELINE",
+				seeds=[default_seed],
+				rtl_params={},
+			)
+		]
+
+	if suite == "fa_full_axi":
+		return [
+			RunConfig(
+				name="fa_full_axi",
+				build_name="fa_baseline_axi",
+				x_dim=16,
+				y_dim=16,
+				test_modules=["tests.test_fa_baseline_axi", "tests.test_fa_baseline_axi_full_cases"],
 				hdl_toplevel="FA_TOP_BASELINE",
 				seeds=[default_seed],
 				rtl_params={},

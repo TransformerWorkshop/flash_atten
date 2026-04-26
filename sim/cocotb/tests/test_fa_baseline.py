@@ -24,6 +24,7 @@ from tests.fa_baseline_env import (
     SEQ_LEN,
     SequencePattern,
     attention_golden,
+    attention_golden_rows,
     create_env,
     matrix_error,
     pack_q88_row_major_words,
@@ -56,12 +57,18 @@ def make_single_tile_case(seed_base: int):
 
 
 def make_single_q_full_kv_case(seed_base: int):
+    return make_single_q_full_kv_case_at_row(seed_base, 0)
+
+
+def make_single_q_full_kv_case_at_row(seed_base: int, q_row_start: int):
+    if q_row_start < 0 or q_row_start + 16 > SEQ_LEN:
+        raise ValueError(f"expected 0 <= q_row_start <= {SEQ_LEN - 16}, got {q_row_start}")
     q = zero_matrix(SEQ_LEN, HEAD_DIM)
     k = random_q88_matrix(SEQ_LEN, HEAD_DIM, seed_base + 11, amplitude=64)
     v = random_q88_matrix(SEQ_LEN, HEAD_DIM, seed_base + 12, amplitude=64)
     q_tile = random_q88_matrix(16, HEAD_DIM, seed_base + 10, amplitude=64)
     for row in range(16):
-        q[row] = q_tile[row]
+        q[q_row_start + row] = q_tile[row]
     return q, k, v
 
 
@@ -431,7 +438,7 @@ async def test_fa_baseline_single_q_single_kv_noncausal(dut) -> None:
         await env.start_run(causal=False)
         await env.wait_done()
         actual = env.read_output_matrix()
-        expected = attention_golden(q, k, v, scale=0.125, causal=False)
+        expected = attention_golden_rows(q, k, v, scale=0.125, causal=False, q_start=0, q_rows=16)
         mean_err, max_err = matrix_error(first_rows(actual, 16), first_rows(expected, 16))
         assert mean_err <= 0.03, f"mean_err={mean_err}"
         assert max_err <= 0.10, f"max_err={max_err}"
@@ -958,67 +965,17 @@ async def test_fa_baseline_single_q_full_kv_causal_with_backpressure(dut) -> Non
             desc_ready=SequencePattern([1, 0, 1, 1]),
             data_ready=SequencePattern([1, 0, 1, 1, 0, 1]),
         )
+        q_row_start = 0
         q, k, v = make_single_q_full_kv_case(300)
         env.load_qkv(q, k, v)
         await env.start_run(causal=True)
         await env.wait_done()
         actual = env.read_output_matrix()
-        expected = attention_golden(q, k, v, scale=0.125, causal=True)
-        mean_err, max_err = matrix_error(first_rows(actual, 16), first_rows(expected, 16))
-        assert mean_err <= 0.03, f"mean_err={mean_err}"
-        assert max_err <= 0.10, f"max_err={max_err}"
-    finally:
-        env.shutdown()
-
-
-@cocotb.test()
-async def test_fa_baseline_full_causal_end_to_end(dut) -> None:
-    env = await create_env(dut)
-    try:
-        await env.reset()
-        q = random_q88_matrix(SEQ_LEN, HEAD_DIM, 401, amplitude=48)
-        k = random_q88_matrix(SEQ_LEN, HEAD_DIM, 402, amplitude=48)
-        v = random_q88_matrix(SEQ_LEN, HEAD_DIM, 403, amplitude=48)
-        env.load_qkv(q, k, v)
-        await env.start_run(causal=True)
-        await env.wait_done()
-        actual = env.read_output_matrix()
-        expected = attention_golden(q, k, v, scale=0.125, causal=True)
-        mean_err, max_err = matrix_error(actual, expected)
-        assert mean_err <= 0.03, f"mean_err={mean_err}"
-        assert max_err <= 0.10, f"max_err={max_err}"
-    finally:
-        env.shutdown()
-
-
-@cocotb.test()
-async def test_fa_baseline_full_noncausal_and_soft_reset(dut) -> None:
-    env = await create_env(dut)
-    try:
-        await env.reset()
-        await env.program_common_regs(causal=False)
-        await env.soft_reset()
-        status = await env.axil_read(ADDR_STATUS)
-        assert (status & 0x7) == 0
-
-        q = random_q88_matrix(SEQ_LEN, HEAD_DIM, 501, amplitude=40)
-        k = random_q88_matrix(SEQ_LEN, HEAD_DIM, 502, amplitude=40)
-        v = random_q88_matrix(SEQ_LEN, HEAD_DIM, 503, amplitude=40)
-        env.load_qkv(q, k, v)
-
-        await env.start_run(causal=False)
-        await env.wait_busy(True)
-        await ClockCycles(dut.clk, 64)
-        await env.soft_reset()
-        await env.wait_busy(False)
-        status = await env.axil_read(ADDR_STATUS)
-        assert (status & 0x7) == 0
-
-        await env.start_run(causal=False)
-        await env.wait_done()
-        actual = env.read_output_matrix()
-        expected = attention_golden(q, k, v, scale=0.125, causal=False)
-        mean_err, max_err = matrix_error(actual, expected)
+        expected = attention_golden_rows(q, k, v, scale=0.125, causal=True, q_start=q_row_start, q_rows=16)
+        mean_err, max_err = matrix_error(
+            actual[q_row_start : q_row_start + 16],
+            expected,
+        )
         assert mean_err <= 0.03, f"mean_err={mean_err}"
         assert max_err <= 0.10, f"max_err={max_err}"
     finally:
