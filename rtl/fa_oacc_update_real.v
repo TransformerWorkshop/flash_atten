@@ -21,13 +21,11 @@ module FA_OACC_UPDATE_REAL (
     localparam [2:0] ST_IDLE      = 3'd0;
     localparam [2:0] ST_ROW_REQ   = 3'd1;
     localparam [2:0] ST_ROW_WAIT  = 3'd2;
-    localparam [2:0] ST_ROW_CALC  = 3'd3;
-    localparam [2:0] ST_ROW_WRITE = 3'd4;
-    localparam [2:0] ST_DONE      = 3'd5;
+    localparam [2:0] ST_ROW_WRITE = 3'd3;
+    localparam [2:0] ST_DONE      = 3'd4;
 
     reg [2:0]   state_r;
     reg [3:0]   row_idx_r;
-    reg [1023:0] row_old_data_r;
     reg [1023:0] row_new_data_w;
     reg signed [31:0] scale_raw_s;
     integer word_i;
@@ -64,8 +62,8 @@ module FA_OACC_UPDATE_REAL (
         row_new_data_w = 1024'd0;
         scale_raw_s = rescale_vec_flat[(row_idx_r * 32) +: 32];
         for (word_i = 0; word_i < 32; word_i = word_i + 1) begin
-            old_lo_s = row_old_data_r[(word_i * 32) +: 16];
-            old_hi_s = row_old_data_r[(word_i * 32) + 16 +: 16];
+            old_lo_s = oacc_row_rd_data[(word_i * 32) +: 16];
+            old_hi_s = oacc_row_rd_data[(word_i * 32) + 16 +: 16];
             partial_word_s = partial_o_tile_flat[(((row_idx_r * 32) + word_i) * 32) +: 32];
             part_lo_s = partial_word_s[15:0];
             part_hi_s = partial_word_s[31:16];
@@ -98,7 +96,6 @@ module FA_OACC_UPDATE_REAL (
         if (!rstn) begin
             state_r <= ST_IDLE;
             row_idx_r <= 4'd0;
-            row_old_data_r <= 1024'd0;
             oacc_row_rd_en <= 1'b0;
             oacc_row_rd_addr <= 4'd0;
             oacc_row_wr_en <= 1'b0;
@@ -109,7 +106,6 @@ module FA_OACC_UPDATE_REAL (
         end else if (clear) begin
             state_r <= ST_IDLE;
             row_idx_r <= 4'd0;
-            row_old_data_r <= 1024'd0;
             oacc_row_rd_en <= 1'b0;
             oacc_row_rd_addr <= 4'd0;
             oacc_row_wr_en <= 1'b0;
@@ -144,19 +140,13 @@ module FA_OACC_UPDATE_REAL (
                 end
                 ST_ROW_WAIT: begin
                     if (oacc_row_rd_valid) begin
-                        row_old_data_r <= oacc_row_rd_data;
-                        state_r <= ST_ROW_CALC;
+                        oacc_row_wr_addr <= row_idx_r;
+                        oacc_row_wr_data <= row_new_data_w;
+                        state_r <= ST_ROW_WRITE;
                     end
-                end
-                ST_ROW_CALC: begin
-                    oacc_row_wr_addr <= row_idx_r;
-                    oacc_row_wr_data <= row_new_data_w;
-                    state_r <= ST_ROW_WRITE;
                 end
                 ST_ROW_WRITE: begin
                     oacc_row_wr_en <= 1'b1;
-                    oacc_row_wr_addr <= row_idx_r;
-                    oacc_row_wr_data <= row_new_data_w;
                     if (row_idx_r == 4'd15) begin
                         resp_valid <= 1'b1;
                         state_r <= ST_DONE;
