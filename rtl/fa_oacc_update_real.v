@@ -56,6 +56,27 @@ module FA_OACC_UPDATE_REAL (
         end
     endfunction
 
+    function automatic signed [31:0] q24_24_to_q8_8_rn_sat;
+        input signed [63:0] value;
+        reg signed [63:0] rounded;
+        reg signed [63:0] shifted;
+        begin
+            if (value >= 0) begin
+                rounded = value + 64'sd32768;
+            end else begin
+                rounded = value - 64'sd32768;
+            end
+            shifted = rounded >>> 16;
+            if (shifted > 64'sh0000_0000_7FFF_FFFF) begin
+                q24_24_to_q8_8_rn_sat = 32'sh7FFF_FFFF;
+            end else if (shifted < -64'sh0000_0000_8000_0000) begin
+                q24_24_to_q8_8_rn_sat = -32'sh8000_0000;
+            end else begin
+                q24_24_to_q8_8_rn_sat = shifted[31:0];
+            end
+        end
+    endfunction
+
     assign req_ready = (state_r == ST_IDLE) && !resp_valid;
 
     always @(*) begin
@@ -68,22 +89,14 @@ module FA_OACC_UPDATE_REAL (
             part_lo_s = partial_word_s[15:0];
             part_hi_s = partial_word_s[31:16];
 
-            scaled_lo_q24_24_s = $signed(old_lo_s) * $signed(scale_raw_s);
-            scaled_hi_q24_24_s = $signed(old_hi_s) * $signed(scale_raw_s);
+            scaled_lo_q24_24_s = $signed({{16{old_lo_s[15]}}, old_lo_s}) * scale_raw_s;
+            scaled_hi_q24_24_s = $signed({{16{old_hi_s[15]}}, old_hi_s}) * scale_raw_s;
 
-            if (scaled_lo_q24_24_s >= 0) begin
-                scaled_lo_q8_8_s = (scaled_lo_q24_24_s + 64'sd32768) >>> 16;
-            end else begin
-                scaled_lo_q8_8_s = (scaled_lo_q24_24_s - 64'sd32768) >>> 16;
-            end
-            if (scaled_hi_q24_24_s >= 0) begin
-                scaled_hi_q8_8_s = (scaled_hi_q24_24_s + 64'sd32768) >>> 16;
-            end else begin
-                scaled_hi_q8_8_s = (scaled_hi_q24_24_s - 64'sd32768) >>> 16;
-            end
+            scaled_lo_q8_8_s = q24_24_to_q8_8_rn_sat(scaled_lo_q24_24_s);
+            scaled_hi_q8_8_s = q24_24_to_q8_8_rn_sat(scaled_hi_q24_24_s);
 
-            new_lo_s = scaled_lo_q8_8_s + $signed(part_lo_s);
-            new_hi_s = scaled_hi_q8_8_s + $signed(part_hi_s);
+            new_lo_s = scaled_lo_q8_8_s + {{16{part_lo_s[15]}}, part_lo_s};
+            new_hi_s = scaled_hi_q8_8_s + {{16{part_hi_s[15]}}, part_hi_s};
             clamped_lo_s = clamp_q88_from_int(new_lo_s);
             clamped_hi_s = clamp_q88_from_int(new_hi_s);
 
