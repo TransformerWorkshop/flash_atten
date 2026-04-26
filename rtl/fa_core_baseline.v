@@ -37,10 +37,11 @@ module FA_CORE_BASELINE #(
     output wire [63:0]  rd_desc_addr,
     output wire [15:0]  rd_desc_words,
     output wire [3:0]   rd_desc_tag,
-    input  wire         rd_data_valid,
-    output wire         rd_data_ready,
-    input  wire [31:0]  rd_data,
-    input  wire         rd_data_last,
+    input  wire         rd_beat_valid,
+    output wire         rd_beat_ready,
+    input  wire [127:0] rd_beat_data,
+    input  wire [2:0]   rd_beat_word_count,
+    input  wire         rd_beat_last,
     output wire         wr_desc_valid,
     input  wire         wr_desc_ready,
     output wire [63:0]  wr_desc_addr,
@@ -84,6 +85,8 @@ module FA_CORE_BASELINE #(
 
     wire [3:0] sched_q_blk_idx;
     wire [3:0] sched_kv_blk_idx;
+    wire [3:0] sched_load_q_blk_idx;
+    wire [3:0] sched_load_kv_blk_idx;
     wire       load_req_valid;
     wire       load_req_ready;
     wire [1:0] load_req_kind;
@@ -114,21 +117,16 @@ module FA_CORE_BASELINE #(
     wire       store_done_pulse;
     wire       run_complete_pulse;
 
-    wire       qkv_wr_valid;
-    wire [1:0] qkv_wr_kind;
-    wire [3:0] qkv_wr_row;
-    wire [4:0] qkv_wr_lane;
-    wire [31:0] qkv_wr_word;
-    wire       v_pv_wr_valid;
-    wire [4:0] v_pv_wr_addr;
-    wire       v_pv_lane0_valid;
-    wire [3:0] v_pv_lane0_idx;
-    wire       v_pv_lane0_hi;
-    wire [15:0] v_pv_lane0_data;
-    wire       v_pv_lane1_valid;
-    wire [3:0] v_pv_lane1_idx;
-    wire       v_pv_lane1_hi;
-    wire [15:0] v_pv_lane1_data;
+    wire        qkv_wr_valid;
+    wire [1:0]  qkv_wr_kind;
+    wire [3:0]  qkv_wr_row_idx;
+    wire [2:0]  qkv_wr_local_addr;
+    wire [3:0]  qkv_wr_word_mask;
+    wire [127:0] qkv_wr_data;
+    wire        v_pv_src_valid;
+    wire [8:0]  v_pv_src_word_idx_base;
+    wire [3:0]  v_pv_src_word_mask;
+    wire [127:0] v_pv_src_data;
     wire       rd_error_pulse;
 
     wire         score_resp_valid;
@@ -209,6 +207,8 @@ module FA_CORE_BASELINE #(
         .run_start_pulse(start_pulse),
         .q_blk_idx(sched_q_blk_idx),
         .kv_blk_idx(sched_kv_blk_idx),
+        .load_q_blk_idx(sched_load_q_blk_idx),
+        .load_kv_blk_idx(sched_load_kv_blk_idx),
         .load_req_valid(load_req_valid),
         .load_req_ready(load_req_ready),
         .load_req_kind(load_req_kind),
@@ -247,8 +247,8 @@ module FA_CORE_BASELINE #(
         .req_valid(load_req_valid),
         .req_ready(load_req_ready),
         .req_kind(load_req_kind),
-        .req_q_blk(sched_q_blk_idx),
-        .req_kv_blk(sched_kv_blk_idx),
+        .req_q_blk(sched_load_q_blk_idx),
+        .req_kv_blk(sched_load_kv_blk_idx),
         .q_base(q_base),
         .k_base(k_base),
         .v_base(v_base),
@@ -258,25 +258,21 @@ module FA_CORE_BASELINE #(
         .rd_desc_addr(rd_desc_addr),
         .rd_desc_words(rd_desc_words),
         .rd_desc_tag(rd_desc_tag),
-        .rd_data_valid(rd_data_valid),
-        .rd_data_ready(rd_data_ready),
-        .rd_data(rd_data),
-        .rd_data_last(rd_data_last),
+        .rd_beat_valid(rd_beat_valid),
+        .rd_beat_ready(rd_beat_ready),
+        .rd_beat_data(rd_beat_data),
+        .rd_beat_word_count(rd_beat_word_count),
+        .rd_beat_last(rd_beat_last),
         .qkv_wr_valid(qkv_wr_valid),
         .qkv_wr_kind(qkv_wr_kind),
-        .qkv_wr_row(qkv_wr_row),
-        .qkv_wr_lane(qkv_wr_lane),
-        .qkv_wr_word(qkv_wr_word),
-        .v_pv_wr_valid(v_pv_wr_valid),
-        .v_pv_wr_addr(v_pv_wr_addr),
-        .v_pv_lane0_valid(v_pv_lane0_valid),
-        .v_pv_lane0_idx(v_pv_lane0_idx),
-        .v_pv_lane0_hi(v_pv_lane0_hi),
-        .v_pv_lane0_data(v_pv_lane0_data),
-        .v_pv_lane1_valid(v_pv_lane1_valid),
-        .v_pv_lane1_idx(v_pv_lane1_idx),
-        .v_pv_lane1_hi(v_pv_lane1_hi),
-        .v_pv_lane1_data(v_pv_lane1_data),
+        .qkv_wr_row_idx(qkv_wr_row_idx),
+        .qkv_wr_local_addr(qkv_wr_local_addr),
+        .qkv_wr_word_mask(qkv_wr_word_mask),
+        .qkv_wr_data(qkv_wr_data),
+        .v_pv_src_valid(v_pv_src_valid),
+        .v_pv_src_word_idx_base(v_pv_src_word_idx_base),
+        .v_pv_src_word_mask(v_pv_src_word_mask),
+        .v_pv_src_data(v_pv_src_data),
         .done_pulse(load_done_pulse),
         .error_pulse(rd_error_pulse)
     );
@@ -285,10 +281,11 @@ module FA_CORE_BASELINE #(
         .clk(clk),
         .rstn(rstn),
         .clear(runtime_clear),
-        .word_write_valid(qkv_wr_valid && (qkv_wr_kind == LOAD_KIND_Q)),
-        .word_write_row(qkv_wr_row),
-        .word_write_lane(qkv_wr_lane),
-        .word_write_data(qkv_wr_word),
+        .beat_write_valid(qkv_wr_valid && (qkv_wr_kind == LOAD_KIND_Q)),
+        .beat_write_row_idx(qkv_wr_row_idx),
+        .beat_write_local_addr(qkv_wr_local_addr),
+        .beat_write_word_mask(qkv_wr_word_mask),
+        .beat_write_data(qkv_wr_data),
         .qk_rd_en(q_qk_rd_en),
         .qk_rd_addr(q_qk_rd_addr),
         .qk_rd_valid(q_qk_rd_valid),
@@ -300,10 +297,11 @@ module FA_CORE_BASELINE #(
         .clk(clk),
         .rstn(rstn),
         .clear(runtime_clear),
-        .word_write_valid(qkv_wr_valid && (qkv_wr_kind == LOAD_KIND_K)),
-        .word_write_row(qkv_wr_row),
-        .word_write_lane(qkv_wr_lane),
-        .word_write_data(qkv_wr_word),
+        .beat_write_valid(qkv_wr_valid && (qkv_wr_kind == LOAD_KIND_K)),
+        .beat_write_row_idx(qkv_wr_row_idx),
+        .beat_write_local_addr(qkv_wr_local_addr),
+        .beat_write_word_mask(qkv_wr_word_mask),
+        .beat_write_data(qkv_wr_data),
         .qk_rd_en(k_qk_rd_en),
         .qk_rd_addr(k_qk_rd_addr),
         .qk_rd_valid(k_qk_rd_valid),
@@ -315,10 +313,11 @@ module FA_CORE_BASELINE #(
         .clk(clk),
         .rstn(rstn),
         .clear(runtime_clear),
-        .word_write_valid(qkv_wr_valid && (qkv_wr_kind == LOAD_KIND_V)),
-        .word_write_row(qkv_wr_row),
-        .word_write_lane(qkv_wr_lane),
-        .word_write_data(qkv_wr_word),
+        .beat_write_valid(qkv_wr_valid && (qkv_wr_kind == LOAD_KIND_V)),
+        .beat_write_row_idx(qkv_wr_row_idx),
+        .beat_write_local_addr(qkv_wr_local_addr),
+        .beat_write_word_mask(qkv_wr_word_mask),
+        .beat_write_data(qkv_wr_data),
         .tile_flat(v_tile_flat)
     );
 
@@ -326,16 +325,10 @@ module FA_CORE_BASELINE #(
         .clk(clk),
         .rstn(rstn),
         .clear(runtime_clear),
-        .wr_valid(v_pv_wr_valid),
-        .wr_addr(v_pv_wr_addr),
-        .wr_lane0_valid(v_pv_lane0_valid),
-        .wr_lane0_idx(v_pv_lane0_idx),
-        .wr_lane0_hi(v_pv_lane0_hi),
-        .wr_lane0_data(v_pv_lane0_data),
-        .wr_lane1_valid(v_pv_lane1_valid),
-        .wr_lane1_idx(v_pv_lane1_idx),
-        .wr_lane1_hi(v_pv_lane1_hi),
-        .wr_lane1_data(v_pv_lane1_data),
+        .src_wr_valid(v_pv_src_valid),
+        .src_word_idx_base(v_pv_src_word_idx_base),
+        .src_word_mask(v_pv_src_word_mask),
+        .src_data(v_pv_src_data),
         .rd_en(v_pv_rd_en),
         .rd_addr(v_pv_rd_addr),
         .rd_valid(v_pv_rd_valid),
@@ -532,8 +525,8 @@ module FA_CORE_BASELINE #(
             rd_bytes_r <= 32'd0;
             wr_bytes_r <= 32'd0;
         end else begin
-            if (rd_data_valid && rd_data_ready) begin
-                rd_bytes_r <= rd_bytes_r + 32'd4;
+            if (rd_beat_valid && rd_beat_ready) begin
+                rd_bytes_r <= rd_bytes_r + ({29'd0, rd_beat_word_count} << 2);
             end
             if (wr_data_valid && wr_data_ready) begin
                 wr_bytes_r <= wr_bytes_r + 32'd4;

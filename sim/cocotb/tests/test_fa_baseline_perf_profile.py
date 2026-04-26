@@ -28,6 +28,11 @@ ROW_RELATION_COUNTS = {
     "diagonal": 16,
     "history": 120,
 }
+FIRST_ITERATION_RELATION_COUNTS = {
+    "future_masked": 0,
+    "diagonal": 1,
+    "history": 15,
+}
 REQUIRED_CONST_STAGES = [
     "q_load",
     "k_load",
@@ -63,7 +68,7 @@ class SampleMonitor:
         self.cycle = 0
         self.samples: dict[str, list[dict[str, Any]]] = {}
         self._active: dict[str, tuple[int, dict[str, Any]]] = {}
-        self._active_load_stage: str | None = None
+        self._active_load_stages: list[str] = []
         self._active_store = False
         self._stop = False
 
@@ -105,7 +110,7 @@ class SampleMonitor:
             if value_to_int(core.u_rd_dma.req_valid) and value_to_int(core.u_rd_dma.req_ready):
                 load_kind = value_to_int(core.u_rd_dma.req_kind)
                 stage = {0: "q_load", 1: "k_load", 2: "v_load"}[load_kind]
-                self._active_load_stage = stage
+                self._active_load_stages.append(stage)
                 self._begin(stage)
 
             if value_to_int(core.u_row_state.init_valid) and value_to_int(core.u_row_state.init_ready):
@@ -141,10 +146,9 @@ class SampleMonitor:
                 self._begin("store")
 
             if value_to_int(core.u_rd_dma.done_pulse):
-                if self._active_load_stage is None:
+                if not self._active_load_stages:
                     raise AssertionError("rd_dma finished without active stage")
-                self._finish(self._active_load_stage)
-                self._active_load_stage = None
+                self._finish(self._active_load_stages.pop(0))
             if value_to_int(core.u_row_state.init_done_pulse):
                 self._finish("row_init")
             if value_to_int(core.u_oacc_buf.clear_done_pulse):
@@ -282,15 +286,22 @@ def build_report(samples: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
     scheduler_overlap_breakdown: dict[str, dict[str, Any]] = {}
     for relation, count in ROW_RELATION_COUNTS.items():
         row_update_sel = int(row_update_cycles[relation]["selected_cycles"])
-        overlapped_cycles = max(v_load_cycles, qk_cycles + score_cycles + row_update_sel)
-        kv_iteration_cycles = k_load_cycles + overlapped_cycles + pv_cycles + oacc_update_cycles
+        compute_before_pv_cycles = max(v_load_cycles, qk_cycles + score_cycles + row_update_sel)
+        first_iteration_count = FIRST_ITERATION_RELATION_COUNTS[relation]
+        steady_iteration_count = count - first_iteration_count
+        first_iteration_cycles = k_load_cycles + compute_before_pv_cycles + pv_cycles + oacc_update_cycles
+        steady_iteration_cycles = compute_before_pv_cycles + pv_cycles + oacc_update_cycles
         scheduler_overlap_breakdown[relation] = {
             "count": count,
-            "per_iteration_cycles": kv_iteration_cycles,
+            "first_iteration_count": first_iteration_count,
+            "steady_iteration_count": steady_iteration_count,
+            "first_iteration_cycles": first_iteration_cycles,
+            "steady_iteration_cycles": steady_iteration_cycles,
             "hidden_v_load_cycles": max(0, v_load_cycles - (qk_cycles + score_cycles + row_update_sel)),
-            "total_cycles": kv_iteration_cycles * count,
+            "hidden_k_prefetch_cycles": k_load_cycles if steady_iteration_count else 0,
+            "total_cycles": (first_iteration_cycles * first_iteration_count) + (steady_iteration_cycles * steady_iteration_count),
         }
-        scheduler_overlap_total_cycles += kv_iteration_cycles * count
+        scheduler_overlap_total_cycles += scheduler_overlap_breakdown[relation]["total_cycles"]
 
     return {
         "method": "sampled_stage_latency_plus_scheduler_count_extrapolation",
@@ -306,7 +317,7 @@ def build_report(samples: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
         "extrapolated_row_state_breakdown": row_state_breakdown,
         "extrapolated_p_load_breakdown": p_load_breakdown,
         "extrapolated_total_cycles": serial_total_cycles,
-        "scheduler_overlap_model": "v_load_overlapped_with_qk_score_row_update",
+        "scheduler_overlap_model": "v_load_overlapped_with_qk_score_row_update_and_next_k_prefetched_after_qk",
         "scheduler_overlap_breakdown": scheduler_overlap_breakdown,
         "scheduler_overlap_total_cycles": scheduler_overlap_total_cycles,
         "scheduler_overlap_savings_cycles": serial_total_cycles - scheduler_overlap_total_cycles,
