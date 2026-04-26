@@ -1,24 +1,27 @@
-module FA_Q_BUF_REAL (
-    input  wire          clk,
-    input  wire          rstn,
-    input  wire          clear,
-    input  wire          word_write_valid,
-    input  wire [3:0]    word_write_row,
-    input  wire [4:0]    word_write_lane,
-    input  wire [31:0]   word_write_data,
-    input  wire          qk_rd_en,
-    input  wire [4:0]    qk_rd_addr,
-    output reg           qk_rd_valid,
-    output wire [511:0]  qk_rd_data,
+module FA_BANKED_TILE_BUF_REAL (
+    input  wire           clk,
+    input  wire           rstn,
+    input  wire           clear,
+    input  wire           beat_write_valid,
+    input  wire [3:0]     beat_write_row_idx,
+    input  wire [2:0]     beat_write_local_addr,
+    input  wire [3:0]     beat_write_word_mask,
+    input  wire [127:0]   beat_write_data,
+    input  wire           rd_en,
+    input  wire [4:0]     rd_addr,
+    output reg            rd_valid,
+    output reg  [511:0]   rd_data,
     output wire [16383:0] tile_flat
 );
 
     reg [31:0] shadow_words_r [0:511];
-    wire [511:0] bank_rd_data_w;
-    reg [511:0] bank_wr_data_r;
-    reg [15:0]  bank_wr_mask_r;
+    wire [511:0] bank_rd_data_w [0:3];
+    reg [511:0] bank_wr_data_r [0:3];
+    reg [15:0]  bank_wr_mask_r [0:3];
+    reg [1:0]   rd_bank_sel_r;
     integer wi;
     integer bi;
+    integer bank_i;
 
     generate
         genvar gi;
@@ -27,129 +30,142 @@ module FA_Q_BUF_REAL (
         end
     endgenerate
 
-    PT_MEM_BANK #(
-        .DATA_WIDTH(32),
-        .LANES(16),
-        .DEPTH(32)
-    ) u_qk_bank (
-        .clk(clk),
-        .rstn(rstn),
-        .clear(clear),
-        .wr_en(word_write_valid),
-        .wr_buf(1'b0),
-        .wr_mask(bank_wr_mask_r),
-        .wr_addr(word_write_lane),
-        .wr_data(bank_wr_data_r),
-        .rd_en(qk_rd_en),
-        .rd_buf(1'b0),
-        .rd_addr(qk_rd_addr),
-        .rd_data(bank_rd_data_w)
-    );
+    generate
+        genvar gb;
+        for (gb = 0; gb < 4; gb = gb + 1) begin : gen_bank
+            PT_MEM_BANK #(
+                .DATA_WIDTH(32),
+                .LANES(16),
+                .DEPTH(8)
+            ) u_bank (
+                .clk(clk),
+                .rstn(rstn),
+                .clear(clear),
+                .wr_en(beat_write_valid && beat_write_word_mask[gb]),
+                .wr_buf(1'b0),
+                .wr_mask(bank_wr_mask_r[gb]),
+                .wr_addr(beat_write_local_addr),
+                .wr_data(bank_wr_data_r[gb]),
+                .rd_en(rd_en && (rd_addr[1:0] == gb[1:0])),
+                .rd_buf(1'b0),
+                .rd_addr(rd_addr[4:2]),
+                .rd_data(bank_rd_data_w[gb])
+            );
+        end
+    endgenerate
 
     always @(*) begin
-        bank_wr_data_r = 512'd0;
-        bank_wr_mask_r = 16'd0;
-        if (word_write_valid) begin
-            bank_wr_mask_r[word_write_row] = 1'b1;
-            bank_wr_data_r[(word_write_row * 32) +: 32] = word_write_data;
+        for (bank_i = 0; bank_i < 4; bank_i = bank_i + 1) begin
+            bank_wr_data_r[bank_i] = 512'd0;
+            bank_wr_mask_r[bank_i] = 16'd0;
+            if (beat_write_valid && beat_write_word_mask[bank_i]) begin
+                bank_wr_mask_r[bank_i][beat_write_row_idx] = 1'b1;
+                bank_wr_data_r[bank_i][(beat_write_row_idx * 32) +: 32] = beat_write_data[(bank_i * 32) +: 32];
+            end
         end
+        case (rd_bank_sel_r)
+            2'd0: rd_data = bank_rd_data_w[0];
+            2'd1: rd_data = bank_rd_data_w[1];
+            2'd2: rd_data = bank_rd_data_w[2];
+            default: rd_data = bank_rd_data_w[3];
+        endcase
     end
 
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
-            qk_rd_valid <= 1'b0;
+            rd_valid <= 1'b0;
+            rd_bank_sel_r <= 2'd0;
             for (wi = 0; wi < 512; wi = wi + 1) begin
                 shadow_words_r[wi] <= 32'd0;
             end
         end else if (clear) begin
-            qk_rd_valid <= 1'b0;
+            rd_valid <= 1'b0;
+            rd_bank_sel_r <= 2'd0;
             for (wi = 0; wi < 512; wi = wi + 1) begin
                 shadow_words_r[wi] <= 32'd0;
             end
         end else begin
-            qk_rd_valid <= qk_rd_en;
-            if (word_write_valid) begin
-                shadow_words_r[(word_write_row * 32) + word_write_lane] <= word_write_data;
+            rd_valid <= rd_en;
+            if (rd_en) begin
+                rd_bank_sel_r <= rd_addr[1:0];
+            end
+            if (beat_write_valid) begin
+                for (bi = 0; bi < 4; bi = bi + 1) begin
+                    if (beat_write_word_mask[bi]) begin
+                        shadow_words_r[(beat_write_row_idx * 32) + (beat_write_local_addr * 4) + bi] <= beat_write_data[(bi * 32) +: 32];
+                    end
+                end
             end
         end
     end
 
 endmodule
 
-module FA_K_BUF_REAL (
-    input  wire          clk,
-    input  wire          rstn,
-    input  wire          clear,
-    input  wire          word_write_valid,
-    input  wire [3:0]    word_write_row,
-    input  wire [4:0]    word_write_lane,
-    input  wire [31:0]   word_write_data,
-    input  wire          qk_rd_en,
-    input  wire [4:0]    qk_rd_addr,
-    output reg           qk_rd_valid,
-    output wire [511:0]  qk_rd_data,
+module FA_Q_BUF_REAL (
+    input  wire           clk,
+    input  wire           rstn,
+    input  wire           clear,
+    input  wire           beat_write_valid,
+    input  wire [3:0]     beat_write_row_idx,
+    input  wire [2:0]     beat_write_local_addr,
+    input  wire [3:0]     beat_write_word_mask,
+    input  wire [127:0]   beat_write_data,
+    input  wire           qk_rd_en,
+    input  wire [4:0]     qk_rd_addr,
+    output wire           qk_rd_valid,
+    output wire [511:0]   qk_rd_data,
     output wire [16383:0] tile_flat
 );
 
-    reg [31:0] shadow_words_r [0:511];
-    wire [511:0] bank_rd_data_w;
-    reg [511:0] bank_wr_data_r;
-    reg [15:0]  bank_wr_mask_r;
-    integer wi;
-
-    generate
-        genvar gi;
-        for (gi = 0; gi < 512; gi = gi + 1) begin : gen_flat
-            assign tile_flat[(gi * 32) +: 32] = shadow_words_r[gi];
-        end
-    endgenerate
-
-    PT_MEM_BANK #(
-        .DATA_WIDTH(32),
-        .LANES(16),
-        .DEPTH(32)
-    ) u_qk_bank (
+    FA_BANKED_TILE_BUF_REAL u_bank_buf (
         .clk(clk),
         .rstn(rstn),
         .clear(clear),
-        .wr_en(word_write_valid),
-        .wr_buf(1'b0),
-        .wr_mask(bank_wr_mask_r),
-        .wr_addr(word_write_lane),
-        .wr_data(bank_wr_data_r),
+        .beat_write_valid(beat_write_valid),
+        .beat_write_row_idx(beat_write_row_idx),
+        .beat_write_local_addr(beat_write_local_addr),
+        .beat_write_word_mask(beat_write_word_mask),
+        .beat_write_data(beat_write_data),
         .rd_en(qk_rd_en),
-        .rd_buf(1'b0),
         .rd_addr(qk_rd_addr),
-        .rd_data(bank_rd_data_w)
+        .rd_valid(qk_rd_valid),
+        .rd_data(qk_rd_data),
+        .tile_flat(tile_flat)
     );
 
-    always @(*) begin
-        bank_wr_data_r = 512'd0;
-        bank_wr_mask_r = 16'd0;
-        if (word_write_valid) begin
-            bank_wr_mask_r[word_write_row] = 1'b1;
-            bank_wr_data_r[(word_write_row * 32) +: 32] = word_write_data;
-        end
-    end
+endmodule
 
-    always @(posedge clk or negedge rstn) begin
-        if (!rstn) begin
-            qk_rd_valid <= 1'b0;
-            for (wi = 0; wi < 512; wi = wi + 1) begin
-                shadow_words_r[wi] <= 32'd0;
-            end
-        end else if (clear) begin
-            qk_rd_valid <= 1'b0;
-            for (wi = 0; wi < 512; wi = wi + 1) begin
-                shadow_words_r[wi] <= 32'd0;
-            end
-        end else begin
-            qk_rd_valid <= qk_rd_en;
-            if (word_write_valid) begin
-                shadow_words_r[(word_write_row * 32) + word_write_lane] <= word_write_data;
-            end
-        end
-    end
+module FA_K_BUF_REAL (
+    input  wire           clk,
+    input  wire           rstn,
+    input  wire           clear,
+    input  wire           beat_write_valid,
+    input  wire [3:0]     beat_write_row_idx,
+    input  wire [2:0]     beat_write_local_addr,
+    input  wire [3:0]     beat_write_word_mask,
+    input  wire [127:0]   beat_write_data,
+    input  wire           qk_rd_en,
+    input  wire [4:0]     qk_rd_addr,
+    output wire           qk_rd_valid,
+    output wire [511:0]   qk_rd_data,
+    output wire [16383:0] tile_flat
+);
+
+    FA_BANKED_TILE_BUF_REAL u_bank_buf (
+        .clk(clk),
+        .rstn(rstn),
+        .clear(clear),
+        .beat_write_valid(beat_write_valid),
+        .beat_write_row_idx(beat_write_row_idx),
+        .beat_write_local_addr(beat_write_local_addr),
+        .beat_write_word_mask(beat_write_word_mask),
+        .beat_write_data(beat_write_data),
+        .rd_en(qk_rd_en),
+        .rd_addr(qk_rd_addr),
+        .rd_valid(qk_rd_valid),
+        .rd_data(qk_rd_data),
+        .tile_flat(tile_flat)
+    );
 
 endmodule
 
@@ -157,36 +173,32 @@ module FA_V_BUF_REAL (
     input  wire           clk,
     input  wire           rstn,
     input  wire           clear,
-    input  wire           word_write_valid,
-    input  wire [3:0]     word_write_row,
-    input  wire [4:0]     word_write_lane,
-    input  wire [31:0]    word_write_data,
+    input  wire           beat_write_valid,
+    input  wire [3:0]     beat_write_row_idx,
+    input  wire [2:0]     beat_write_local_addr,
+    input  wire [3:0]     beat_write_word_mask,
+    input  wire [127:0]   beat_write_data,
     output wire [16383:0] tile_flat
 );
 
-    reg [31:0] shadow_words_r [0:511];
-    integer wi;
+    wire       unused_rd_valid_w;
+    wire [511:0] unused_rd_data_w;
 
-    generate
-        genvar gi;
-        for (gi = 0; gi < 512; gi = gi + 1) begin : gen_flat
-            assign tile_flat[(gi * 32) +: 32] = shadow_words_r[gi];
-        end
-    endgenerate
-
-    always @(posedge clk or negedge rstn) begin
-        if (!rstn) begin
-            for (wi = 0; wi < 512; wi = wi + 1) begin
-                shadow_words_r[wi] <= 32'd0;
-            end
-        end else if (clear) begin
-            for (wi = 0; wi < 512; wi = wi + 1) begin
-                shadow_words_r[wi] <= 32'd0;
-            end
-        end else if (word_write_valid) begin
-            shadow_words_r[(word_write_row * 32) + word_write_lane] <= word_write_data;
-        end
-    end
+    FA_BANKED_TILE_BUF_REAL u_bank_buf (
+        .clk(clk),
+        .rstn(rstn),
+        .clear(clear),
+        .beat_write_valid(beat_write_valid),
+        .beat_write_row_idx(beat_write_row_idx),
+        .beat_write_local_addr(beat_write_local_addr),
+        .beat_write_word_mask(beat_write_word_mask),
+        .beat_write_data(beat_write_data),
+        .rd_en(1'b0),
+        .rd_addr(5'd0),
+        .rd_valid(unused_rd_valid_w),
+        .rd_data(unused_rd_data_w),
+        .tile_flat(tile_flat)
+    );
 
 endmodule
 
@@ -194,16 +206,10 @@ module FA_V_BUF_PV_REAL (
     input  wire            clk,
     input  wire            rstn,
     input  wire            clear,
-    input  wire            wr_valid,
-    input  wire [4:0]      wr_addr,
-    input  wire            wr_lane0_valid,
-    input  wire [3:0]      wr_lane0_idx,
-    input  wire            wr_lane0_hi,
-    input  wire [15:0]     wr_lane0_data,
-    input  wire            wr_lane1_valid,
-    input  wire [3:0]      wr_lane1_idx,
-    input  wire            wr_lane1_hi,
-    input  wire [15:0]     wr_lane1_data,
+    input  wire            src_wr_valid,
+    input  wire [8:0]      src_word_idx_base,
+    input  wire [3:0]      src_word_mask,
+    input  wire [127:0]    src_data,
     input  wire            rd_en,
     input  wire [4:0]      rd_addr,
     output reg             rd_valid,
@@ -214,10 +220,16 @@ module FA_V_BUF_PV_REAL (
     reg [31:0] shadow_words_r [0:31][0:15];
     reg [511:0] bank_wr_data_r;
     reg [15:0]  bank_wr_mask_r;
+    wire [4:0]  src_wr_addr_w = {src_word_idx_base[4:3], src_word_idx_base[8:6]};
     integer ai;
     integer li;
-    reg [31:0] lane_word0_r;
-    reg [31:0] lane_word1_r;
+    integer src_i;
+    reg [8:0] src_word_idx_r;
+    reg [31:0] src_word_r;
+    reg [3:0] lane_lo_idx_r;
+    reg [3:0] lane_hi_idx_r;
+    reg       hi_half_r;
+    reg [31:0] next_lane_words_r [0:15];
 
     generate
         genvar ga;
@@ -238,10 +250,10 @@ module FA_V_BUF_PV_REAL (
         .clk(clk),
         .rstn(rstn),
         .clear(clear),
-        .wr_en(wr_valid),
+        .wr_en(src_wr_valid),
         .wr_buf(1'b0),
         .wr_mask(bank_wr_mask_r),
-        .wr_addr(wr_addr),
+        .wr_addr(src_wr_addr_w),
         .wr_data(bank_wr_data_r),
         .rd_en(rd_en),
         .rd_buf(1'b0),
@@ -252,30 +264,29 @@ module FA_V_BUF_PV_REAL (
     always @(*) begin
         bank_wr_data_r = 512'd0;
         bank_wr_mask_r = 16'd0;
-        lane_word0_r = 32'd0;
-        lane_word1_r = 32'd0;
-        if (wr_lane0_valid) begin
-            lane_word0_r = shadow_words_r[wr_addr][wr_lane0_idx];
-            if (wr_lane0_hi) begin
-                lane_word0_r[31:16] = wr_lane0_data;
-            end else begin
-                lane_word0_r[15:0] = wr_lane0_data;
-            end
-            bank_wr_mask_r[wr_lane0_idx] = 1'b1;
-            bank_wr_data_r[(wr_lane0_idx * 32) +: 32] = lane_word0_r;
+        for (li = 0; li < 16; li = li + 1) begin
+            next_lane_words_r[li] = shadow_words_r[src_wr_addr_w][li];
         end
-        if (wr_lane1_valid) begin
-            lane_word1_r = shadow_words_r[wr_addr][wr_lane1_idx];
-            if (wr_lane1_valid && wr_lane0_valid && (wr_lane1_idx == wr_lane0_idx)) begin
-                lane_word1_r = lane_word0_r;
+        for (src_i = 0; src_i < 4; src_i = src_i + 1) begin
+            if (src_word_mask[src_i]) begin
+                src_word_idx_r = src_word_idx_base + src_i;
+                src_word_r = src_data[(src_i * 32) +: 32];
+                lane_lo_idx_r = {src_word_idx_r[2:0], 1'b0};
+                lane_hi_idx_r = {src_word_idx_r[2:0], 1'b1};
+                hi_half_r = src_word_idx_r[5];
+                if (hi_half_r) begin
+                    next_lane_words_r[lane_lo_idx_r][31:16] = src_word_r[15:0];
+                    next_lane_words_r[lane_hi_idx_r][31:16] = src_word_r[31:16];
+                end else begin
+                    next_lane_words_r[lane_lo_idx_r][15:0] = src_word_r[15:0];
+                    next_lane_words_r[lane_hi_idx_r][15:0] = src_word_r[31:16];
+                end
+                bank_wr_mask_r[lane_lo_idx_r] = 1'b1;
+                bank_wr_mask_r[lane_hi_idx_r] = 1'b1;
             end
-            if (wr_lane1_hi) begin
-                lane_word1_r[31:16] = wr_lane1_data;
-            end else begin
-                lane_word1_r[15:0] = wr_lane1_data;
-            end
-            bank_wr_mask_r[wr_lane1_idx] = 1'b1;
-            bank_wr_data_r[(wr_lane1_idx * 32) +: 32] = lane_word1_r;
+        end
+        for (li = 0; li < 16; li = li + 1) begin
+            bank_wr_data_r[(li * 32) +: 32] = next_lane_words_r[li];
         end
     end
 
@@ -296,12 +307,11 @@ module FA_V_BUF_PV_REAL (
             end
         end else begin
             rd_valid <= rd_en;
-            if (wr_valid) begin
-                if (wr_lane0_valid) begin
-                    shadow_words_r[wr_addr][wr_lane0_idx] <= lane_word0_r;
-                end
-                if (wr_lane1_valid) begin
-                    shadow_words_r[wr_addr][wr_lane1_idx] <= lane_word1_r;
+            if (src_wr_valid) begin
+                for (li = 0; li < 16; li = li + 1) begin
+                    if (bank_wr_mask_r[li]) begin
+                        shadow_words_r[src_wr_addr_w][li] <= next_lane_words_r[li];
+                    end
                 end
             end
         end

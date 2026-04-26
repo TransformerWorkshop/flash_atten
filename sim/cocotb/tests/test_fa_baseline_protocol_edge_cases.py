@@ -23,7 +23,7 @@ async def test_fa_protocol_edge_early_rd_last_sets_error(dut) -> None:
     env = await create_env(dut)
     try:
         await env.reset()
-        env.set_read_faults(early_last_word=7)
+        env.set_read_faults(early_last_beat=7)
         q, k, v = make_single_tile_case(1200)
         env.load_qkv(q, k, v)
         await env.start_run(causal=False)

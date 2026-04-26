@@ -93,10 +93,11 @@ module FA_TOP_BASELINE #(
     wire [63:0] rd_desc_addr;
     wire [15:0] rd_desc_words;
     wire [3:0]  rd_desc_tag;
-    wire        rd_data_valid;
-    wire        rd_data_ready;
-    wire [31:0] rd_data;
-    wire        rd_data_last;
+    wire        rd_beat_valid;
+    wire        rd_beat_ready;
+    wire [127:0] rd_beat_data;
+    wire [2:0]  rd_beat_word_count;
+    wire        rd_beat_last;
     wire        wr_desc_valid;
     wire        wr_desc_ready;
     wire [63:0] wr_desc_addr;
@@ -195,10 +196,11 @@ module FA_TOP_BASELINE #(
         .rd_desc_addr(rd_desc_addr),
         .rd_desc_words(rd_desc_words),
         .rd_desc_tag(rd_desc_tag),
-        .rd_data_valid(rd_data_valid),
-        .rd_data_ready(rd_data_ready),
-        .rd_data(rd_data),
-        .rd_data_last(rd_data_last),
+        .rd_beat_valid(rd_beat_valid),
+        .rd_beat_ready(rd_beat_ready),
+        .rd_beat_data(rd_beat_data),
+        .rd_beat_word_count(rd_beat_word_count),
+        .rd_beat_last(rd_beat_last),
         .wr_desc_valid(wr_desc_valid),
         .wr_desc_ready(wr_desc_ready),
         .wr_desc_addr(wr_desc_addr),
@@ -239,10 +241,11 @@ module FA_TOP_BASELINE #(
         .rd_desc_addr(rd_desc_addr),
         .rd_desc_words(rd_desc_words),
         .rd_desc_tag(rd_desc_tag),
-        .rd_data_valid(rd_data_valid),
-        .rd_data_ready(rd_data_ready),
-        .rd_data(rd_data),
-        .rd_data_last(rd_data_last),
+        .rd_beat_valid(rd_beat_valid),
+        .rd_beat_ready(rd_beat_ready),
+        .rd_beat_data(rd_beat_data),
+        .rd_beat_word_count(rd_beat_word_count),
+        .rd_beat_last(rd_beat_last),
         .axi_arvalid(m_axi_arvalid),
         .axi_arready(m_axi_arready),
         .axi_araddr(m_axi_araddr),

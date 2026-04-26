@@ -16,25 +16,21 @@ module FA_RD_DMA (
     output wire [63:0]  rd_desc_addr,
     output wire [15:0]  rd_desc_words,
     output wire [3:0]   rd_desc_tag,
-    input  wire         rd_data_valid,
-    output wire         rd_data_ready,
-    input  wire [31:0]  rd_data,
-    input  wire         rd_data_last,
+    input  wire         rd_beat_valid,
+    output wire         rd_beat_ready,
+    input  wire [127:0] rd_beat_data,
+    input  wire [2:0]   rd_beat_word_count,
+    input  wire         rd_beat_last,
     output reg          qkv_wr_valid,
     output reg  [1:0]   qkv_wr_kind,
-    output reg  [3:0]   qkv_wr_row,
-    output reg  [4:0]   qkv_wr_lane,
-    output reg  [31:0]  qkv_wr_word,
-    output reg          v_pv_wr_valid,
-    output reg  [4:0]   v_pv_wr_addr,
-    output reg          v_pv_lane0_valid,
-    output reg  [3:0]   v_pv_lane0_idx,
-    output reg          v_pv_lane0_hi,
-    output reg  [15:0]  v_pv_lane0_data,
-    output reg          v_pv_lane1_valid,
-    output reg  [3:0]   v_pv_lane1_idx,
-    output reg          v_pv_lane1_hi,
-    output reg  [15:0]  v_pv_lane1_data,
+    output reg  [3:0]   qkv_wr_row_idx,
+    output reg  [2:0]   qkv_wr_local_addr,
+    output reg  [3:0]   qkv_wr_word_mask,
+    output reg  [127:0] qkv_wr_data,
+    output reg          v_pv_src_valid,
+    output reg  [8:0]   v_pv_src_word_idx_base,
+    output reg  [3:0]   v_pv_src_word_mask,
+    output reg  [127:0] v_pv_src_data,
     output reg          done_pulse,
     output reg          error_pulse
 );
@@ -51,6 +47,11 @@ module FA_RD_DMA (
     reg [1:0]  active_kind_r;
     reg [8:0]  word_idx_r;
     reg [63:0] desc_addr_r;
+    reg        desc_misaligned_r;
+    reg [9:0]  next_word_idx_s;
+    reg [3:0]  beat_mask_s;
+    reg        beat_protocol_error_s;
+    reg        beat_done_s;
 
     wire [63:0] q_block_addr = q_base + ({56'd0, req_q_blk} * 64'd16 * {32'd0, stride_bytes});
     wire [63:0] k_block_addr = k_base + ({56'd0, req_kv_blk} * 64'd16 * {32'd0, stride_bytes});
@@ -63,7 +64,26 @@ module FA_RD_DMA (
     assign rd_desc_tag = (active_kind_r == LOAD_KIND_Q) ? 4'h1 :
                          (active_kind_r == LOAD_KIND_K) ? 4'h2 :
                          4'h3;
-    assign rd_data_ready = (state_r == ST_DATA);
+    assign rd_beat_ready = (state_r == ST_DATA);
+
+    always @(*) begin
+        beat_mask_s = 4'd0;
+        case (rd_beat_word_count)
+            3'd1: beat_mask_s = 4'b0001;
+            3'd2: beat_mask_s = 4'b0011;
+            3'd3: beat_mask_s = 4'b0111;
+            3'd4: beat_mask_s = 4'b1111;
+            default: beat_mask_s = 4'd0;
+        endcase
+        next_word_idx_s = {1'b0, word_idx_r} + {7'd0, rd_beat_word_count};
+        beat_done_s = (next_word_idx_s == 10'd512);
+        beat_protocol_error_s = desc_misaligned_r ||
+                                (rd_beat_word_count == 3'd0) ||
+                                (rd_beat_word_count > 3'd4) ||
+                                (word_idx_r[1:0] != 2'b00) ||
+                                (next_word_idx_s > 10'd512) ||
+                                ({1'b0, word_idx_r[4:0]} + {2'd0, rd_beat_word_count} > 6'd32);
+    end
 
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
@@ -71,21 +91,17 @@ module FA_RD_DMA (
             active_kind_r <= LOAD_KIND_Q;
             word_idx_r <= 9'd0;
             desc_addr_r <= 64'd0;
+            desc_misaligned_r <= 1'b0;
             qkv_wr_valid <= 1'b0;
             qkv_wr_kind <= LOAD_KIND_Q;
-            qkv_wr_row <= 4'd0;
-            qkv_wr_lane <= 5'd0;
-            qkv_wr_word <= 32'd0;
-            v_pv_wr_valid <= 1'b0;
-            v_pv_wr_addr <= 5'd0;
-            v_pv_lane0_valid <= 1'b0;
-            v_pv_lane0_idx <= 4'd0;
-            v_pv_lane0_hi <= 1'b0;
-            v_pv_lane0_data <= 16'd0;
-            v_pv_lane1_valid <= 1'b0;
-            v_pv_lane1_idx <= 4'd0;
-            v_pv_lane1_hi <= 1'b0;
-            v_pv_lane1_data <= 16'd0;
+            qkv_wr_row_idx <= 4'd0;
+            qkv_wr_local_addr <= 3'd0;
+            qkv_wr_word_mask <= 4'd0;
+            qkv_wr_data <= 128'd0;
+            v_pv_src_valid <= 1'b0;
+            v_pv_src_word_idx_base <= 9'd0;
+            v_pv_src_word_mask <= 4'd0;
+            v_pv_src_data <= 128'd0;
             done_pulse <= 1'b0;
             error_pulse <= 1'b0;
         end else if (clear) begin
@@ -93,28 +109,26 @@ module FA_RD_DMA (
             active_kind_r <= LOAD_KIND_Q;
             word_idx_r <= 9'd0;
             desc_addr_r <= 64'd0;
+            desc_misaligned_r <= 1'b0;
             qkv_wr_valid <= 1'b0;
             qkv_wr_kind <= LOAD_KIND_Q;
-            qkv_wr_row <= 4'd0;
-            qkv_wr_lane <= 5'd0;
-            qkv_wr_word <= 32'd0;
-            v_pv_wr_valid <= 1'b0;
-            v_pv_wr_addr <= 5'd0;
-            v_pv_lane0_valid <= 1'b0;
-            v_pv_lane0_idx <= 4'd0;
-            v_pv_lane0_hi <= 1'b0;
-            v_pv_lane0_data <= 16'd0;
-            v_pv_lane1_valid <= 1'b0;
-            v_pv_lane1_idx <= 4'd0;
-            v_pv_lane1_hi <= 1'b0;
-            v_pv_lane1_data <= 16'd0;
+            qkv_wr_row_idx <= 4'd0;
+            qkv_wr_local_addr <= 3'd0;
+            qkv_wr_word_mask <= 4'd0;
+            qkv_wr_data <= 128'd0;
+            v_pv_src_valid <= 1'b0;
+            v_pv_src_word_idx_base <= 9'd0;
+            v_pv_src_word_mask <= 4'd0;
+            v_pv_src_data <= 128'd0;
             done_pulse <= 1'b0;
             error_pulse <= 1'b0;
         end else begin
             qkv_wr_valid <= 1'b0;
-            v_pv_wr_valid <= 1'b0;
-            v_pv_lane0_valid <= 1'b0;
-            v_pv_lane1_valid <= 1'b0;
+            qkv_wr_word_mask <= 4'd0;
+            qkv_wr_data <= 128'd0;
+            v_pv_src_valid <= 1'b0;
+            v_pv_src_word_mask <= 4'd0;
+            v_pv_src_data <= 128'd0;
             done_pulse <= 1'b0;
             error_pulse <= 1'b0;
 
@@ -124,9 +138,18 @@ module FA_RD_DMA (
                         active_kind_r <= req_kind;
                         word_idx_r <= 9'd0;
                         case (req_kind)
-                            LOAD_KIND_Q: desc_addr_r <= q_block_addr;
-                            LOAD_KIND_K: desc_addr_r <= k_block_addr;
-                            default:     desc_addr_r <= v_block_addr;
+                            LOAD_KIND_Q: begin
+                                desc_addr_r <= q_block_addr;
+                                desc_misaligned_r <= |q_block_addr[3:2];
+                            end
+                            LOAD_KIND_K: begin
+                                desc_addr_r <= k_block_addr;
+                                desc_misaligned_r <= |k_block_addr[3:2];
+                            end
+                            default: begin
+                                desc_addr_r <= v_block_addr;
+                                desc_misaligned_r <= |v_block_addr[3:2];
+                            end
                         endcase
                         state_r <= ST_DESC;
                     end
@@ -137,36 +160,35 @@ module FA_RD_DMA (
                     end
                 end
                 ST_DATA: begin
-                    if (rd_data_valid) begin
-                        qkv_wr_valid <= 1'b1;
-                        qkv_wr_kind <= active_kind_r;
-                        qkv_wr_row <= word_idx_r[8:5];
-                        qkv_wr_lane <= word_idx_r[4:0];
-                        qkv_wr_word <= rd_data;
-                        if (active_kind_r == LOAD_KIND_V) begin
-                            v_pv_wr_valid <= 1'b1;
-                            v_pv_wr_addr <= {word_idx_r[4:3], word_idx_r[8:6]};
-                            v_pv_lane0_valid <= 1'b1;
-                            v_pv_lane0_idx <= {word_idx_r[2:0], 1'b0};
-                            v_pv_lane0_hi <= word_idx_r[5];
-                            v_pv_lane0_data <= rd_data[15:0];
-                            v_pv_lane1_valid <= 1'b1;
-                            v_pv_lane1_idx <= {word_idx_r[2:0], 1'b1};
-                            v_pv_lane1_hi <= word_idx_r[5];
-                            v_pv_lane1_data <= rd_data[31:16];
-                        end
-                        if (word_idx_r == 9'd511) begin
-                            if (!rd_data_last) begin
-                                error_pulse <= 1'b1;
-                            end
-                            done_pulse <= 1'b1;
+                    if (rd_beat_valid) begin
+                        if (beat_protocol_error_s) begin
+                            error_pulse <= 1'b1;
                             state_r <= ST_IDLE;
                         end else begin
-                            if (rd_data_last) begin
+                            qkv_wr_valid <= 1'b1;
+                            qkv_wr_kind <= active_kind_r;
+                            qkv_wr_row_idx <= word_idx_r[8:5];
+                            qkv_wr_local_addr <= word_idx_r[4:2];
+                            qkv_wr_word_mask <= beat_mask_s;
+                            qkv_wr_data <= rd_beat_data;
+                            if (active_kind_r == LOAD_KIND_V) begin
+                                v_pv_src_valid <= 1'b1;
+                                v_pv_src_word_idx_base <= word_idx_r;
+                                v_pv_src_word_mask <= beat_mask_s;
+                                v_pv_src_data <= rd_beat_data;
+                            end
+                            if (beat_done_s) begin
+                                if (!rd_beat_last) begin
+                                    error_pulse <= 1'b1;
+                                end else begin
+                                    done_pulse <= 1'b1;
+                                end
+                                state_r <= ST_IDLE;
+                            end else if (rd_beat_last) begin
                                 error_pulse <= 1'b1;
                                 state_r <= ST_IDLE;
                             end else begin
-                                word_idx_r <= word_idx_r + 1'b1;
+                                word_idx_r <= next_word_idx_s[8:0];
                             end
                         end
                     end

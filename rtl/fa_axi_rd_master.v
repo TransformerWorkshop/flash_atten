@@ -7,10 +7,11 @@ module FA_AXI_RD_MASTER (
     input  wire [63:0]  rd_desc_addr,
     input  wire [15:0]  rd_desc_words,
     input  wire [3:0]   rd_desc_tag,
-    output reg          rd_data_valid,
-    input  wire         rd_data_ready,
-    output reg  [31:0]  rd_data,
-    output reg          rd_data_last,
+    output reg          rd_beat_valid,
+    input  wire         rd_beat_ready,
+    output reg  [127:0] rd_beat_data,
+    output reg  [2:0]   rd_beat_word_count,
+    output reg          rd_beat_last,
     output reg          axi_arvalid,
     input  wire         axi_arready,
     output reg  [63:0]  axi_araddr,
@@ -37,22 +38,16 @@ module FA_AXI_RD_MASTER (
     reg [15:0] words_remaining_r;
     reg [15:0] burst_beats_r;
     reg [15:0] beats_seen_r;
-    reg [127:0] beat_buf_r;
-    reg [2:0]  beat_words_left_r;
-    reg [2:0]  beat_word_idx_r;
-    reg        beat_buf_valid_r;
-
-    wire [15:0] total_beats_w = (words_remaining_r + WORDS_PER_BEAT - 1) >> 2;
-    wire [15:0] next_burst_beats_w = (total_beats_w > MAX_BURST_BEATS) ? MAX_BURST_BEATS : total_beats_w;
     wire [2:0]  words_in_beat_w = (words_remaining_r >= WORDS_PER_BEAT) ? WORDS_PER_BEAT[2:0] : words_remaining_r[2:0];
-    wire beat_word_fire_w = beat_buf_valid_r && rd_data_ready;
-    wire last_word_w = (words_remaining_r == 16'd1) && beat_buf_valid_r;
+    wire [15:0] remaining_words_after_beat_w = (words_remaining_r > words_in_beat_w) ? (words_remaining_r - words_in_beat_w) : 16'd0;
+    wire [15:0] next_total_beats_after_w = (remaining_words_after_beat_w + WORDS_PER_BEAT - 1) >> 2;
+    wire        rd_beat_fire_w = rd_beat_valid && rd_beat_ready;
     wire axi_r_fire_w = axi_rvalid && axi_rready;
 
     assign rd_desc_ready = (state_r == ST_IDLE);
     assign axi_arsize = 3'b100;
     assign axi_arburst = 2'b01;
-    assign axi_rready = (state_r == ST_R) && !beat_buf_valid_r;
+    assign axi_rready = (state_r == ST_R) && !rd_beat_valid;
 
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
@@ -61,13 +56,10 @@ module FA_AXI_RD_MASTER (
             words_remaining_r <= 16'd0;
             burst_beats_r <= 16'd0;
             beats_seen_r <= 16'd0;
-            beat_buf_r <= 128'd0;
-            beat_words_left_r <= 3'd0;
-            beat_word_idx_r <= 3'd0;
-            beat_buf_valid_r <= 1'b0;
-            rd_data_valid <= 1'b0;
-            rd_data <= 32'd0;
-            rd_data_last <= 1'b0;
+            rd_beat_valid <= 1'b0;
+            rd_beat_data <= 128'd0;
+            rd_beat_word_count <= 3'd0;
+            rd_beat_last <= 1'b0;
             axi_arvalid <= 1'b0;
             axi_araddr <= 64'd0;
             axi_arlen <= 8'd0;
@@ -78,37 +70,23 @@ module FA_AXI_RD_MASTER (
             words_remaining_r <= 16'd0;
             burst_beats_r <= 16'd0;
             beats_seen_r <= 16'd0;
-            beat_buf_r <= 128'd0;
-            beat_words_left_r <= 3'd0;
-            beat_word_idx_r <= 3'd0;
-            beat_buf_valid_r <= 1'b0;
-            rd_data_valid <= 1'b0;
-            rd_data <= 32'd0;
-            rd_data_last <= 1'b0;
+            rd_beat_valid <= 1'b0;
+            rd_beat_data <= 128'd0;
+            rd_beat_word_count <= 3'd0;
+            rd_beat_last <= 1'b0;
             axi_arvalid <= 1'b0;
             axi_araddr <= 64'd0;
             axi_arlen <= 8'd0;
             error_pulse <= 1'b0;
         end else begin
             error_pulse <= 1'b0;
-            rd_data_valid <= beat_buf_valid_r;
-            rd_data_last <= last_word_w;
-            if (beat_buf_valid_r) begin
-                rd_data <= beat_buf_r[(beat_word_idx_r * 32) +: 32];
-            end else begin
-                rd_data <= 32'd0;
-            end
 
-            if (beat_word_fire_w) begin
-                if (beat_words_left_r == 3'd1) begin
-                    beat_buf_valid_r <= 1'b0;
-                    beat_word_idx_r <= 3'd0;
-                    beat_words_left_r <= 3'd0;
-                end else begin
-                    beat_word_idx_r <= beat_word_idx_r + 1'b1;
-                    beat_words_left_r <= beat_words_left_r - 1'b1;
-                end
-                words_remaining_r <= words_remaining_r - 1'b1;
+            if (rd_beat_fire_w) begin
+                rd_beat_valid <= 1'b0;
+                rd_beat_data <= 128'd0;
+                rd_beat_word_count <= 3'd0;
+                rd_beat_last <= 1'b0;
+                words_remaining_r <= words_remaining_r - rd_beat_word_count;
             end
 
             case (state_r)
@@ -139,17 +117,17 @@ module FA_AXI_RD_MASTER (
                     if (axi_r_fire_w) begin
                         if (axi_rresp != 2'b00) begin
                             error_pulse <= 1'b1;
-                            beat_buf_valid_r <= 1'b1;
-                            beat_buf_r <= 128'd0;
-                            beat_words_left_r <= 3'd1;
-                            beat_word_idx_r <= 3'd0;
+                            rd_beat_valid <= 1'b1;
+                            rd_beat_data <= 128'd0;
+                            rd_beat_word_count <= 3'd1;
+                            rd_beat_last <= 1'b1;
                             words_remaining_r <= 16'd1;
                             state_r <= ST_ABORT;
                         end else begin
-                            beat_buf_r <= axi_rdata;
-                            beat_buf_valid_r <= 1'b1;
-                            beat_word_idx_r <= 3'd0;
-                            beat_words_left_r <= words_in_beat_w;
+                            rd_beat_valid <= 1'b1;
+                            rd_beat_data <= axi_rdata;
+                            rd_beat_word_count <= words_in_beat_w;
+                            rd_beat_last <= (remaining_words_after_beat_w == 16'd0);
                             beats_seen_r <= beats_seen_r + 1'b1;
                             if (((beats_seen_r + 1'b1) == burst_beats_r) && !axi_rlast) begin
                                 error_pulse <= 1'b1;
@@ -158,15 +136,15 @@ module FA_AXI_RD_MASTER (
                                 error_pulse <= 1'b1;
                                 state_r <= ST_ABORT;
                             end else if ((beats_seen_r + 1'b1) == burst_beats_r) begin
-                                if ((words_remaining_r > words_in_beat_w) && ((words_remaining_r - words_in_beat_w + WORDS_PER_BEAT - 1) >> 2) != 0) begin
+                                if (remaining_words_after_beat_w != 16'd0) begin
                                     desc_addr_r <= desc_addr_r + (burst_beats_r * 16);
                                     axi_araddr <= desc_addr_r + (burst_beats_r * 16);
-                                    if (((words_remaining_r - words_in_beat_w + WORDS_PER_BEAT - 1) >> 2) > MAX_BURST_BEATS) begin
+                                    if (next_total_beats_after_w > MAX_BURST_BEATS) begin
                                         burst_beats_r <= MAX_BURST_BEATS;
                                         axi_arlen <= MAX_BURST_BEATS - 1;
                                     end else begin
-                                        burst_beats_r <= ((words_remaining_r - words_in_beat_w + WORDS_PER_BEAT - 1) >> 2);
-                                        axi_arlen <= ((words_remaining_r - words_in_beat_w + WORDS_PER_BEAT - 1) >> 2) - 1;
+                                        burst_beats_r <= next_total_beats_after_w;
+                                        axi_arlen <= next_total_beats_after_w - 1'b1;
                                     end
                                     beats_seen_r <= 16'd0;
                                     axi_arvalid <= 1'b1;
@@ -175,12 +153,12 @@ module FA_AXI_RD_MASTER (
                             end
                         end
                     end
-                    if ((words_remaining_r == 16'd0) && !beat_buf_valid_r && !axi_arvalid) begin
+                    if ((words_remaining_r == 16'd0) && !rd_beat_valid && !axi_arvalid) begin
                         state_r <= ST_IDLE;
                     end
                 end
                 ST_ABORT: begin
-                    if (!beat_buf_valid_r && (words_remaining_r == 16'd0)) begin
+                    if (!rd_beat_valid && (words_remaining_r == 16'd0)) begin
                         state_r <= ST_IDLE;
                     end
                 end

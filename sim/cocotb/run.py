@@ -3,12 +3,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import List, Mapping, Optional
+from typing import Any, List, Mapping, Optional
 
 try:
 	from cocotb_tools.runner import get_runner
@@ -31,6 +32,9 @@ BUILD_ROOT = REPO_ROOT / "sim" / "cocotb" / "build"
 RESULTS_ROOT = REPO_ROOT / "sim" / "cocotb" / "results"
 LOG_ROOT = REPO_ROOT / "sim" / "cocotb" / "logs"
 COVERAGE_ROOT = REPO_ROOT / "sim" / "cocotb" / "coverage"
+BUILD_METADATA_NAME = ".runner_build_metadata.json"
+DEFAULT_TIMESCALE = ("1ns", "1ps")
+FA_DEFAULT_VERILATOR_SUITES = {"fa_baseline", "fa_baseline_axi"}
 
 DEFAULT_SEED = 10
 DEFAULT_A_BANK_DEPTH = 16
@@ -141,14 +145,26 @@ class RunConfig:
 	enable_coverage: bool = False
 
 
+@dataclass(frozen=True)
+class RunOptions:
+	keep_build: bool = False
+	force_rebuild: bool = False
+	test_filter: Optional[str] = None
+	testcase_names: Optional[List[str]] = None
+
+
 def parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(description="Run PT cocotb blackbox regressions")
 	parser.add_argument("suite", choices=["smoke", "full", "randomized", "extended", "ci", "stress", "soak", "coverage", "perf", "axil", "axil_perf", "shell_sim", "fa_baseline", "fa_baseline_axi"])
-	parser.add_argument("--sim", default=os.getenv("SIM", "icarus"))
+	parser.add_argument("--sim", default=os.getenv("SIM"))
 	parser.add_argument("--target", default=os.getenv("TARGET", DEFAULT_RUN_TARGET), help="Regression target: pt or pt_dma_top")
 	parser.add_argument("--seed", type=int, default=None, help="Override random seed for the selected suite")
 	parser.add_argument("--waves", action="store_true", default=bool(int(os.getenv("WAVES", "0"))))
 	parser.add_argument("--verbose", action="store_true", default=False)
+	parser.add_argument("--test-filter", default=os.getenv("TEST_FILTER"), help="Regex filter for cocotb testcase selection")
+	parser.add_argument("--testcase", default=os.getenv("TESTCASE"), help="Exact testcase name or comma-separated list of names")
+	parser.add_argument("--keep-build", action="store_true", default=bool(int(os.getenv("KEEP_BUILD", "0"))), help="Reuse a compatible simulator build instead of rebuilding every run")
+	parser.add_argument("--rebuild", action="store_true", default=bool(int(os.getenv("REBUILD", "0"))), help="Force a rebuild even when --keep-build is enabled")
 	return parser.parse_args()
 
 
@@ -203,6 +219,25 @@ def normalize_target(target: str) -> str:
 		return alias_map[name]
 	except KeyError as exc:
 		raise SystemExit(f"unsupported target {target!r}; expected one of: pt, pt_dma_top, pt_v3, pt_dma_top_v3, pt_dma_top_v3_ch1, pt_dma_top_v3_ch2, pt_dma_top_v3_ch4, pt_dma_top_v3_128b, pt_dma_top_v3_128b_strict") from exc
+
+
+def resolve_sim_name(sim_name: Optional[str], suite: str) -> str:
+	if sim_name:
+		return normalize_sim_name(sim_name)
+	if suite in FA_DEFAULT_VERILATOR_SUITES:
+		return "verilator"
+	return "icarus"
+
+
+def resolve_test_selection(test_filter: Optional[str], testcase: Optional[str]) -> tuple[Optional[str], Optional[List[str]]]:
+	if test_filter and testcase:
+		raise SystemExit("use either --test-filter or --testcase, not both")
+	if testcase is None:
+		return test_filter, None
+	names = [name.strip() for name in testcase.split(",") if name.strip()]
+	if not names:
+		return None, None
+	return "|".join(f"(?:^|.*\\.){re.escape(name)}$" for name in names), names
 
 
 def hdl_toplevel_for_target(target: str) -> str:
@@ -319,6 +354,88 @@ def apply_target_to_config(config: RunConfig, target: str) -> RunConfig:
 
 def rtl_sources() -> List[Path]:
 	return sorted(RTL_DIR.glob("*.v"))
+
+
+def test_module_path(module_name: str) -> Path:
+	if not module_name.startswith("tests."):
+		raise ValueError(f"unsupported test module namespace: {module_name}")
+	relative_module = module_name[len("tests.") :].replace(".", "/")
+	return TEST_DIR / f"{relative_module}.py"
+
+
+def narrow_test_modules(test_modules: List[str], testcase_names: Optional[List[str]]) -> List[str]:
+	if not testcase_names:
+		return test_modules
+	selected: List[str] = []
+	for module_name in test_modules:
+		module_text = safe_read_text(test_module_path(module_name))
+		if any(re.search(rf"\bdef\s+{re.escape(name)}\s*\(", module_text) for name in testcase_names):
+			selected.append(module_name)
+	return selected or test_modules
+
+
+def build_metadata_path(build_dir: Path) -> Path:
+	return build_dir / BUILD_METADATA_NAME
+
+
+def build_output_path(sim_name: str, build_dir: Path, hdl_toplevel: str) -> Optional[Path]:
+	normalized = normalize_sim_name(sim_name)
+	if normalized == "icarus":
+		return build_dir / "sim.vvp"
+	if normalized == "verilator":
+		return build_dir / hdl_toplevel
+	return None
+
+
+def source_stamp(path: Path) -> Mapping[str, Any]:
+	return {"path": str(path), "mtime_ns": path.stat().st_mtime_ns}
+
+
+def build_metadata(
+	sim_name: str,
+	config: RunConfig,
+	params: Mapping[str, int],
+	build_args: List[str],
+	waves: bool,
+) -> Mapping[str, Any]:
+	return {
+		"sim": normalize_sim_name(sim_name),
+		"hdl_toplevel": config.hdl_toplevel,
+		"parameters": dict(sorted(params.items())),
+		"build_args": list(build_args),
+		"waves": bool(waves),
+		"timescale": list(DEFAULT_TIMESCALE),
+		"sources": [source_stamp(path) for path in rtl_sources()],
+		"includes": [str(RTL_DIR.resolve())],
+	}
+
+
+def load_build_metadata(build_dir: Path) -> Optional[Mapping[str, Any]]:
+	try:
+		return json.loads(build_metadata_path(build_dir).read_text(encoding="utf-8"))
+	except (FileNotFoundError, json.JSONDecodeError):
+		return None
+
+
+def write_build_metadata(build_dir: Path, metadata: Mapping[str, Any]) -> None:
+	build_metadata_path(build_dir).write_text(
+		json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+		encoding="utf-8",
+	)
+
+
+def can_reuse_build(build_dir: Path, sim_name: str, hdl_toplevel: str, metadata: Mapping[str, Any]) -> bool:
+	output_path = build_output_path(sim_name, build_dir, hdl_toplevel)
+	if output_path is None or not output_path.exists():
+		return False
+	return load_build_metadata(build_dir) == metadata
+
+
+def prime_runner_for_reused_build(runner, sources: List[Path], params: Mapping[str, int]) -> None:
+	runner._set_sources(sources)
+	runner._set_verilog_sources([])
+	runner._set_vhdl_sources([])
+	runner.parameters = dict(params)
 
 
 def sync_tests_into_build(build_dir: Path) -> None:
@@ -877,7 +994,15 @@ def merge_coverage_files(suite: str, coverage_files: List[Path]) -> None:
 	generate_coverage_reports(merged_dat, merged_info, summary_txt)
 
 
-def run_case(sim_name: str, suite_name: str, waves: bool, verbose: bool, config: RunConfig, target: str) -> tuple[List[Path], List[Path]]:
+def run_case(
+	sim_name: str,
+	suite_name: str,
+	waves: bool,
+	verbose: bool,
+	config: RunConfig,
+	target: str,
+	options: RunOptions,
+) -> tuple[List[Path], List[Path]]:
 	if get_runner is None:
 		venv_hint = REPO_ROOT / ".venv" / "Scripts" / "python.exe"
 		raise SystemExit(
@@ -920,27 +1045,34 @@ def run_case(sim_name: str, suite_name: str, waves: bool, verbose: bool, config:
 	build_dir = BUILD_ROOT / (config.build_name or config.name)
 
 	if startup_error is None:
-		if build_dir.exists():
+		if build_dir.exists() and not options.keep_build:
 			shutil.rmtree(build_dir)
 		build_dir.mkdir(parents=True, exist_ok=True)
 		sync_tests_into_build(build_dir)
 		build_args = ["-Wall", *(config.build_args or [])]
 		if normalize_sim_name(sim_name) == "verilator":
 			build_args.append("-Wno-fatal")
+		build_meta = build_metadata(sim_name, config, params, build_args, waves)
+		reuse_build = options.keep_build and not options.force_rebuild and can_reuse_build(build_dir, sim_name, config.hdl_toplevel, build_meta)
 		try:
-			runner.build(
-				sources=rtl_sources(),
-				includes=[RTL_DIR],
-				hdl_toplevel=config.hdl_toplevel,
-				parameters=params,
-				build_args=build_args,
-				build_dir=build_dir,
-				always=True,
-				timescale=("1ns", "1ps"),
-				waves=waves,
-				verbose=verbose,
-				log_file=LOG_ROOT / f"{config.name}.build.log",
-			)
+			if reuse_build:
+				prime_runner_for_reused_build(runner, rtl_sources(), params)
+				print(f"[build-reuse] {config.name}: reusing {build_dir}")
+			else:
+				runner.build(
+					sources=rtl_sources(),
+					includes=[RTL_DIR],
+					hdl_toplevel=config.hdl_toplevel,
+					parameters=params,
+					build_args=build_args,
+					build_dir=build_dir,
+					always=options.force_rebuild,
+					timescale=DEFAULT_TIMESCALE,
+					waves=waves,
+					verbose=verbose,
+					log_file=LOG_ROOT / f"{config.name}.build.log",
+				)
+				write_build_metadata(build_dir, build_meta)
 		except subprocess.CalledProcessError as exc:
 			if not config.expect_startup_fail:
 				raise
@@ -951,6 +1083,7 @@ def run_case(sim_name: str, suite_name: str, waves: bool, verbose: bool, config:
 	coverage_files: List[Path] = []
 	functional_files: List[Path] = []
 	for seed in seeds:
+		selected_test_modules = narrow_test_modules(config.test_modules, options.testcase_names)
 		test_suffix = f"{config.name}_seed{seed}"
 		results_xml = RESULTS_ROOT / f"{test_suffix}.xml"
 		log_file = LOG_ROOT / f"{test_suffix}.test.log"
@@ -1022,7 +1155,7 @@ def run_case(sim_name: str, suite_name: str, waves: bool, verbose: bool, config:
 		exit_code = 0
 		try:
 			runner.test(
-				test_module=config.test_modules,
+				test_module=selected_test_modules,
 				hdl_toplevel=config.hdl_toplevel,
 				seed=seed,
 				extra_env=extra_env,
@@ -1031,8 +1164,9 @@ def run_case(sim_name: str, suite_name: str, waves: bool, verbose: bool, config:
 				results_xml=str(results_xml),
 				waves=waves,
 				verbose=verbose,
-				timescale=("1ns", "1ps"),
+				timescale=DEFAULT_TIMESCALE,
 				log_file=log_file,
+				test_filter=options.test_filter,
 			)
 		except SystemExit as exc:
 			exit_code = exc.code if isinstance(exc.code, int) else 1
@@ -1076,6 +1210,14 @@ def ensure_dirs() -> None:
 def main() -> None:
 	args = parse_args()
 	target = normalize_target(args.target)
+	sim_name = resolve_sim_name(args.sim, args.suite)
+	test_filter, testcase_names = resolve_test_selection(args.test_filter, args.testcase)
+	options = RunOptions(
+		keep_build=args.keep_build,
+		force_rebuild=args.rebuild,
+		test_filter=test_filter,
+		testcase_names=testcase_names,
+	)
 	if args.suite == "coverage":
 		target = APP_TARGET_PT
 	ensure_dirs()
@@ -1085,7 +1227,7 @@ def main() -> None:
 	all_coverage_files: List[Path] = []
 	all_functional_files: List[Path] = []
 	for config in suite_configs(args.suite, args.seed, target):
-		coverage_files, functional_files = run_case(args.sim, args.suite, args.waves, args.verbose, config, target)
+		coverage_files, functional_files = run_case(sim_name, args.suite, args.waves, args.verbose, config, target, options)
 		all_coverage_files.extend(coverage_files)
 		all_functional_files.extend(functional_files)
 	write_functional_coverage_suite(args.suite, all_functional_files)

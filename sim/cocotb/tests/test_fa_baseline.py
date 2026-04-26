@@ -175,6 +175,12 @@ async def wait_signal_high(dut, signal, timeout_cycles: int = 4000) -> None:
     raise AssertionError("signal did not go high before timeout")
 
 
+async def pulse_for_one_cycle(dut, signal, value: int = 1) -> None:
+    signal.value = Force(value)
+    await ClockCycles(dut.clk, 1)
+    signal.value = Release()
+
+
 def expected_v_pv_layout_words(v_matrix: list[list[float]]) -> list[int]:
     words = [0 for _ in range(32 * 16)]
     for row in range(16):
@@ -451,6 +457,142 @@ async def test_fa_baseline_vbuf_pv_layout(dut) -> None:
         expected_words = expected_v_pv_layout_words(v[:16])
         assert actual_words == expected_words
     finally:
+        env.shutdown()
+
+
+@cocotb.test()
+async def test_fa_baseline_qk_buf_banked_write_and_read_decode(dut) -> None:
+    env = await create_env(dut)
+    q_words = [0x1111_0001, 0x2222_0002, 0x3333_0003, 0x4444_0004]
+    k_words = [0xAAAA_1001, 0xBBBB_1002, 0xCCCC_1003, 0xDDDD_1004]
+    beat_word_mask = 0xF
+    beat_local_addr = 2
+    target_row = 3
+    try:
+        await env.reset()
+
+        core(dut).u_q_buf.beat_write_row_idx.value = Force(target_row)
+        core(dut).u_q_buf.beat_write_local_addr.value = Force(beat_local_addr)
+        core(dut).u_q_buf.beat_write_word_mask.value = Force(beat_word_mask)
+        core(dut).u_q_buf.beat_write_data.value = Force(pack_words_to_int(q_words))
+        await pulse_for_one_cycle(dut, core(dut).u_q_buf.beat_write_valid)
+
+        core(dut).u_k_buf.beat_write_row_idx.value = Force(target_row)
+        core(dut).u_k_buf.beat_write_local_addr.value = Force(beat_local_addr)
+        core(dut).u_k_buf.beat_write_word_mask.value = Force(beat_word_mask)
+        core(dut).u_k_buf.beat_write_data.value = Force(pack_words_to_int(k_words))
+        await pulse_for_one_cycle(dut, core(dut).u_k_buf.beat_write_valid)
+
+        q_tile_words = flat_words(int(core(dut).u_q_buf.tile_flat.value), 16 * 32)
+        k_tile_words = flat_words(int(core(dut).u_k_buf.tile_flat.value), 16 * 32)
+        base_word_idx = (target_row * 32) + (beat_local_addr * 4)
+        assert q_tile_words[base_word_idx : base_word_idx + 4] == q_words
+        assert k_tile_words[base_word_idx : base_word_idx + 4] == k_words
+
+        for bank_sel, expected_word in enumerate(q_words):
+            core(dut).u_q_buf.qk_rd_addr.value = Force((beat_local_addr * 4) + bank_sel)
+            await pulse_for_one_cycle(dut, core(dut).u_q_buf.qk_rd_en)
+            assert int(core(dut).u_q_buf.qk_rd_valid.value) == 1
+            q_row_words = flat_words(int(core(dut).u_q_buf.qk_rd_data.value), 16)
+            assert q_row_words[target_row] == expected_word
+
+        for bank_sel, expected_word in enumerate(k_words):
+            core(dut).u_k_buf.qk_rd_addr.value = Force((beat_local_addr * 4) + bank_sel)
+            await pulse_for_one_cycle(dut, core(dut).u_k_buf.qk_rd_en)
+            assert int(core(dut).u_k_buf.qk_rd_valid.value) == 1
+            k_row_words = flat_words(int(core(dut).u_k_buf.qk_rd_data.value), 16)
+            assert k_row_words[target_row] == expected_word
+    finally:
+        for handle in (
+            core(dut).u_q_buf.beat_write_valid,
+            core(dut).u_q_buf.beat_write_row_idx,
+            core(dut).u_q_buf.beat_write_local_addr,
+            core(dut).u_q_buf.beat_write_word_mask,
+            core(dut).u_q_buf.beat_write_data,
+            core(dut).u_q_buf.qk_rd_en,
+            core(dut).u_q_buf.qk_rd_addr,
+            core(dut).u_k_buf.beat_write_valid,
+            core(dut).u_k_buf.beat_write_row_idx,
+            core(dut).u_k_buf.beat_write_local_addr,
+            core(dut).u_k_buf.beat_write_word_mask,
+            core(dut).u_k_buf.beat_write_data,
+            core(dut).u_k_buf.qk_rd_en,
+            core(dut).u_k_buf.qk_rd_addr,
+        ):
+            try:
+                handle.value = Release()
+            except Exception:
+                pass
+        env.shutdown()
+
+
+@cocotb.test()
+async def test_fa_baseline_v_buf_banked_write_mapping(dut) -> None:
+    env = await create_env(dut)
+    v_words = [0x0102_0304, 0x1112_1314, 0x2122_2324, 0x3132_3334]
+    target_row = 5
+    beat_local_addr = 4
+    try:
+        await env.reset()
+
+        core(dut).u_v_buf.beat_write_row_idx.value = Force(target_row)
+        core(dut).u_v_buf.beat_write_local_addr.value = Force(beat_local_addr)
+        core(dut).u_v_buf.beat_write_word_mask.value = Force(0xF)
+        core(dut).u_v_buf.beat_write_data.value = Force(pack_words_to_int(v_words))
+        await pulse_for_one_cycle(dut, core(dut).u_v_buf.beat_write_valid)
+
+        v_tile_words = flat_words(int(core(dut).u_v_buf.tile_flat.value), 16 * 32)
+        base_word_idx = (target_row * 32) + (beat_local_addr * 4)
+        assert v_tile_words[base_word_idx : base_word_idx + 4] == v_words
+    finally:
+        for handle in (
+            core(dut).u_v_buf.beat_write_valid,
+            core(dut).u_v_buf.beat_write_row_idx,
+            core(dut).u_v_buf.beat_write_local_addr,
+            core(dut).u_v_buf.beat_write_word_mask,
+            core(dut).u_v_buf.beat_write_data,
+        ):
+            try:
+                handle.value = Release()
+            except Exception:
+                pass
+        env.shutdown()
+
+
+@cocotb.test()
+async def test_fa_baseline_vbuf_pv_source_beat_layout_mapping(dut) -> None:
+    env = await create_env(dut)
+    src_words = [0x1001_1000, 0x1003_1002, 0x1005_1004, 0x1007_1006]
+    try:
+        await env.reset()
+
+        core(dut).u_v_buf_pv.src_word_idx_base.value = Force(0)
+        core(dut).u_v_buf_pv.src_word_mask.value = Force(0xF)
+        core(dut).u_v_buf_pv.src_data.value = Force(pack_words_to_int(src_words))
+        await pulse_for_one_cycle(dut, core(dut).u_v_buf_pv.src_wr_valid)
+
+        actual_words = flat_words(int(core(dut).u_v_buf_pv.layout_flat.value), 32 * 16)
+        expected_words = [0 for _ in range(32 * 16)]
+        expected_words[0] = 0x0000_1000
+        expected_words[1] = 0x0000_1001
+        expected_words[2] = 0x0000_1002
+        expected_words[3] = 0x0000_1003
+        expected_words[4] = 0x0000_1004
+        expected_words[5] = 0x0000_1005
+        expected_words[6] = 0x0000_1006
+        expected_words[7] = 0x0000_1007
+        assert actual_words[:16] == expected_words[:16]
+    finally:
+        for handle in (
+            core(dut).u_v_buf_pv.src_wr_valid,
+            core(dut).u_v_buf_pv.src_word_idx_base,
+            core(dut).u_v_buf_pv.src_word_mask,
+            core(dut).u_v_buf_pv.src_data,
+        ):
+            try:
+                handle.value = Release()
+            except Exception:
+                pass
         env.shutdown()
 
 

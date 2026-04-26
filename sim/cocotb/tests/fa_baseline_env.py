@@ -5,7 +5,7 @@ import math
 import os
 import random
 from dataclasses import dataclass
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 import cocotb
 from cocotb.clock import Clock
@@ -48,6 +48,13 @@ HEAD_DIM = 64
 TILE_ROWS = 16
 WORDS_PER_ROW = 32
 WORDS_PER_TILE = 512
+
+
+def env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def discover_case_name() -> str:
@@ -259,8 +266,13 @@ class FABaselineEnv:
         self._wr_data_ready_pattern = ConstantPattern(1)
         self._rd_active = None
         self._wr_active = None
-        self._rd_fault_early_last_word: int | None = None
+        self._rd_fault_early_last_beat: int | None = None
         self._rd_fault_suppress_final_last = False
+        self._fast_wait_enabled = env_flag("FA_FAST_WAIT", True)
+        self._status_handles_resolved = False
+        self._status_busy_handle = None
+        self._status_done_handle = None
+        self._status_error_handle = None
 
     async def start(self) -> None:
         if self._started:
@@ -296,9 +308,10 @@ class FABaselineEnv:
         self.dut.s_axil_arvalid.value = 0
         self.dut.s_axil_rready.value = 0
         self.dut.rd_desc_ready.value = 1
-        self.dut.rd_data_valid.value = 0
-        self.dut.rd_data.value = 0
-        self.dut.rd_data_last.value = 0
+        self.dut.rd_beat_valid.value = 0
+        self.dut.rd_beat_data.value = 0
+        self.dut.rd_beat_word_count.value = 0
+        self.dut.rd_beat_last.value = 0
         self.dut.wr_desc_ready.value = 1
         self.dut.wr_data_ready.value = 1
 
@@ -312,8 +325,9 @@ class FABaselineEnv:
     def _abort_dma_agents(self) -> None:
         self._rd_active = None
         self._wr_active = None
-        self.dut.rd_data_valid.value = 0
-        self.dut.rd_data_last.value = 0
+        self.dut.rd_beat_valid.value = 0
+        self.dut.rd_beat_word_count.value = 0
+        self.dut.rd_beat_last.value = 0
         self.dut.wr_data_ready.value = 1
 
     def set_read_patterns(
@@ -341,14 +355,14 @@ class FABaselineEnv:
     def set_read_faults(
         self,
         *,
-        early_last_word: int | None = None,
+        early_last_beat: int | None = None,
         suppress_final_last: bool = False,
     ) -> None:
-        self._rd_fault_early_last_word = early_last_word
+        self._rd_fault_early_last_beat = early_last_beat
         self._rd_fault_suppress_final_last = suppress_final_last
 
     def clear_read_faults(self) -> None:
-        self._rd_fault_early_last_word = None
+        self._rd_fault_early_last_beat = None
         self._rd_fault_suppress_final_last = False
 
     def load_qkv(
@@ -433,7 +447,54 @@ class FABaselineEnv:
         await self.axil_write(ADDR_CTRL, self.ctrl_shadow)
         self._abort_dma_agents()
 
+    def _resolve_handle_chain(self, *names: str):
+        handle = self.dut
+        for name in names:
+            try:
+                handle = getattr(handle, name)
+            except AttributeError:
+                return None
+        return handle
+
+    def _resolve_status_handles(self) -> None:
+        if self._status_handles_resolved:
+            return
+        self._status_busy_handle = self._resolve_handle_chain("status_busy")
+        if self._status_busy_handle is None:
+            self._status_busy_handle = self._resolve_handle_chain("u_fa_csr", "status_busy")
+        self._status_done_handle = self._resolve_handle_chain("status_done")
+        if self._status_done_handle is None:
+            self._status_done_handle = self._resolve_handle_chain("u_fa_csr", "status_done")
+        self._status_error_handle = self._resolve_handle_chain("status_error")
+        self._status_handles_resolved = True
+
+    def _fast_wait_ready(self) -> bool:
+        if not self._fast_wait_enabled:
+            return False
+        self._resolve_status_handles()
+        return (
+            self._status_busy_handle is not None
+            and self._status_done_handle is not None
+            and self._status_error_handle is not None
+        )
+
+    def _internal_status_word(self) -> int:
+        status = 0
+        if self._status_busy_handle is not None and value_to_int(self._status_busy_handle.value):
+            status |= STATUS_BUSY
+        if self._status_done_handle is not None and value_to_int(self._status_done_handle.value):
+            status |= STATUS_DONE
+        if self._status_error_handle is not None and value_to_int(self._status_error_handle.value):
+            status |= STATUS_ERROR
+        return status
+
     async def wait_busy(self, expected: bool, timeout_cycles: int = 4000) -> None:
+        if self._fast_wait_ready():
+            for _ in range(timeout_cycles):
+                if bool(self._internal_status_word() & STATUS_BUSY) == expected:
+                    return
+                await RisingEdge(self.dut.clk)
+            raise AssertionError(f"busy did not become {expected}")
         for _ in range(timeout_cycles):
             status = await self.axil_read(ADDR_STATUS)
             if bool(status & STATUS_BUSY) == expected:
@@ -442,6 +503,15 @@ class FABaselineEnv:
         raise AssertionError(f"busy did not become {expected}")
 
     async def wait_done(self, timeout_cycles: int = 600000) -> int:
+        if self._fast_wait_ready():
+            for _ in range(timeout_cycles):
+                status = self._internal_status_word()
+                if status & STATUS_DONE:
+                    return status
+                if status & STATUS_ERROR:
+                    raise AssertionError(f"run hit error status=0x{status:08x}")
+                await RisingEdge(self.dut.clk)
+            raise AssertionError("run did not finish before timeout")
         for _ in range(timeout_cycles):
             status = await self.axil_read(ADDR_STATUS)
             if status & STATUS_DONE:
@@ -461,9 +531,11 @@ class FABaselineEnv:
         word_offset = 0
         valid_held = False
         last_held = False
+        beat_words_held = 0
         self.dut.rd_desc_ready.value = 1
-        self.dut.rd_data_valid.value = 0
-        self.dut.rd_data_last.value = 0
+        self.dut.rd_beat_valid.value = 0
+        self.dut.rd_beat_word_count.value = 0
+        self.dut.rd_beat_last.value = 0
         while True:
             await RisingEdge(self.dut.clk)
             if active_words == 0:
@@ -474,39 +546,51 @@ class FABaselineEnv:
                     word_offset = 0
                     valid_held = False
                     last_held = False
+                    beat_words_held = 0
                     self.rd_desc_log.append(ReadDescLog(addr=active_addr, words=active_words, tag=active_kind))
             else:
-                if value_to_int(self.dut.rd_data_valid.value) and value_to_int(self.dut.rd_data_ready.value):
+                if value_to_int(self.dut.rd_beat_valid.value) and value_to_int(self.dut.rd_beat_ready.value):
                     sent_last = last_held
-                    word_offset += 1
+                    word_offset += beat_words_held
                     valid_held = False
                     last_held = False
+                    beat_words_held = 0
                     if sent_last or word_offset >= active_words:
                         active_words = 0
 
             self.dut.rd_desc_ready.value = self._rd_desc_ready_pattern.next()
             if active_words == 0:
-                self.dut.rd_data_valid.value = 0
-                self.dut.rd_data_last.value = 0
+                self.dut.rd_beat_valid.value = 0
+                self.dut.rd_beat_word_count.value = 0
+                self.dut.rd_beat_last.value = 0
             else:
                 source_words = self.q_words if active_kind == RD_TAG_Q else self.k_words if active_kind == RD_TAG_K else self.v_words
                 base_addr = self.q_base if active_kind == RD_TAG_Q else self.k_base if active_kind == RD_TAG_K else self.v_base
                 start_word = (active_addr - base_addr) // 4
                 if not valid_held:
                     valid_held = bool(self._rd_data_valid_pattern.next())
-                self.dut.rd_data_valid.value = 1 if valid_held else 0
+                self.dut.rd_beat_valid.value = 1 if valid_held else 0
                 if valid_held:
-                    is_final_word = word_offset == (active_words - 1)
-                    emit_last = is_final_word
-                    if self._rd_fault_early_last_word is not None and word_offset == self._rd_fault_early_last_word:
+                    remaining_words = active_words - word_offset
+                    beat_words = min(4, remaining_words)
+                    beat_idx = word_offset // 4
+                    is_final_beat = beat_words == remaining_words
+                    emit_last = is_final_beat
+                    if self._rd_fault_early_last_beat is not None and beat_idx == self._rd_fault_early_last_beat:
                         emit_last = True
-                    if is_final_word and self._rd_fault_suppress_final_last:
+                    if is_final_beat and self._rd_fault_suppress_final_last:
                         emit_last = False
+                    beat_value = 0
+                    for beat_lane in range(beat_words):
+                        beat_value |= (int(source_words[start_word + word_offset + beat_lane]) & 0xFFFF_FFFF) << (beat_lane * 32)
                     last_held = emit_last
-                    self.dut.rd_data.value = source_words[start_word + word_offset]
-                    self.dut.rd_data_last.value = int(emit_last)
+                    beat_words_held = beat_words
+                    self.dut.rd_beat_data.value = beat_value
+                    self.dut.rd_beat_word_count.value = beat_words
+                    self.dut.rd_beat_last.value = int(emit_last)
                 else:
-                    self.dut.rd_data_last.value = 0
+                    self.dut.rd_beat_word_count.value = 0
+                    self.dut.rd_beat_last.value = 0
 
     async def _wr_dma_agent(self) -> None:
         active_addr = 0
