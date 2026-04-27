@@ -574,54 +574,38 @@ async def test_fa_baseline_vbuf_pv_layout(dut) -> None:
 @cocotb.test()
 async def test_fa_baseline_qk_buf_banked_write_and_read_decode(dut) -> None:
     env = await create_env(dut)
-    q_words = [0x1111_0001, 0x2222_0002, 0x3333_0003, 0x4444_0004]
-    k_words = [0xAAAA_1001, 0xBBBB_1002, 0xCCCC_1003, 0xDDDD_1004]
-    beat_word_mask = 0xF
     beat_local_addr = 2
     target_row = 3
     try:
         await env.reset()
 
-        core(dut).u_q_buf.beat_write_row_idx.value = Force(target_row)
-        core(dut).u_q_buf.beat_write_local_addr.value = Force(beat_local_addr)
-        core(dut).u_q_buf.beat_write_word_mask.value = Force(beat_word_mask)
-        core(dut).u_q_buf.beat_write_data.value = Force(pack_words_to_int(q_words))
-        await pulse_for_one_cycle(dut, core(dut).u_q_buf.beat_write_valid)
+        q = zero_matrix(SEQ_LEN, HEAD_DIM)
+        k = zero_matrix(SEQ_LEN, HEAD_DIM)
+        v = zero_matrix(SEQ_LEN, HEAD_DIM)
+        base_col = beat_local_addr * 8
+        q[target_row][base_col : base_col + 8] = [1.0, -2.0, 3.25, -4.5, 5.0, -6.0, 7.5, -8.25]
+        k[target_row][base_col : base_col + 8] = [-1.5, 2.5, -3.0, 4.0, -5.25, 6.5, -7.0, 8.0]
+        env.load_qkv(q, k, v)
+        await env.start_run(causal=False)
 
-        core(dut).u_k_buf.beat_write_row_idx.value = Force(target_row)
-        core(dut).u_k_buf.beat_write_local_addr.value = Force(beat_local_addr)
-        core(dut).u_k_buf.beat_write_word_mask.value = Force(beat_word_mask)
-        core(dut).u_k_buf.beat_write_data.value = Force(pack_words_to_int(k_words))
-        await pulse_for_one_cycle(dut, core(dut).u_k_buf.beat_write_valid)
-
-        q_tile_words = flat_words(int(core(dut).u_q_buf.tile_flat.value), 16 * 32)
-        k_tile_words = flat_words(int(core(dut).u_k_buf.tile_flat.value), 16 * 32)
         base_word_idx = (target_row * 32) + (beat_local_addr * 4)
-        assert q_tile_words[base_word_idx : base_word_idx + 4] == q_words
-        assert k_tile_words[base_word_idx : base_word_idx + 4] == k_words
+        q_words = pack_q88_row_major_words(q[:16])[base_word_idx : base_word_idx + 4]
+        k_words = pack_q88_row_major_words(k[:16])[base_word_idx : base_word_idx + 4]
+        for _ in range(3000):
+            await ClockCycles(dut.clk, 1)
+            q_tile_words = flat_words(int(core(dut).u_q_buf.tile_flat.value), 16 * 32)
+            k_tile_words = flat_words(int(core(dut).u_k_buf.tile_flat.value), 16 * 32)
+            if (
+                q_tile_words[base_word_idx : base_word_idx + 4] == q_words
+                and k_tile_words[base_word_idx : base_word_idx + 4] == k_words
+            ):
+                break
+        else:
+            assert q_tile_words[base_word_idx : base_word_idx + 4] == q_words
+            assert k_tile_words[base_word_idx : base_word_idx + 4] == k_words
         # The real Q/K SRAM read handshake is covered by test_fa_baseline_qk_core_real_tile.
 
     finally:
-        for handle in (
-            core(dut).u_q_buf.beat_write_valid,
-            core(dut).u_q_buf.beat_write_row_idx,
-            core(dut).u_q_buf.beat_write_local_addr,
-            core(dut).u_q_buf.beat_write_word_mask,
-            core(dut).u_q_buf.beat_write_data,
-            core(dut).u_q_buf.qk_rd_en,
-            core(dut).u_q_buf.qk_rd_addr,
-            core(dut).u_k_buf.beat_write_valid,
-            core(dut).u_k_buf.beat_write_row_idx,
-            core(dut).u_k_buf.beat_write_local_addr,
-            core(dut).u_k_buf.beat_write_word_mask,
-            core(dut).u_k_buf.beat_write_data,
-            core(dut).u_k_buf.qk_rd_en,
-            core(dut).u_k_buf.qk_rd_addr,
-        ):
-            try:
-                handle.value = Release()
-            except Exception:
-                pass
         env.shutdown()
 
 

@@ -115,6 +115,89 @@ module FA_BANKED_TILE_BUF_REAL (
 
 endmodule
 
+module FA_REG_TILE_BUF_REAL (
+    input  wire           clk,
+    input  wire           rstn,
+    input  wire           clear,
+    input  wire           beat_write_valid,
+    input  wire [3:0]     beat_write_row_idx,
+    input  wire [2:0]     beat_write_local_addr,
+    input  wire [3:0]     beat_write_word_mask,
+    input  wire [127:0]   beat_write_data,
+    input  wire           rd_en,
+    input  wire [4:0]     rd_addr,
+    output reg            rd_valid,
+    output reg  [511:0]   rd_data,
+    output wire [16383:0] tile_flat
+);
+
+    reg [31:0] word_mem_r [0:511];
+    integer bi;
+    integer row_i;
+`ifndef SYNTHESIS
+    integer wi;
+
+    initial begin
+        for (wi = 0; wi < 512; wi = wi + 1) begin
+            word_mem_r[wi] = 32'd0;
+        end
+    end
+
+    generate
+        genvar gi;
+        for (gi = 0; gi < 512; gi = gi + 1) begin : gen_flat
+            assign tile_flat[(gi * 32) +: 32] = word_mem_r[gi];
+        end
+    endgenerate
+`else
+    wire unused_tile_flat_zero_w = (clk & 1'b0)
+                                 | (rstn & 1'b0)
+                                 | (clear & 1'b0)
+                                 | (beat_write_valid & 1'b0)
+                                 | ((|beat_write_row_idx) & 1'b0)
+                                 | ((|beat_write_local_addr) & 1'b0)
+                                 | ((|beat_write_word_mask) & 1'b0)
+                                 | ((|beat_write_data) & 1'b0);
+    assign tile_flat = {16384{unused_tile_flat_zero_w}};
+`endif
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            rd_valid <= 1'b0;
+            rd_data <= 512'd0;
+`ifndef SYNTHESIS
+            for (wi = 0; wi < 512; wi = wi + 1) begin
+                word_mem_r[wi] <= 32'd0;
+            end
+`endif
+        end else if (clear) begin
+            rd_valid <= 1'b0;
+            rd_data <= 512'd0;
+`ifndef SYNTHESIS
+            for (wi = 0; wi < 512; wi = wi + 1) begin
+                word_mem_r[wi] <= 32'd0;
+            end
+`endif
+        end else begin
+            rd_valid <= rd_en;
+            if (rd_en) begin
+                for (row_i = 0; row_i < 16; row_i = row_i + 1) begin
+                    rd_data[(row_i * 32) +: 32] <= word_mem_r[(row_i * 32) + rd_addr];
+                end
+            end
+            if (beat_write_valid) begin
+                for (bi = 0; bi < 4; bi = bi + 1) begin
+                    if (beat_write_word_mask[bi]) begin
+                        word_mem_r[(beat_write_row_idx * 32) + (beat_write_local_addr * 4) + bi] <=
+                            beat_write_data[(bi * 32) +: 32];
+                    end
+                end
+            end
+        end
+    end
+
+endmodule
+
 module FA_Q_BUF_REAL (
     input  wire           clk,
     input  wire           rstn,
@@ -131,7 +214,7 @@ module FA_Q_BUF_REAL (
     output wire [16383:0] tile_flat
 );
 
-    FA_BANKED_TILE_BUF_REAL u_bank_buf (
+    FA_REG_TILE_BUF_REAL u_reg_buf (
         .clk(clk),
         .rstn(rstn),
         .clear(clear),
