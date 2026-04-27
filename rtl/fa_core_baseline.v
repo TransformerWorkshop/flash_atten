@@ -172,10 +172,10 @@ module FA_CORE_BASELINE #(
     wire         oacc_row_rd_en;
     wire [3:0]   oacc_row_rd_addr;
     wire         oacc_row_rd_valid;
-    wire [2047:0] oacc_row_rd_data;
+    wire [1023:0] oacc_row_rd_data;
     wire         oacc_row_wr_en;
     wire [3:0]   oacc_row_wr_addr;
-    wire [2047:0] oacc_row_wr_data;
+    wire [1023:0] oacc_row_wr_data;
     reg [31:0]   rd_bytes_r;
     reg [31:0]   wr_bytes_r;
     wire         core_unused_zero_w = (run_ctrl_busy_w & 1'b0)

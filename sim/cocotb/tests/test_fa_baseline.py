@@ -152,6 +152,54 @@ def q88_raw_to_q16_word(raw: int) -> int:
     return (raw << 8) & 0xFFFF_FFFF
 
 
+def s16(raw: int) -> int:
+    raw &= 0xFFFF
+    if raw & 0x8000:
+        raw -= 0x10000
+    return raw
+
+
+def q16_to_q412_rn_sat_py(value: int) -> int:
+    value_s = s32(value)
+    if value_s >= 0:
+        rounded = value_s + 8
+    else:
+        rounded = value_s - 8
+    shifted = rounded >> 4
+    if shifted > 32767:
+        shifted = 32767
+    elif shifted < -32768:
+        shifted = -32768
+    return shifted & 0xFFFF
+
+
+def q88_raw_to_q412_word(raw: int) -> int:
+    value = s16(raw) << 4
+    if value > 32767:
+        value = 32767
+    elif value < -32768:
+        value = -32768
+    return value & 0xFFFF
+
+
+def q412_raw_to_q16_word(raw: int) -> int:
+    return (s16(raw) << 4) & 0xFFFF_FFFF
+
+
+def q412_to_q88_rn_sat_py(raw: int) -> int:
+    value = s16(raw)
+    if value >= 0:
+        rounded = value + 8
+    else:
+        rounded = value - 8
+    shifted = rounded >> 4
+    if shifted > 32767:
+        shifted = 32767
+    elif shifted < -32768:
+        shifted = -32768
+    return shifted & 0xFFFF
+
+
 def q16_clamp_nonpos_neg8_py(value: int) -> int:
     value_s = s32(value)
     if value_s > 0:
@@ -343,12 +391,12 @@ def expected_row_state_update(
 
 
 def expected_oacc_update_words(old_words: list[int], rescale_words: list[int], partial_words: list[int]) -> list[int]:
-    old_q16_words = q16_oacc_words_from_q88_words(old_words)
-    next_q16_words = expected_oacc_update_q16_words(old_q16_words, rescale_words, partial_words)
-    return q16_oacc_words_to_q88_words(next_q16_words)
+    old_q412_words = q412_oacc_words_from_q88_words(old_words)
+    next_q412_words = expected_oacc_update_q412_words(old_q412_words, rescale_words, partial_words)
+    return q412_oacc_words_to_q88_words(next_q412_words)
 
 
-def q16_oacc_words_from_q88_words(words: list[int], rows: int = 16) -> list[int]:
+def q412_oacc_words_from_q88_words(words: list[int], rows: int = 16) -> list[int]:
     out_words = [0 for _ in range(rows * 64)]
     for row in range(rows):
         for col in range(64):
@@ -358,15 +406,15 @@ def q16_oacc_words_from_q88_words(words: list[int], rows: int = 16) -> list[int]
                 raw = (word >> 16) & 0xFFFF
             else:
                 raw = word & 0xFFFF
-            out_words[(row * 64) + col] = q88_raw_to_q16_word(raw)
+            out_words[(row * 64) + col] = q88_raw_to_q412_word(raw)
     return out_words
 
 
-def q16_oacc_words_to_q88_words(q16_words: list[int], rows: int = 16) -> list[int]:
+def q412_oacc_words_to_q88_words(q412_words: list[int], rows: int = 16) -> list[int]:
     out_words = [0 for _ in range(rows * 32)]
     for row in range(rows):
         for col in range(64):
-            raw = q16_to_q88_rn_sat_py(q16_words[(row * 64) + col])
+            raw = q412_to_q88_rn_sat_py(q412_words[(row * 64) + col])
             word_idx = ((row * 64) + col) >> 1
             if col & 1:
                 out_words[word_idx] = (out_words[word_idx] & 0x0000_FFFF) | ((raw & 0xFFFF) << 16)
@@ -375,7 +423,7 @@ def q16_oacc_words_to_q88_words(q16_words: list[int], rows: int = 16) -> list[in
     return out_words
 
 
-def expected_oacc_update_q16_words(old_q16_words: list[int], rescale_words: list[int], partial_words: list[int]) -> list[int]:
+def expected_oacc_update_q412_words(old_q412_words: list[int], rescale_words: list[int], partial_words: list[int]) -> list[int]:
     out_words = [0 for _ in range(16 * 64)]
     for row in range(16):
         scale_raw = rescale_words[row]
@@ -386,15 +434,23 @@ def expected_oacc_update_q16_words(old_q16_words: list[int], rescale_words: list
                 part_raw = (part_word >> 16) & 0xFFFF
             else:
                 part_raw = part_word & 0xFFFF
-            scaled_old_q16 = q16_mul_rn_sat_py(old_q16_words[(row * 64) + col], scale_raw)
-            out_words[(row * 64) + col] = q16_add_sat_py(scaled_old_q16, q88_raw_to_q16_word(part_raw))
+            old_q16 = q412_raw_to_q16_word(old_q412_words[(row * 64) + col])
+            scaled_old_q16 = q16_mul_rn_sat_py(old_q16, scale_raw)
+            next_q16 = q16_add_sat_py(scaled_old_q16, q88_raw_to_q16_word(part_raw))
+            out_words[(row * 64) + col] = q16_to_q412_rn_sat_py(next_q16)
     return out_words
 
 
-def pack_row_words_to_int(words: list[int]) -> int:
+q16_oacc_words_from_q88_words = q412_oacc_words_from_q88_words
+q16_oacc_words_to_q88_words = q412_oacc_words_to_q88_words
+expected_oacc_update_q16_words = expected_oacc_update_q412_words
+
+
+def pack_row_words_to_int(words: list[int], word_bits: int = 16) -> int:
     value = 0
+    mask = (1 << word_bits) - 1
     for idx, word in enumerate(words):
-        value |= (int(word) & 0xFFFF_FFFF) << (idx * 32)
+        value |= (int(word) & mask) << (idx * word_bits)
     return value
 
 
@@ -952,7 +1008,7 @@ async def test_fa_baseline_oacc_buf_real_row_write_export_coherence(dut) -> None
         old_words = [0 for _ in range(16 * 32)]
         partial_words = [0 for _ in range(16 * 32)]
         old_q16_words = q16_oacc_words_from_q88_words(old_words)
-        target_row_words = [((idx + 1) * 0x0101_0001) & 0xFFFF_FFFF for idx in range(32)]
+        target_row_words = [((idx + 1) & 0x00FF) | (((idx + 33) & 0x00FF) << 16) for idx in range(32)]
         for idx, word in enumerate(target_row_words):
             partial_words[(4 * 32) + idx] = word
         rescale_words = [0 for _ in range(16)]

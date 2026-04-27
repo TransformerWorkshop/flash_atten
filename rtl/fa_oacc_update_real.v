@@ -9,10 +9,10 @@ module FA_OACC_UPDATE_REAL (
     output reg            oacc_row_rd_en,
     output reg  [3:0]     oacc_row_rd_addr,
     input  wire           oacc_row_rd_valid,
-    input  wire [2047:0]  oacc_row_rd_data,
+    input  wire [1023:0]  oacc_row_rd_data,
     output reg            oacc_row_wr_en,
     output reg  [3:0]     oacc_row_wr_addr,
-    output reg  [2047:0]  oacc_row_wr_data,
+    output reg  [1023:0]  oacc_row_wr_data,
     output reg            resp_valid,
     input  wire           resp_ready,
     output reg            done_pulse
@@ -29,12 +29,12 @@ module FA_OACC_UPDATE_REAL (
     reg [2:0]   state_n;
     reg [3:0]   row_idx_r;
     reg [3:0]   row_idx_n;
-    reg [2047:0] row_new_data_w;
+    reg [1023:0] row_new_data_w;
     reg          oacc_row_rd_en_n;
     reg [3:0]    oacc_row_rd_addr_n;
     reg          oacc_row_wr_en_n;
     reg [3:0]    oacc_row_wr_addr_n;
-    reg [2047:0] oacc_row_wr_data_n;
+    reg [1023:0] oacc_row_wr_data_n;
     reg          resp_valid_n;
     reg          done_pulse_n;
     reg signed [31:0] scale_raw_s;
@@ -87,16 +87,48 @@ module FA_OACC_UPDATE_REAL (
         end
     endfunction
 
-    function automatic [31:0] update_oacc_elem;
-        input signed [31:0] old_q16_word;
+    function automatic signed [31:0] q412_to_q16;
+        input signed [15:0] value;
+        begin
+            q412_to_q16 = {{12{value[15]}}, value, 4'd0};
+        end
+    endfunction
+
+    function automatic signed [15:0] q16_to_q412_rn_sat;
+        input signed [31:0] value;
+        reg signed [31:0] rounded;
+        reg signed [31:0] shifted;
+        begin
+            if (value >= 0) begin
+                rounded = value + 32'sd8;
+            end else begin
+                rounded = value - 32'sd8;
+            end
+            shifted = rounded >>> 4;
+            if (shifted > 32'sd32767) begin
+                q16_to_q412_rn_sat = 16'sh7FFF;
+            end else if (shifted < -32'sd32768) begin
+                q16_to_q412_rn_sat = -16'sh8000;
+            end else begin
+                q16_to_q412_rn_sat = shifted[15:0];
+            end
+        end
+    endfunction
+
+    function automatic [15:0] update_oacc_elem;
+        input signed [15:0] old_q412_word;
         input signed [31:0] scale_word;
         input signed [15:0] partial_q88_word;
+        reg signed [31:0] old_q16_v;
         reg signed [31:0] scaled_old_q16_v;
         reg signed [31:0] partial_q16_v;
+        reg signed [31:0] next_q16_v;
         begin
-            scaled_old_q16_v = q16_mul_rn_sat(old_q16_word, scale_word);
+            old_q16_v = q412_to_q16(old_q412_word);
+            scaled_old_q16_v = q16_mul_rn_sat(old_q16_v, scale_word);
             partial_q16_v = q88_to_q16(partial_q88_word);
-            update_oacc_elem = q16_add_sat(scaled_old_q16_v, partial_q16_v);
+            next_q16_v = q16_add_sat(scaled_old_q16_v, partial_q16_v);
+            update_oacc_elem = q16_to_q412_rn_sat(next_q16_v);
         end
     endfunction
 
@@ -229,11 +261,11 @@ module FA_OACC_UPDATE_REAL (
     end
 
     always @(*) begin
-        row_new_data_w = 2048'd0;
+        row_new_data_w = 1024'd0;
         scale_raw_s = rescale_vec_flat[(row_idx_r * 32) +: 32];
         for (elem_i = 0; elem_i < 64; elem_i = elem_i + 1) begin
-            row_new_data_w[(elem_i * 32) +: 32] = update_oacc_elem(
-                oacc_row_rd_data[(elem_i * 32) +: 32],
+            row_new_data_w[(elem_i * 16) +: 16] = update_oacc_elem(
+                oacc_row_rd_data[(elem_i * 16) +: 16],
                 scale_raw_s,
                 partial_o_tile_flat[(((row_idx_r * 32) + (elem_i >> 1)) * 32) + ((elem_i & 1) * 16) +: 16]
             );
@@ -248,7 +280,7 @@ module FA_OACC_UPDATE_REAL (
             oacc_row_rd_addr <= 4'd0;
             oacc_row_wr_en <= 1'b0;
             oacc_row_wr_addr <= 4'd0;
-            oacc_row_wr_data <= 2048'd0;
+            oacc_row_wr_data <= 1024'd0;
             resp_valid <= 1'b0;
             done_pulse <= 1'b0;
         end else if (clear) begin
@@ -258,7 +290,7 @@ module FA_OACC_UPDATE_REAL (
             oacc_row_rd_addr <= 4'd0;
             oacc_row_wr_en <= 1'b0;
             oacc_row_wr_addr <= 4'd0;
-            oacc_row_wr_data <= 2048'd0;
+            oacc_row_wr_data <= 1024'd0;
             resp_valid <= 1'b0;
             done_pulse <= 1'b0;
         end else begin

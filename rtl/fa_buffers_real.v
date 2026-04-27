@@ -485,10 +485,10 @@ module FA_OACC_BUF_REAL (
     input  wire            row_rd_en,
     input  wire [3:0]      row_rd_addr,
     output reg             row_rd_valid,
-    output wire [2047:0]   row_rd_data,
+    output wire [1023:0]   row_rd_data,
     input  wire            row_wr_en,
     input  wire [3:0]      row_wr_addr,
-    input  wire [2047:0]   row_wr_data,
+    input  wire [1023:0]   row_wr_data,
     input  wire            exp_rd_en,
     input  wire [3:0]      exp_rd_addr,
     output reg             exp_rd_valid,
@@ -505,57 +505,67 @@ module FA_OACC_BUF_REAL (
     reg [3:0] row_idx_r;
     reg [3:0] row_idx_n;
     reg [16383:0] load_data_r;
-    reg [31:0] shadow_q16_words_r [0:1023];
-    reg [2047:0] mem_wr_data_r;
+    reg [15:0] shadow_q412_words_r [0:1023];
+    reg [1023:0] mem_wr_data_r;
     reg [3:0]    mem_wr_addr_r;
-    reg [2047:0] mem_wr_mask_r;
+    reg [1023:0] mem_wr_mask_r;
     reg          mem_wr_en_r;
     wire         mem_rd_en_w;
     wire [3:0]   mem_rd_addr_w;
-    wire [2047:0] mem_rd_data_w;
+    wire [1023:0] mem_rd_data_w;
     wire [1023:0] exp_rd_data_w;
     wire         row_rd_sel_w = row_rd_en;
     wire         exp_rd_sel_w = !row_rd_en && exp_rd_en;
     integer wi;
     integer li;
 
-    function automatic signed [15:0] q16_to_q88_rn_sat;
-        input signed [31:0] value;
+    function automatic signed [15:0] q412_to_q88_rn_sat;
+        input signed [15:0] value;
+        reg signed [31:0] value_ext;
         reg signed [31:0] rounded;
         reg signed [31:0] shifted;
         begin
-            if (value >= 0) begin
-                rounded = value + 32'sd128;
+            value_ext = {{16{value[15]}}, value};
+            if (value_ext >= 0) begin
+                rounded = value_ext + 32'sd8;
             end else begin
-                rounded = value - 32'sd128;
+                rounded = value_ext - 32'sd8;
             end
-            shifted = rounded >>> 8;
+            shifted = rounded >>> 4;
             if (shifted > 32'sd32767) begin
-                q16_to_q88_rn_sat = 16'sh7FFF;
+                q412_to_q88_rn_sat = 16'sh7FFF;
             end else if (shifted < -32'sd32768) begin
-                q16_to_q88_rn_sat = -16'sh8000;
+                q412_to_q88_rn_sat = -16'sh8000;
             end else begin
-                q16_to_q88_rn_sat = shifted[15:0];
+                q412_to_q88_rn_sat = shifted[15:0];
             end
         end
     endfunction
 
-    function automatic signed [31:0] q88_to_q16;
+    function automatic signed [15:0] q88_to_q412_sat;
         input signed [15:0] value;
+        reg signed [31:0] shifted;
         begin
-            q88_to_q16 = {{8{value[15]}}, value, 8'd0};
+            shifted = {{16{value[15]}}, value} <<< 4;
+            if (shifted > 32'sd32767) begin
+                q88_to_q412_sat = 16'sh7FFF;
+            end else if (shifted < -32'sd32768) begin
+                q88_to_q412_sat = -16'sh8000;
+            end else begin
+                q88_to_q412_sat = shifted[15:0];
+            end
         end
     endfunction
 
-    function automatic [31:0] pack_q16_pair_to_q88;
-        input signed [31:0] lo_q16;
-        input signed [31:0] hi_q16;
+    function automatic [31:0] pack_q412_pair_to_q88;
+        input signed [15:0] lo_q412;
+        input signed [15:0] hi_q412;
         reg signed [15:0] lo_q88;
         reg signed [15:0] hi_q88;
         begin
-            lo_q88 = q16_to_q88_rn_sat(lo_q16);
-            hi_q88 = q16_to_q88_rn_sat(hi_q16);
-            pack_q16_pair_to_q88 = {hi_q88, lo_q88};
+            lo_q88 = q412_to_q88_rn_sat(lo_q412);
+            hi_q88 = q412_to_q88_rn_sat(hi_q412);
+            pack_q412_pair_to_q88 = {hi_q88, lo_q88};
         end
     endfunction
 
@@ -612,9 +622,9 @@ module FA_OACC_BUF_REAL (
     generate
         genvar gi;
         for (gi = 0; gi < 512; gi = gi + 1) begin : gen_flat
-            assign tile_flat[(gi * 32) +: 32] = pack_q16_pair_to_q88(
-                shadow_q16_words_r[gi * 2],
-                shadow_q16_words_r[(gi * 2) + 1]
+            assign tile_flat[(gi * 32) +: 32] = pack_q412_pair_to_q88(
+                shadow_q412_words_r[gi * 2],
+                shadow_q412_words_r[(gi * 2) + 1]
             );
         end
     endgenerate
@@ -627,9 +637,9 @@ module FA_OACC_BUF_REAL (
     generate
         genvar go;
         for (go = 0; go < 32; go = go + 1) begin : gen_exp_pack
-            assign exp_rd_data_w[(go * 32) +: 32] = pack_q16_pair_to_q88(
-                mem_rd_data_w[((go * 2) * 32) +: 32],
-                mem_rd_data_w[(((go * 2) + 1) * 32) +: 32]
+            assign exp_rd_data_w[(go * 32) +: 32] = pack_q412_pair_to_q88(
+                mem_rd_data_w[((go * 2) * 16) +: 16],
+                mem_rd_data_w[(((go * 2) + 1) * 16) +: 16]
             );
         end
     endgenerate
@@ -645,7 +655,7 @@ module FA_OACC_BUF_REAL (
 // synthesis translate_on
 
     FA_MASKED_ROWBUF_REAL #(
-        .ROW_WIDTH(2048),
+        .ROW_WIDTH(1024),
         .DEPTH(16)
     ) u_mem (
         .clk(clk),
@@ -661,20 +671,20 @@ module FA_OACC_BUF_REAL (
     always @(*) begin
         mem_wr_en_r = 1'b0;
         mem_wr_addr_r = 4'd0;
-        mem_wr_data_r = 2048'd0;
-        mem_wr_mask_r = 2048'd0;
+        mem_wr_data_r = 1024'd0;
+        mem_wr_mask_r = 1024'd0;
         if (state_r == ST_CLEAR) begin
             mem_wr_en_r = 1'b1;
             mem_wr_addr_r = row_idx_r;
-            mem_wr_data_r = 2048'd0;
-            mem_wr_mask_r = {2048{1'b1}};
+            mem_wr_data_r = 1024'd0;
+            mem_wr_mask_r = {1024{1'b1}};
         end else if (state_r == ST_LOAD) begin
             mem_wr_en_r = 1'b1;
             mem_wr_addr_r = row_idx_r;
-            mem_wr_mask_r = {2048{1'b1}};
-            mem_wr_data_r = 2048'd0;
+            mem_wr_mask_r = {1024{1'b1}};
+            mem_wr_data_r = 1024'd0;
             for (li = 0; li < 64; li = li + 1) begin
-                mem_wr_data_r[(li * 32) +: 32] = q88_to_q16(
+                mem_wr_data_r[(li * 16) +: 16] = q88_to_q412_sat(
                     load_data_r[(((row_idx_r * 32) + (li >> 1)) * 32) + ((li & 1) * 16) +: 16]
                 );
             end
@@ -682,7 +692,7 @@ module FA_OACC_BUF_REAL (
             mem_wr_en_r = 1'b1;
             mem_wr_addr_r = row_wr_addr;
             mem_wr_data_r = row_wr_data;
-            mem_wr_mask_r = {2048{1'b1}};
+            mem_wr_mask_r = {1024{1'b1}};
         end
     end
 
@@ -694,7 +704,7 @@ module FA_OACC_BUF_REAL (
             row_rd_valid <= 1'b0;
             exp_rd_valid <= 1'b0;
             for (wi = 0; wi < 1024; wi = wi + 1) begin
-                shadow_q16_words_r[wi] <= 32'd0;
+                shadow_q412_words_r[wi] <= 16'd0;
             end
         end else if (clear) begin
             load_data_r <= 16384'd0;
@@ -703,7 +713,7 @@ module FA_OACC_BUF_REAL (
             row_rd_valid <= 1'b0;
             exp_rd_valid <= 1'b0;
             for (wi = 0; wi < 1024; wi = wi + 1) begin
-                shadow_q16_words_r[wi] <= 32'd0;
+                shadow_q412_words_r[wi] <= 16'd0;
             end
         end else begin
             clear_done_pulse <= 1'b0;
@@ -712,19 +722,19 @@ module FA_OACC_BUF_REAL (
             exp_rd_valid <= exp_rd_sel_w;
                 if (row_wr_en && (state_r == ST_IDLE)) begin
                     for (wi = 0; wi < 64; wi = wi + 1) begin
-                        shadow_q16_words_r[(row_wr_addr * 64) + wi] <= row_wr_data[(wi * 32) +: 32];
+                        shadow_q412_words_r[(row_wr_addr * 64) + wi] <= row_wr_data[(wi * 16) +: 16];
                     end
                 end
                 case (state_r)
                     ST_IDLE: begin
                         if (clear_req_valid) begin
                             for (wi = 0; wi < 1024; wi = wi + 1) begin
-                                shadow_q16_words_r[wi] <= 32'd0;
+                                shadow_q412_words_r[wi] <= 16'd0;
                             end
                         end else if (load_valid) begin
                             load_data_r <= tile_load_data;
                             for (wi = 0; wi < 1024; wi = wi + 1) begin
-                                shadow_q16_words_r[wi] <= q88_to_q16(
+                                shadow_q412_words_r[wi] <= q88_to_q412_sat(
                                     tile_load_data[((wi >> 1) * 32) + ((wi & 1) * 16) +: 16]
                                 );
                             end
