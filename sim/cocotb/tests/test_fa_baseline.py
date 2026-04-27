@@ -511,7 +511,7 @@ async def test_fa_baseline_csr_and_framework_smoke(dut) -> None:
         assert len(core(dut).u_q_buf.tile_flat) == 16384
         assert len(core(dut).u_k_buf.tile_flat) == 16384
         assert len(core(dut).u_v_buf.tile_flat) == 16384
-        assert len(core(dut).u_p_buf.tile_flat) == 4096
+        assert len(core(dut).p_tile_flat) == 4096
         assert len(core(dut).u_oacc_buf.tile_flat) == 16384
         assert len(core(dut).u_score_post.masked_score_tile_flat) == 8192
     finally:
@@ -720,7 +720,7 @@ async def test_fa_baseline_pv_core_real_tile(dut) -> None:
         env.load_qkv(q, k, v)
         await env.start_run(causal=False)
         await wait_signal_high(dut, core(dut).u_pv_core.resp_valid, timeout_cycles=12000)
-        p_words = flat_words(int(core(dut).u_p_buf.tile_flat.value), 16 * 8)
+        p_words = flat_words(int(core(dut).p_tile_flat.value), 16 * 8)
         actual_words = flat_words(int(core(dut).u_pv_core.result_tile_flat.value), 16 * 32)
         expected_words = expected_pv_tile_words(p_words, v[:16])
         assert actual_words == expected_words

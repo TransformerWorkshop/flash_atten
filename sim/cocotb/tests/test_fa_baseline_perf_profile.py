@@ -45,7 +45,7 @@ REQUIRED_CONST_STAGES = [
     "oacc_update",
     "store",
 ]
-REQUIRED_ROW_STAGES = ["row_update", "row_state", "p_load"]
+REQUIRED_ROW_STAGES = ["row_update", "row_state"]
 
 
 def value_to_int(signal) -> int:
@@ -132,11 +132,6 @@ class SampleMonitor:
                 kv_blk = value_to_int(core.u_sched.kv_blk_idx)
                 relation = relation_for(q_blk, kv_blk)
                 self._begin("row_state", meta={"q_blk": q_blk, "kv_blk": kv_blk, "relation": relation})
-            if value_to_int(core.u_p_buf.load_valid) and value_to_int(core.u_p_buf.load_ready):
-                q_blk = value_to_int(core.u_sched.q_blk_idx)
-                kv_blk = value_to_int(core.u_sched.kv_blk_idx)
-                relation = relation_for(q_blk, kv_blk)
-                self._begin("p_load", meta={"q_blk": q_blk, "kv_blk": kv_blk, "relation": relation})
             if value_to_int(core.u_pv_core.req_valid) and value_to_int(core.u_pv_core.req_ready):
                 self._begin("pv")
             if value_to_int(core.u_oacc_update.req_valid) and value_to_int(core.u_oacc_update.req_ready):
@@ -159,8 +154,6 @@ class SampleMonitor:
                 self._finish("score_post")
             if value_to_int(core.u_row_state.done_pulse):
                 self._finish("row_state")
-            if value_to_int(core.u_p_buf.load_done_pulse):
-                self._finish("p_load")
                 self._finish("row_update")
             if value_to_int(core.u_pv_core.done_pulse):
                 self._finish("pv")
@@ -201,11 +194,22 @@ def select_relation_stage(samples: dict[str, list[dict[str, Any]]], stage: str) 
     return out
 
 
+def zero_relation_stage() -> dict[str, dict[str, Any]]:
+    return {
+        relation: {
+            "selected_cycles": 0,
+            "observed_unique_cycles": [0],
+            "observed_count": 0,
+        }
+        for relation in ROW_RELATION_COUNTS
+    }
+
+
 def build_report(samples: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
     const_stage_cycles = {stage: select_const_stage(samples, stage) for stage in REQUIRED_CONST_STAGES}
     row_update_cycles = select_relation_stage(samples, "row_update")
     row_state_cycles = select_relation_stage(samples, "row_state")
-    p_load_cycles = select_relation_stage(samples, "p_load")
+    p_load_cycles = zero_relation_stage()
 
     top_stage_totals: dict[str, dict[str, Any]] = {}
     for stage, count in FULL_RUN_COUNTS.items():

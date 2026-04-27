@@ -2,36 +2,36 @@
   "extrapolated_p_load_breakdown": {
     "diagonal": {
       "count": 16,
-      "observed_count": 1,
+      "observed_count": 0,
       "observed_unique_cycles": [
-        9
+        0
       ],
-      "per_invocation_cycles": 9,
-      "share_pct": 0.08859139679102274,
-      "total_cycles": 144
+      "per_invocation_cycles": 0,
+      "share_pct": 0.0,
+      "total_cycles": 0
     },
     "future_masked": {
       "count": 120,
-      "observed_count": 15,
+      "observed_count": 0,
       "observed_unique_cycles": [
-        9
+        0
       ],
-      "per_invocation_cycles": 9,
-      "share_pct": 0.6644354759326705,
-      "total_cycles": 1080
+      "per_invocation_cycles": 0,
+      "share_pct": 0.0,
+      "total_cycles": 0
     },
     "history": {
       "count": 120,
-      "observed_count": 1,
+      "observed_count": 0,
       "observed_unique_cycles": [
-        9
+        0
       ],
-      "per_invocation_cycles": 9,
-      "share_pct": 0.6644354759326705,
-      "total_cycles": 1080
+      "per_invocation_cycles": 0,
+      "share_pct": 0.0,
+      "total_cycles": 0
     }
   },
-  "extrapolated_p_load_total_cycles": 2304,
+  "extrapolated_p_load_total_cycles": 0,
   "extrapolated_row_state_breakdown": {
     "diagonal": {
       "count": 16,
@@ -40,7 +40,7 @@
         82
       ],
       "per_invocation_cycles": 82,
-      "share_pct": 0.8071660596515405,
+      "share_pct": 0.818771842236645,
       "total_cycles": 1312
     },
     "future_masked": {
@@ -50,7 +50,7 @@
         34
       ],
       "per_invocation_cycles": 34,
-      "share_pct": 2.5100895757456443,
+      "share_pct": 2.54618072890664,
       "total_cycles": 4080
     },
     "history": {
@@ -60,7 +60,7 @@
         82
       ],
       "per_invocation_cycles": 82,
-      "share_pct": 6.053745447386554,
+      "share_pct": 6.140788816774838,
       "total_cycles": 9840
     }
   },
@@ -70,31 +70,31 @@
       "count": 16,
       "observed_count": 1,
       "observed_unique_cycles": [
-        91
+        82
       ],
-      "per_invocation_cycles": 91,
-      "share_pct": 0.8957574564425632,
-      "total_cycles": 1456
+      "per_invocation_cycles": 82,
+      "share_pct": 0.818771842236645,
+      "total_cycles": 1312
     },
     "future_masked": {
       "count": 120,
       "observed_count": 15,
       "observed_unique_cycles": [
-        43
+        34
       ],
-      "per_invocation_cycles": 43,
-      "share_pct": 3.174525051678315,
-      "total_cycles": 5160
+      "per_invocation_cycles": 34,
+      "share_pct": 2.54618072890664,
+      "total_cycles": 4080
     },
     "history": {
       "count": 120,
       "observed_count": 1,
       "observed_unique_cycles": [
-        91
+        82
       ],
-      "per_invocation_cycles": 91,
-      "share_pct": 6.718180923319224,
-      "total_cycles": 10920
+      "per_invocation_cycles": 82,
+      "share_pct": 6.140788816774838,
+      "total_cycles": 9840
     }
   },
   "extrapolated_top_level": {
@@ -105,7 +105,7 @@
         130
       ],
       "per_invocation_cycles": 130,
-      "share_pct": 20.47445614725859,
+      "share_pct": 20.768846729905142,
       "total_cycles": 33280
     },
     "oacc_clear": {
@@ -115,7 +115,7 @@
         17
       ],
       "per_invocation_cycles": 17,
-      "share_pct": 0.16733930504970962,
+      "share_pct": 0.16974538192710933,
       "total_cycles": 272
     },
     "oacc_update": {
@@ -125,7 +125,7 @@
         81
       ],
       "per_invocation_cycles": 81,
-      "share_pct": 12.757161137907275,
+      "share_pct": 12.940589116325512,
       "total_cycles": 20736
     },
     "pv": {
@@ -135,7 +135,7 @@
         110
       ],
       "per_invocation_cycles": 110,
-      "share_pct": 17.324539816911113,
+      "share_pct": 17.573639540688966,
       "total_cycles": 28160
     },
     "q_load": {
@@ -145,7 +145,7 @@
         130
       ],
       "per_invocation_cycles": 130,
-      "share_pct": 1.2796535092036618,
+      "share_pct": 1.2980529206190714,
       "total_cycles": 2080
     },
     "qk": {
@@ -155,7 +155,7 @@
         53
       ],
       "per_invocation_cycles": 53,
-      "share_pct": 8.347278275420809,
+      "share_pct": 8.467299051422867,
       "total_cycles": 13568
     },
     "row_init": {
@@ -165,7 +165,7 @@
         2
       ],
       "per_invocation_cycles": 2,
-      "share_pct": 0.01968697706467172,
+      "share_pct": 0.0199700449326011,
       "total_cycles": 32
     },
     "row_update": {
@@ -173,8 +173,8 @@
       "observed_count": 17,
       "observed_unique_cycles": [],
       "per_invocation_cycles": null,
-      "share_pct": 10.788463431440102,
-      "total_cycles": 17536
+      "share_pct": 9.505741387918123,
+      "total_cycles": 15232
     },
     "score_post": {
       "count": 256,
@@ -183,7 +183,7 @@
         18
       ],
       "per_invocation_cycles": 18,
-      "share_pct": 2.8349246973127276,
+      "share_pct": 2.8756864702945584,
       "total_cycles": 4608
     },
     "store": {
@@ -193,7 +193,7 @@
         562
       ],
       "per_invocation_cycles": 562,
-      "share_pct": 5.532040555172753,
+      "share_pct": 5.611582626060908,
       "total_cycles": 8992
     },
     "v_load": {
@@ -203,11 +203,11 @@
         130
       ],
       "per_invocation_cycles": 130,
-      "share_pct": 20.47445614725859,
+      "share_pct": 20.768846729905142,
       "total_cycles": 33280
     }
   },
-  "extrapolated_total_cycles": 162544,
+  "extrapolated_total_cycles": 160240,
   "full_run_counts": {
     "k_load": 256,
     "oacc_clear": 16,
@@ -228,31 +228,31 @@
   },
   "rowstate_microbench": {
     "masked_row_state_cycles": 34,
-    "masked_row_update_cycles": 43,
+    "masked_row_update_cycles": 34,
     "valid_row_state_cycles": 82,
-    "valid_row_update_cycles": 91
+    "valid_row_update_cycles": 82
   },
   "sampled_p_load": {
     "diagonal": {
-      "observed_count": 1,
+      "observed_count": 0,
       "observed_unique_cycles": [
-        9
+        0
       ],
-      "selected_cycles": 9
+      "selected_cycles": 0
     },
     "future_masked": {
-      "observed_count": 15,
+      "observed_count": 0,
       "observed_unique_cycles": [
-        9
+        0
       ],
-      "selected_cycles": 9
+      "selected_cycles": 0
     },
     "history": {
-      "observed_count": 1,
+      "observed_count": 0,
       "observed_unique_cycles": [
-        9
+        0
       ],
-      "selected_cycles": 9
+      "selected_cycles": 0
     }
   },
   "sampled_row_state": {
@@ -282,23 +282,23 @@
     "diagonal": {
       "observed_count": 1,
       "observed_unique_cycles": [
-        91
+        82
       ],
-      "selected_cycles": 91
+      "selected_cycles": 82
     },
     "future_masked": {
       "observed_count": 15,
       "observed_unique_cycles": [
-        43
+        34
       ],
-      "selected_cycles": 43
+      "selected_cycles": 34
     },
     "history": {
       "observed_count": 1,
       "observed_unique_cycles": [
-        91
+        82
       ],
-      "selected_cycles": 91
+      "selected_cycles": 82
     }
   },
   "sampled_stages": {
@@ -377,19 +377,19 @@
     "diagonal": {
       "count": 16,
       "first_iteration_count": 1,
-      "first_iteration_cycles": 483,
+      "first_iteration_cycles": 474,
       "hidden_k_prefetch_cycles": 130,
       "hidden_v_load_cycles": 0,
       "steady_iteration_count": 15,
-      "steady_iteration_cycles": 353,
-      "total_cycles": 5778
+      "steady_iteration_cycles": 344,
+      "total_cycles": 5634
     },
     "future_masked": {
       "count": 120,
       "first_iteration_count": 0,
       "first_iteration_cycles": 451,
       "hidden_k_prefetch_cycles": 130,
-      "hidden_v_load_cycles": 16,
+      "hidden_v_load_cycles": 25,
       "steady_iteration_count": 120,
       "steady_iteration_cycles": 321,
       "total_cycles": 38520
@@ -397,17 +397,17 @@
     "history": {
       "count": 120,
       "first_iteration_count": 15,
-      "first_iteration_cycles": 483,
+      "first_iteration_cycles": 474,
       "hidden_k_prefetch_cycles": 130,
       "hidden_v_load_cycles": 0,
       "steady_iteration_count": 105,
-      "steady_iteration_cycles": 353,
-      "total_cycles": 44310
+      "steady_iteration_cycles": 344,
+      "total_cycles": 43230
     }
   },
   "scheduler_overlap_model": "v_load_overlapped_with_qk_score_row_update_and_next_k_prefetched_after_qk",
-  "scheduler_overlap_savings_cycles": 62560,
-  "scheduler_overlap_total_cycles": 99984,
+  "scheduler_overlap_savings_cycles": 61480,
+  "scheduler_overlap_total_cycles": 98760,
   "shape": {
     "head_dim": 64,
     "seq_len": 256

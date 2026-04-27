@@ -70,7 +70,7 @@ async def test_fa_baseline_rowstate_latency_samples(dut) -> None:
     neg_large_word = 0xFFC0_0000
     masked_tile_words = [neg_large_word for _ in range(16 * 16)]
     valid_tile_words = [0 for _ in range(16 * 16)]
-    extra_cycles = int(os.getenv("FA_ROW_UPDATE_EXTRA_CYCLES", "9"))
+    extra_cycles = int(os.getenv("FA_ROW_UPDATE_EXTRA_CYCLES", "0"))
     report: dict[str, int] = {}
 
     dut.masked_score_tile_flat.value = pack_words_to_int(masked_tile_words)

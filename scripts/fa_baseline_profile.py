@@ -53,6 +53,7 @@ def render_report(report: dict[str, Any]) -> str:
     lines.append("- Top: `FA_TOP_BASELINE_SIM`")
     lines.append("- Method: sample per-stage RTL latency on early tiles, then extrapolate with deterministic scheduler invocation counts")
     lines.append("- Row-update correction: override scheduler sampling with direct `FA_ROW_STATE_REAL` microbench for `masked` vs `valid` tiles")
+    lines.append("- P-load: bypassed in the main path, modeled as `0` cycles")
     lines.append("")
     lines.append("## Summary")
     lines.append("")
