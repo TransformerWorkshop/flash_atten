@@ -36,7 +36,6 @@ module FA_ROW_STATE_REAL (
     reg [3:0] row_idx_r;
     reg [3:0] row_idx_n;
     reg [31:0] neg_large_word_r;
-    reg [8191:0] masked_score_tile_r;
 
     reg signed [31:0] m_state_r [0:15];
     reg signed [31:0] l_state_r [0:15];
@@ -288,7 +287,7 @@ module FA_ROW_STATE_REAL (
         row_has_valid_next = 1'b0;
         tile_row_max_next = neg_large_word_r;
         for (col_i = 0; col_i < 16; col_i = col_i + 1) begin
-            score_word_s = masked_score_tile_r[((row_idx_r * 16) + col_i) * 32 +: 32];
+            score_word_s = masked_score_tile_flat[((row_idx_r * 16) + col_i) * 32 +: 32];
             if (score_word_s != neg_large_word_r) begin
                 valid_mask_next[col_i] = 1'b1;
                 if (!row_has_valid_next || (score_word_s > tile_row_max_next)) begin
@@ -333,7 +332,6 @@ module FA_ROW_STATE_REAL (
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
             neg_large_word_r <= 32'd0;
-            masked_score_tile_r <= 8192'd0;
             row_valid_mask_r <= 16'd0;
             row_has_valid_r <= 1'b0;
             row_has_history_r <= 1'b0;
@@ -362,7 +360,6 @@ module FA_ROW_STATE_REAL (
             end
         end else if (clear) begin
             neg_large_word_r <= 32'd0;
-            masked_score_tile_r <= 8192'd0;
             row_valid_mask_r <= 16'd0;
             row_has_valid_r <= 1'b0;
             row_has_history_r <= 1'b0;
@@ -411,7 +408,6 @@ module FA_ROW_STATE_REAL (
                         end
                     end else if (update_valid && update_ready) begin
                         neg_large_word_r <= neg_large_word;
-                        masked_score_tile_r <= masked_score_tile_flat;
                         p_tile_flat <= 4096'd0;
                         rescale_vec_flat <= 512'd0;
                     end
@@ -427,7 +423,7 @@ module FA_ROW_STATE_REAL (
                     old_l_r <= l_state_r[row_idx_r];
                     tile_row_max_r <= tile_row_max_next;
                     for (col_i = 0; col_i < 16; col_i = col_i + 1) begin
-                        row_score_r[col_i] <= masked_score_tile_r[((row_idx_r * 16) + col_i) * 32 +: 32];
+                        row_score_r[col_i] <= masked_score_tile_flat[((row_idx_r * 16) + col_i) * 32 +: 32];
                     end
                 end
                 ST_ROW_EXP: begin

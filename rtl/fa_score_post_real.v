@@ -27,7 +27,6 @@ module FA_SCORE_POST_REAL (
     reg       causal_r;
     reg [31:0] scale_word_r;
     reg [31:0] neg_large_word_r;
-    reg [8191:0] score_tile_r;
     reg [3:0] row_idx_r;
     reg [3:0] row_idx_n;
 
@@ -117,7 +116,6 @@ module FA_SCORE_POST_REAL (
             causal_r <= 1'b0;
             scale_word_r <= 32'd0;
             neg_large_word_r <= 32'd0;
-            score_tile_r <= 8192'd0;
             resp_valid <= 1'b0;
             masked_score_tile_flat <= 8192'd0;
             done_pulse <= 1'b0;
@@ -127,7 +125,6 @@ module FA_SCORE_POST_REAL (
             causal_r <= 1'b0;
             scale_word_r <= 32'd0;
             neg_large_word_r <= 32'd0;
-            score_tile_r <= 8192'd0;
             resp_valid <= 1'b0;
             masked_score_tile_flat <= 8192'd0;
             done_pulse <= 1'b0;
@@ -147,7 +144,6 @@ module FA_SCORE_POST_REAL (
                         causal_r <= causal_en;
                         scale_word_r <= scale_word;
                         neg_large_word_r <= neg_large_word;
-                        score_tile_r <= score_tile_flat;
                         masked_score_tile_flat <= 8192'd0;
                     end
                 end
@@ -155,7 +151,7 @@ module FA_SCORE_POST_REAL (
                     global_q_idx = (q_blk_r * 16) + row_idx_r;
                     for (col_idx = 0; col_idx < 16; col_idx = col_idx + 1) begin
                         global_k_idx = (kv_blk_r * 16) + col_idx;
-                        score_word_s = score_tile_r[((row_idx_r * 16) + col_idx) * 32 +: 32];
+                        score_word_s = score_tile_flat[((row_idx_r * 16) + col_idx) * 32 +: 32];
                         if (causal_r && (global_k_idx > global_q_idx)) begin
                             masked_score_tile_flat[((row_idx_r * 16) + col_idx) * 32 +: 32] <= neg_large_word_r;
                         end else begin
