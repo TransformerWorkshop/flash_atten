@@ -96,7 +96,10 @@ fa_full_axi:
 	$(RUNNER) fa_full_axi $(SIM_ARG) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG) $(TEST_FILTER_ARG) $(TESTCASE_ARG) $(KEEP_BUILD_ARG) $(REBUILD_ARG)
 
 fa_ci:
-	$(PYTHON) -m py_compile run.py tests/test_fa_baseline.py tests/test_fa_baseline_numeric_cases.py tests/test_fa_baseline_backpressure_cases.py tests/test_fa_baseline_axi.py tests/test_fa_baseline_axi_full_cases.py tests/fa_baseline_axi_env.py ../../scripts/fa_precision_analysis.py ../../scripts/fa_baseline_profile.py
+	$(PYTHON) -m py_compile run.py tests/test_fa_baseline.py tests/test_fa_baseline_numeric_cases.py tests/test_fa_baseline_backpressure_cases.py tests/test_fa_baseline_axi.py tests/test_fa_baseline_axi_full_cases.py tests/test_fa_p_bypass.py tests/test_fa_shared_gemm.py tests/test_fa_oacc_update.py tests/fa_baseline_axi_env.py ../../scripts/fa_precision_analysis.py ../../scripts/fa_baseline_profile.py
+	$(RUNNER) fa_p_bypass $(SIM_ARG) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG) $(KEEP_BUILD_ARG) $(REBUILD_ARG)
+	$(RUNNER) fa_shared_gemm $(SIM_ARG) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG) $(KEEP_BUILD_ARG) $(REBUILD_ARG)
+	$(RUNNER) fa_oacc_update $(SIM_ARG) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG) $(KEEP_BUILD_ARG) $(REBUILD_ARG)
 	$(RUNNER) fa_baseline $(SIM_ARG) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG) --testcase test_fa_numeric_single_q_full_kv_causal,test_fa_backpressure_combined_single_q_full_kv_causal $(KEEP_BUILD_ARG) $(REBUILD_ARG)
 	$(RUNNER) fa_full $(SIM_ARG) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG) --testcase test_fa_baseline_full_causal_end_to_end,test_fa_baseline_full_noncausal_and_soft_reset $(KEEP_BUILD_ARG) $(REBUILD_ARG)
 	$(RUNNER) fa_full_axi $(SIM_ARG) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG) --testcase test_fa_baseline_axi_full_noncausal_end_to_end,test_fa_baseline_axi_full_backpressure_numeric $(KEEP_BUILD_ARG) $(REBUILD_ARG)
