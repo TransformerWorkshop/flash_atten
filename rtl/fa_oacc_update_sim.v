@@ -34,6 +34,8 @@ module FA_OACC_UPDATE_SIM #(
     output wire           done_pulse
 );
 
+    wire unused_partial_row_rd_en_w;
+    wire [3:0] unused_partial_row_rd_addr_w;
     wire unused_params_w = (DATA_WIDTH == 0)
                          | (GEMM_X_DIM == 0)
                          | (GEMM_Y_DIM == 0)
@@ -57,6 +59,10 @@ module FA_OACC_UPDATE_SIM #(
         .req_ready(req_ready),
         .rescale_vec_flat(rescale_vec_flat),
         .partial_o_tile_flat(partial_o_tile_flat),
+        .partial_row_rd_en(unused_partial_row_rd_en_w),
+        .partial_row_rd_addr(unused_partial_row_rd_addr_w),
+        .partial_row_rd_valid(1'b0),
+        .partial_row_rd_data(1024'd0),
         .oacc_row_rd_en(oacc_row_rd_en),
         .oacc_row_rd_addr(oacc_row_rd_addr),
         .oacc_row_rd_valid(oacc_row_rd_valid),

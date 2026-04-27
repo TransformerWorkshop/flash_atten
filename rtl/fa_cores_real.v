@@ -234,6 +234,10 @@ module FA_QK_PV_SHARED_CORE_REAL (
     output reg           qk_resp_valid,
     input  wire          qk_resp_ready,
     output wire [8191:0] qk_result_tile_flat,
+    input  wire          qk_result_row_rd_en,
+    input  wire [3:0]    qk_result_row_rd_addr,
+    output reg           qk_result_row_rd_valid,
+    output wire [511:0]  qk_result_row_rd_data,
     output reg           qk_done_pulse,
     input  wire          pv_req_valid,
     output wire          pv_req_ready,
@@ -248,6 +252,10 @@ module FA_QK_PV_SHARED_CORE_REAL (
     output reg           pv_resp_valid,
     input  wire          pv_resp_ready,
     output wire [16383:0] pv_result_tile_flat,
+    input  wire          pv_result_row_rd_en,
+    input  wire [3:0]    pv_result_row_rd_addr,
+    output reg           pv_result_row_rd_valid,
+    output wire [1023:0] pv_result_row_rd_data,
     output reg           pv_done_pulse
 );
 
@@ -267,8 +275,13 @@ module FA_QK_PV_SHARED_CORE_REAL (
     reg [5:0] feed_count_n;
     reg [1:0] col_blk_r;
     reg [1:0] col_blk_n;
+`ifndef SYNTHESIS
     reg [31:0] qk_result_words_r [0:255];
     reg [31:0] pv_result_words_r [0:511];
+`endif
+    reg [511:0]  qk_result_wr_data_r;
+    reg [1023:0] pv_result_wr_data_r;
+    reg [1023:0] pv_result_wr_mask_r;
 
     wire         idle_ready_w;
     wire         qk_req_fire_w;
@@ -294,10 +307,12 @@ module FA_QK_PV_SHARED_CORE_REAL (
     wire [511:0] gemm_b_data_w;
     wire [31:0]  gemm_num_acc_w;
 
-    integer wi;
     integer col_idx;
     integer global_col_idx;
-    reg signed [127:0] accum_word_s;
+    integer pv_global_col_idx;
+`ifndef SYNTHESIS
+    integer wi;
+`endif
 
     function automatic signed [31:0] clamp_q16_16_from_acc128;
         input signed [127:0] value;
@@ -333,6 +348,7 @@ module FA_QK_PV_SHARED_CORE_REAL (
         end
     endfunction
 
+`ifndef SYNTHESIS
     generate
         genvar qgi;
         for (qgi = 0; qgi < 256; qgi = qgi + 1) begin : gen_qk_result_flat
@@ -346,6 +362,67 @@ module FA_QK_PV_SHARED_CORE_REAL (
             assign pv_result_tile_flat[(pgi * 32) +: 32] = pv_result_words_r[pgi];
         end
     endgenerate
+`else
+    wire unused_qk_result_flat_zero_w = (clk & 1'b0)
+                                      | (rstn & 1'b0)
+                                      | (clear & 1'b0)
+                                      | (qk_result_row_rd_en & 1'b0)
+                                      | ((|qk_result_row_rd_addr) & 1'b0);
+    wire unused_pv_result_flat_zero_w = (clk & 1'b0)
+                                      | (rstn & 1'b0)
+                                      | (clear & 1'b0)
+                                      | (pv_result_row_rd_en & 1'b0)
+                                      | ((|pv_result_row_rd_addr) & 1'b0);
+    assign qk_result_tile_flat = {8192{unused_qk_result_flat_zero_w}};
+    assign pv_result_tile_flat = {16384{unused_pv_result_flat_zero_w}};
+`endif
+
+    always @(*) begin
+        qk_result_wr_data_r = 512'd0;
+        for (col_idx = 0; col_idx < 16; col_idx = col_idx + 1) begin
+            qk_result_wr_data_r[(col_idx * 32) +: 32] =
+                clamp_q16_16_from_acc128(gemm_group_data_w[(col_idx * 128) +: 128]);
+        end
+    end
+
+    always @(*) begin
+        pv_result_wr_data_r = 1024'd0;
+        pv_result_wr_mask_r = 1024'd0;
+        for (col_idx = 0; col_idx < 16; col_idx = col_idx + 1) begin
+            pv_global_col_idx = (col_blk_r * 16) + col_idx;
+            pv_result_wr_data_r[(pv_global_col_idx * 16) +: 16] =
+                q16_16_to_q88_sat128(gemm_group_data_w[(col_idx * 128) +: 128]);
+            pv_result_wr_mask_r[(pv_global_col_idx * 16) +: 16] = 16'hFFFF;
+        end
+    end
+
+    FA_MASKED_ROWBUF_REAL #(
+        .ROW_WIDTH(512),
+        .DEPTH(16)
+    ) u_qk_result_rows (
+        .clk(clk),
+        .wr_en(gemm_stream_fire_w && (mode_r == MODE_QK)),
+        .wr_addr(gemm_group_idx_w[3:0]),
+        .wr_data(qk_result_wr_data_r),
+        .wr_mask({512{1'b1}}),
+        .rd_en(qk_result_row_rd_en),
+        .rd_addr(qk_result_row_rd_addr),
+        .rd_data(qk_result_row_rd_data)
+    );
+
+    FA_MASKED_ROWBUF_REAL #(
+        .ROW_WIDTH(1024),
+        .DEPTH(16)
+    ) u_pv_result_rows (
+        .clk(clk),
+        .wr_en(gemm_stream_fire_w && (mode_r == MODE_PV)),
+        .wr_addr(gemm_group_idx_w[3:0]),
+        .wr_data(pv_result_wr_data_r),
+        .wr_mask(pv_result_wr_mask_r),
+        .rd_en(pv_result_row_rd_en),
+        .rd_addr(pv_result_row_rd_addr),
+        .rd_data(pv_result_row_rd_data)
+    );
 
     assign idle_ready_w = (state_r == ST_IDLE) && !qk_resp_valid && !pv_resp_valid;
     assign qk_req_ready = idle_ready_w;
@@ -494,26 +571,36 @@ module FA_QK_PV_SHARED_CORE_REAL (
             pv_resp_valid <= 1'b0;
             qk_done_pulse <= 1'b0;
             pv_done_pulse <= 1'b0;
+            qk_result_row_rd_valid <= 1'b0;
+            pv_result_row_rd_valid <= 1'b0;
+`ifndef SYNTHESIS
             for (wi = 0; wi < 256; wi = wi + 1) begin
                 qk_result_words_r[wi] <= 32'd0;
             end
             for (wi = 0; wi < 512; wi = wi + 1) begin
                 pv_result_words_r[wi] <= 32'd0;
             end
+`endif
         end else if (clear) begin
             qk_resp_valid <= 1'b0;
             pv_resp_valid <= 1'b0;
             qk_done_pulse <= 1'b0;
             pv_done_pulse <= 1'b0;
+            qk_result_row_rd_valid <= 1'b0;
+            pv_result_row_rd_valid <= 1'b0;
+`ifndef SYNTHESIS
             for (wi = 0; wi < 256; wi = wi + 1) begin
                 qk_result_words_r[wi] <= 32'd0;
             end
             for (wi = 0; wi < 512; wi = wi + 1) begin
                 pv_result_words_r[wi] <= 32'd0;
             end
+`endif
         end else begin
             qk_done_pulse <= 1'b0;
             pv_done_pulse <= 1'b0;
+            qk_result_row_rd_valid <= qk_result_row_rd_en;
+            pv_result_row_rd_valid <= pv_result_row_rd_en;
 
             if (qk_resp_valid && qk_resp_ready) begin
                 qk_resp_valid <= 1'b0;
@@ -525,31 +612,37 @@ module FA_QK_PV_SHARED_CORE_REAL (
             end
 
             if (qk_req_fire_w) begin
+`ifndef SYNTHESIS
                 for (wi = 0; wi < 256; wi = wi + 1) begin
                     qk_result_words_r[wi] <= 32'd0;
                 end
+`endif
             end
             if (pv_req_fire_w) begin
+`ifndef SYNTHESIS
                 for (wi = 0; wi < 512; wi = wi + 1) begin
                     pv_result_words_r[wi] <= 32'd0;
                 end
+`endif
             end
 
             if (gemm_stream_fire_w) begin
                 if (mode_r == MODE_QK) begin
+`ifndef SYNTHESIS
                     for (col_idx = 0; col_idx < 16; col_idx = col_idx + 1) begin
-                        accum_word_s = gemm_group_data_w[(col_idx * 128) +: 128];
-                        qk_result_words_r[(gemm_group_idx_w * 16) + col_idx] <= clamp_q16_16_from_acc128(accum_word_s);
+                        qk_result_words_r[(gemm_group_idx_w * 16) + col_idx] <= qk_result_wr_data_r[(col_idx * 32) +: 32];
                     end
+`endif
                     if (gemm_last_w) begin
                         qk_resp_valid <= 1'b1;
                     end
                 end else begin
+`ifndef SYNTHESIS
                     for (col_idx = 0; col_idx < 16; col_idx = col_idx + 1) begin
                         global_col_idx = (col_blk_r * 16) + col_idx;
-                        accum_word_s = gemm_group_data_w[(col_idx * 128) +: 128];
-                        pv_result_words_r[(gemm_group_idx_w * 32) + (global_col_idx >> 1)][((global_col_idx & 1) * 16) +: 16] <= q16_16_to_q88_sat128(accum_word_s);
+                        pv_result_words_r[(gemm_group_idx_w * 32) + (global_col_idx >> 1)][((global_col_idx & 1) * 16) +: 16] <= pv_result_wr_data_r[(global_col_idx * 16) +: 16];
                     end
+`endif
                     if (gemm_last_w && (col_blk_r == 2'd3)) begin
                         pv_resp_valid <= 1'b1;
                     end

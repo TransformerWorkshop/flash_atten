@@ -1,4 +1,6 @@
-module FA_OACC_UPDATE_REAL (
+module FA_OACC_UPDATE_REAL #(
+    parameter USE_PARTIAL_ROW_INPUT = 0
+) (
     input  wire           clk,
     input  wire           rstn,
     input  wire           clear,
@@ -6,6 +8,10 @@ module FA_OACC_UPDATE_REAL (
     output wire           req_ready,
     input  wire [511:0]   rescale_vec_flat,
     input  wire [16383:0] partial_o_tile_flat,
+    output reg            partial_row_rd_en,
+    output reg  [3:0]     partial_row_rd_addr,
+    input  wire           partial_row_rd_valid,
+    input  wire [1023:0]  partial_row_rd_data,
     output reg            oacc_row_rd_en,
     output reg  [3:0]     oacc_row_rd_addr,
     input  wire           oacc_row_rd_valid,
@@ -35,9 +41,12 @@ module FA_OACC_UPDATE_REAL (
     reg          oacc_row_wr_en_n;
     reg [3:0]    oacc_row_wr_addr_n;
     reg [1023:0] oacc_row_wr_data_n;
+    reg          partial_row_rd_en_n;
+    reg [3:0]    partial_row_rd_addr_n;
     reg          resp_valid_n;
     reg          done_pulse_n;
     reg signed [31:0] scale_raw_s;
+    reg signed [15:0] partial_q88_s;
     integer elem_i;
 
     function automatic signed [31:0] q16_add_sat;
@@ -137,10 +146,14 @@ module FA_OACC_UPDATE_REAL (
         input req_valid_i;
         input req_ready_i;
         input oacc_row_rd_valid_i;
+        input partial_row_rd_valid_i;
         input resp_valid_i;
         input resp_ready_i;
         input row_is_last_i;
+        reg row_inputs_valid;
         begin
+            row_inputs_valid = oacc_row_rd_valid_i &&
+                               ((USE_PARTIAL_ROW_INPUT == 0) || partial_row_rd_valid_i);
             case (state_cur)
                 ST_IDLE: begin
                     if (req_valid_i && req_ready_i) begin
@@ -153,7 +166,7 @@ module FA_OACC_UPDATE_REAL (
                     next_state_fn = ST_ROW_WAIT;
                 end
                 ST_ROW_WAIT: begin
-                    if (oacc_row_rd_valid_i) begin
+                    if (row_inputs_valid) begin
                         next_state_fn = ST_ROW_WRITE;
                     end else begin
                         next_state_fn = ST_ROW_WAIT;
@@ -207,6 +220,7 @@ module FA_OACC_UPDATE_REAL (
             req_valid,
             req_ready,
             oacc_row_rd_valid,
+            partial_row_rd_valid,
             resp_valid,
             resp_ready,
             row_idx_r == 4'd15
@@ -217,6 +231,8 @@ module FA_OACC_UPDATE_REAL (
         oacc_row_wr_en_n = 1'b0;
         oacc_row_wr_addr_n = oacc_row_wr_addr;
         oacc_row_wr_data_n = oacc_row_wr_data;
+        partial_row_rd_en_n = 1'b0;
+        partial_row_rd_addr_n = partial_row_rd_addr;
         resp_valid_n = next_resp_valid_fn(
             resp_valid,
             resp_ready,
@@ -238,9 +254,11 @@ module FA_OACC_UPDATE_REAL (
             ST_ROW_REQ: begin
                 oacc_row_rd_en_n = 1'b1;
                 oacc_row_rd_addr_n = row_idx_r;
+                partial_row_rd_en_n = (USE_PARTIAL_ROW_INPUT != 0);
+                partial_row_rd_addr_n = row_idx_r;
             end
             ST_ROW_WAIT: begin
-                if (oacc_row_rd_valid) begin
+                if (oacc_row_rd_valid && ((USE_PARTIAL_ROW_INPUT == 0) || partial_row_rd_valid)) begin
                     oacc_row_wr_addr_n = row_idx_r;
                     oacc_row_wr_data_n = row_new_data_w;
                 end
@@ -264,10 +282,15 @@ module FA_OACC_UPDATE_REAL (
         row_new_data_w = 1024'd0;
         scale_raw_s = rescale_vec_flat[(row_idx_r * 32) +: 32];
         for (elem_i = 0; elem_i < 64; elem_i = elem_i + 1) begin
+            if (USE_PARTIAL_ROW_INPUT != 0) begin
+                partial_q88_s = partial_row_rd_data[(elem_i * 16) +: 16];
+            end else begin
+                partial_q88_s = partial_o_tile_flat[(((row_idx_r * 32) + (elem_i >> 1)) * 32) + ((elem_i & 1) * 16) +: 16];
+            end
             row_new_data_w[(elem_i * 16) +: 16] = update_oacc_elem(
                 oacc_row_rd_data[(elem_i * 16) +: 16],
                 scale_raw_s,
-                partial_o_tile_flat[(((row_idx_r * 32) + (elem_i >> 1)) * 32) + ((elem_i & 1) * 16) +: 16]
+                partial_q88_s
             );
         end
     end
@@ -281,6 +304,8 @@ module FA_OACC_UPDATE_REAL (
             oacc_row_wr_en <= 1'b0;
             oacc_row_wr_addr <= 4'd0;
             oacc_row_wr_data <= 1024'd0;
+            partial_row_rd_en <= 1'b0;
+            partial_row_rd_addr <= 4'd0;
             resp_valid <= 1'b0;
             done_pulse <= 1'b0;
         end else if (clear) begin
@@ -291,6 +316,8 @@ module FA_OACC_UPDATE_REAL (
             oacc_row_wr_en <= 1'b0;
             oacc_row_wr_addr <= 4'd0;
             oacc_row_wr_data <= 1024'd0;
+            partial_row_rd_en <= 1'b0;
+            partial_row_rd_addr <= 4'd0;
             resp_valid <= 1'b0;
             done_pulse <= 1'b0;
         end else begin
@@ -301,6 +328,8 @@ module FA_OACC_UPDATE_REAL (
             oacc_row_wr_en <= oacc_row_wr_en_n;
             oacc_row_wr_addr <= oacc_row_wr_addr_n;
             oacc_row_wr_data <= oacc_row_wr_data_n;
+            partial_row_rd_en <= partial_row_rd_en_n;
+            partial_row_rd_addr <= partial_row_rd_addr_n;
             resp_valid <= resp_valid_n;
             done_pulse <= done_pulse_n;
         end

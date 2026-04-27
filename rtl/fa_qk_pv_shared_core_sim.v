@@ -48,6 +48,10 @@ module FA_QK_PV_SHARED_CORE_SIM #(
     output wire          pv_done_pulse
 );
 
+    wire unused_qk_result_row_rd_valid_w;
+    wire [511:0] unused_qk_result_row_rd_data_w;
+    wire unused_pv_result_row_rd_valid_w;
+    wire [1023:0] unused_pv_result_row_rd_data_w;
     wire unused_params_w = (DATA_WIDTH == 0)
                          | (GEMM_X_DIM == 0)
                          | (GEMM_Y_DIM == 0)
@@ -80,6 +84,10 @@ module FA_QK_PV_SHARED_CORE_SIM #(
         .qk_resp_valid(qk_resp_valid),
         .qk_resp_ready(qk_resp_ready),
         .qk_result_tile_flat(qk_result_tile_flat),
+        .qk_result_row_rd_en(1'b0),
+        .qk_result_row_rd_addr(4'd0),
+        .qk_result_row_rd_valid(unused_qk_result_row_rd_valid_w),
+        .qk_result_row_rd_data(unused_qk_result_row_rd_data_w),
         .qk_done_pulse(qk_done_pulse),
         .pv_req_valid(pv_req_valid),
         .pv_req_ready(pv_req_ready),
@@ -94,6 +102,10 @@ module FA_QK_PV_SHARED_CORE_SIM #(
         .pv_resp_valid(pv_resp_valid),
         .pv_resp_ready(pv_resp_ready),
         .pv_result_tile_flat(pv_result_tile_flat),
+        .pv_result_row_rd_en(1'b0),
+        .pv_result_row_rd_addr(4'd0),
+        .pv_result_row_rd_valid(unused_pv_result_row_rd_valid_w),
+        .pv_result_row_rd_data(unused_pv_result_row_rd_data_w),
         .pv_done_pulse(pv_done_pulse)
     );
 
