@@ -44,6 +44,11 @@ from tests.fa_baseline_env import (
     zero_matrix,
 )
 
+AXI_DATA_BYTES = 16
+AXI_WORDS_PER_BEAT = AXI_DATA_BYTES // 4
+MATRIX_BYTES = SEQ_LEN * HEAD_DIM * 2
+MATRIX_WORDS = SEQ_LEN * (HEAD_DIM // 2)
+
 
 def discover_case_name() -> str:
     for frame_info in inspect.stack():
@@ -100,18 +105,19 @@ class FABaselineAxiEnv:
         self.seed = 10
         self.rng = random.Random(self.seed)
         self.q_base = 0x0000_1000
-        self.k_base = 0x0000_3000
-        self.v_base = 0x0000_5000
-        self.o_base = 0x0000_7000
-        self.stride_bytes = 16 * 4
+        self.k_base = self.q_base + MATRIX_BYTES
+        self.v_base = self.k_base + MATRIX_BYTES
+        self.o_base = self.v_base + MATRIX_BYTES
+        self.stride_bytes = HEAD_DIM * 2
         self.scale_word = q16_16_from_float(1.0 / (HEAD_DIM ** 0.5))
         self.neg_large_word = q16_16_from_float(-64.0)
-        self.q_words = [0 for _ in range(SEQ_LEN * 32)]
-        self.k_words = [0 for _ in range(SEQ_LEN * 32)]
-        self.v_words = [0 for _ in range(SEQ_LEN * 32)]
-        self.o_words = [0 for _ in range(SEQ_LEN * 32)]
+        self.q_words = [0 for _ in range(MATRIX_WORDS)]
+        self.k_words = [0 for _ in range(MATRIX_WORDS)]
+        self.v_words = [0 for _ in range(MATRIX_WORDS)]
+        self.o_words = [0 for _ in range(MATRIX_WORDS)]
         self.rd_bursts: List[AxiReadBurstLog] = []
         self.wr_bursts: List[AxiWriteBurstLog] = []
+        self._agent_error: AssertionError | None = None
         self._started = False
         self._tasks = []
         self._arready_pattern = ConstantPattern(1)
@@ -164,6 +170,7 @@ class FABaselineAxiEnv:
         self.dut.m_axi_bvalid.value = 0
 
     async def reset(self, cycles: int = 5) -> None:
+        self._agent_error = None
         self._drive_defaults()
         await ClockCycles(self.dut.clk, cycles)
         self.dut.rstn.value = 1
@@ -193,9 +200,10 @@ class FABaselineAxiEnv:
         self.q_words = make_full_memory_words(q_matrix)
         self.k_words = make_full_memory_words(k_matrix)
         self.v_words = make_full_memory_words(v_matrix)
-        self.o_words = [0 for _ in range(SEQ_LEN * 32)]
+        self.o_words = [0 for _ in range(MATRIX_WORDS)]
 
     async def axil_write(self, addr: int, data: int, wstrb: int = 0xF) -> int:
+        self._raise_agent_error_if_any()
         self.dut.s_axil_awaddr.value = addr & 0x7F
         self.dut.s_axil_awvalid.value = 1
         self.dut.s_axil_wdata.value = data & 0xFFFF_FFFF
@@ -218,6 +226,7 @@ class FABaselineAxiEnv:
         raise AssertionError("AXI-Lite write timeout")
 
     async def axil_read(self, addr: int) -> int:
+        self._raise_agent_error_if_any()
         self.dut.s_axil_araddr.value = addr & 0x7F
         self.dut.s_axil_arvalid.value = 1
         self.dut.s_axil_rready.value = 1
@@ -261,6 +270,7 @@ class FABaselineAxiEnv:
 
     async def wait_done(self, timeout_cycles: int = 800000) -> int:
         for _ in range(timeout_cycles):
+            self._raise_agent_error_if_any()
             status = await self.axil_read(ADDR_STATUS)
             if status & STATUS_DONE:
                 return status
@@ -271,6 +281,66 @@ class FABaselineAxiEnv:
 
     def read_output_matrix(self):
         return unpack_q88_row_major_words(self.o_words, SEQ_LEN, HEAD_DIM)
+
+    def _agent_assert(self, condition: bool, message: str) -> None:
+        if condition:
+            return
+        exc = AssertionError(message)
+        self._agent_error = exc
+        raise exc
+
+    def _raise_agent_error_if_any(self) -> None:
+        if self._agent_error is not None:
+            raise AssertionError(f"AXI memory agent failed: {self._agent_error}") from self._agent_error
+
+    def _check_axi_read_request(self, addr: int, beats: int) -> None:
+        arsize = value_to_int(self.dut.m_axi_arsize.value)
+        arburst = value_to_int(self.dut.m_axi_arburst.value)
+        self._agent_assert(1 <= beats <= 16, f"AXI read burst beats out of range: {beats}")
+        self._agent_assert(arsize == 4, f"AXI read arsize={arsize}, expected 4 for 128-bit beats")
+        self._agent_assert(arburst == 1, f"AXI read arburst={arburst}, expected INCR")
+        self._agent_assert((addr % AXI_DATA_BYTES) == 0, f"AXI read addr 0x{addr:x} is not 16-byte aligned")
+
+    def _check_axi_write_request(self, addr: int, beats: int) -> None:
+        awsize = value_to_int(self.dut.m_axi_awsize.value)
+        awburst = value_to_int(self.dut.m_axi_awburst.value)
+        self._agent_assert(1 <= beats <= 16, f"AXI write burst beats out of range: {beats}")
+        self._agent_assert(awsize == 4, f"AXI write awsize={awsize}, expected 4 for 128-bit beats")
+        self._agent_assert(awburst == 1, f"AXI write awburst={awburst}, expected INCR")
+        self._agent_assert((addr % AXI_DATA_BYTES) == 0, f"AXI write addr 0x{addr:x} is not 16-byte aligned")
+
+    def _select_read_memory(self, addr: int, beats: int):
+        if self.q_base <= addr < self.k_base:
+            mem = self.q_words
+            base = self.q_base
+            region = "Q"
+        elif self.k_base <= addr < self.v_base:
+            mem = self.k_words
+            base = self.k_base
+            region = "K"
+        elif self.v_base <= addr < self.o_base:
+            mem = self.v_words
+            base = self.v_base
+            region = "V"
+        else:
+            self._agent_assert(False, f"AXI read addr 0x{addr:x} outside Q/K/V regions")
+
+        word_base = (addr - base) // 4
+        word_count = beats * AXI_WORDS_PER_BEAT
+        self._agent_assert(word_base + word_count <= len(mem), (
+            f"AXI read {region} burst overruns memory: addr=0x{addr:x} beats={beats}"
+        ))
+        return mem, word_base
+
+    def _select_write_memory(self, addr: int, beats: int) -> int:
+        if not (self.o_base <= addr < self.o_base + MATRIX_BYTES):
+            self._agent_assert(False, f"AXI write addr 0x{addr:x} outside O region")
+        word_base = (addr - self.o_base) // 4
+        word_count = beats * AXI_WORDS_PER_BEAT
+        self._agent_assert(word_base + word_count <= len(self.o_words), (
+            f"AXI write burst overruns O memory: addr=0x{addr:x} beats={beats}"
+        ))
+        return word_base
 
     async def _axi_read_agent(self) -> None:
         active = None
@@ -286,33 +356,23 @@ class FABaselineAxiEnv:
                 if value_to_int(self.dut.m_axi_arvalid.value) and value_to_int(self.dut.m_axi_arready.value):
                     addr = value_to_int(self.dut.m_axi_araddr.value)
                     beats = value_to_int(self.dut.m_axi_arlen.value) + 1
-                    active = (addr, beats)
+                    self._check_axi_read_request(addr, beats)
+                    mem, word_base = self._select_read_memory(addr, beats)
+                    active = (addr, beats, mem, word_base)
                     beat_idx = 0
                     beat_valid = False
                     self.rd_bursts.append(AxiReadBurstLog(addr=addr, beats=beats))
             else:
-                base_addr, beats = active
+                base_addr, beats, mem, word_base = active
                 if beat_valid and value_to_int(self.dut.m_axi_rready.value):
                     beat_idx += 1
                     beat_valid = False
                     if beat_idx >= beats:
                         active = None
                 if active is not None and not beat_valid and self._rvalid_pattern.next():
-                    word_base = ((base_addr - self.q_base) // 4)
-                    if self.q_base <= base_addr < self.k_base:
-                        mem = self.q_words
-                    elif self.k_base <= base_addr < self.v_base:
-                        mem = self.k_words
-                        word_base = ((base_addr - self.k_base) // 4)
-                    elif self.v_base <= base_addr < self.o_base:
-                        mem = self.v_words
-                        word_base = ((base_addr - self.v_base) // 4)
-                    else:
-                        mem = [0] * (SEQ_LEN * 32)
-                        word_base = 0
                     beat_data = 0
-                    for lane in range(4):
-                        beat_data |= (mem[word_base + (beat_idx * 4) + lane] & 0xFFFF_FFFF) << (lane * 32)
+                    for lane in range(AXI_WORDS_PER_BEAT):
+                        beat_data |= (mem[word_base + (beat_idx * AXI_WORDS_PER_BEAT) + lane] & 0xFFFF_FFFF) << (lane * 32)
                     self.dut.m_axi_rdata.value = beat_data
                     self.dut.m_axi_rresp.value = 0
                     self.dut.m_axi_rlast.value = int((beat_idx + 1) == beats)
@@ -330,32 +390,40 @@ class FABaselineAxiEnv:
             await RisingEdge(self.dut.clk)
             self.dut.m_axi_awready.value = self._awready_pattern.next()
             self.dut.m_axi_wready.value = self._wready_pattern.next()
-            if not bvalid_pending:
+            if bvalid_pending and value_to_int(self.dut.m_axi_bvalid.value) and value_to_int(self.dut.m_axi_bready.value):
+                bvalid_pending = False
                 self.dut.m_axi_bvalid.value = 0
-            if active is None:
-                if value_to_int(self.dut.m_axi_awvalid.value) and value_to_int(self.dut.m_axi_awready.value):
-                    addr = value_to_int(self.dut.m_axi_awaddr.value)
-                    beats = value_to_int(self.dut.m_axi_awlen.value) + 1
-                    active = (addr, beats)
-                    beat_idx = 0
-                    self.wr_bursts.append(AxiWriteBurstLog(addr=addr, beats=beats))
-            else:
-                base_addr, beats = active
+            elif not bvalid_pending:
+                self.dut.m_axi_bvalid.value = 0
+            if active is None and value_to_int(self.dut.m_axi_awvalid.value) and value_to_int(self.dut.m_axi_awready.value):
+                addr = value_to_int(self.dut.m_axi_awaddr.value)
+                beats = value_to_int(self.dut.m_axi_awlen.value) + 1
+                self._check_axi_write_request(addr, beats)
+                word_base = self._select_write_memory(addr, beats)
+                active = (addr, beats, word_base)
+                beat_idx = 0
+                self.wr_bursts.append(AxiWriteBurstLog(addr=addr, beats=beats))
+
+            if active is not None:
+                base_addr, beats, word_base = active
                 if value_to_int(self.dut.m_axi_wvalid.value) and value_to_int(self.dut.m_axi_wready.value):
                     beat_data = value_to_int(self.dut.m_axi_wdata.value)
-                    word_base = ((base_addr - self.o_base) // 4) + (beat_idx * 4)
-                    for lane in range(4):
-                        self.o_words[word_base + lane] = (beat_data >> (lane * 32)) & 0xFFFF_FFFF
+                    expected_last = (beat_idx + 1) == beats
+                    actual_last = bool(value_to_int(self.dut.m_axi_wlast.value))
+                    self._agent_assert(actual_last == expected_last, (
+                        f"AXI WLAST mismatch at addr=0x{base_addr:x} beat={beat_idx} "
+                        f"beats={beats} actual={int(actual_last)}"
+                    ))
+                    beat_word_base = word_base + (beat_idx * AXI_WORDS_PER_BEAT)
+                    for lane in range(AXI_WORDS_PER_BEAT):
+                        self.o_words[beat_word_base + lane] = (beat_data >> (lane * 32)) & 0xFFFF_FFFF
                     beat_idx += 1
-                    if value_to_int(self.dut.m_axi_wlast.value):
+                    if expected_last:
                         active = None
                         bvalid_pending = True
                         self.dut.m_axi_bresp.value = 0
-            if bvalid_pending and self._bvalid_pattern.next():
-                self.dut.m_axi_bvalid.value = 1
-                if value_to_int(self.dut.m_axi_bready.value):
-                    self.dut.m_axi_bvalid.value = 0
-                    bvalid_pending = False
+            if bvalid_pending and not value_to_int(self.dut.m_axi_bvalid.value):
+                self.dut.m_axi_bvalid.value = 1 if self._bvalid_pattern.next() else 0
 
 
 async def create_env(dut) -> FABaselineAxiEnv:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import cocotb
 from cocotb.triggers import ClockCycles
 
+from tests.fa_baseline_case_utils import assert_matrix_close
 from tests.fa_baseline_axi_env import ConstantPattern, SequencePattern, create_env
 from tests.fa_baseline_env import (
     ADDR_CTRL,
@@ -16,6 +17,7 @@ from tests.fa_baseline_env import (
     CTRL_START,
     STATUS_DONE,
     STATUS_ERROR,
+    attention_golden_rows,
     random_q88_matrix,
 )
 
@@ -33,6 +35,9 @@ async def test_fa_baseline_axi_smoke(dut) -> None:
         status = await env.wait_done()
         assert (status & STATUS_ERROR) == 0
         assert status & STATUS_DONE
+        actual = env.read_output_matrix()
+        expected = attention_golden_rows(q, k, v, scale=0.125, causal=False, q_start=0, q_rows=16)
+        assert_matrix_close(actual[:16], expected)
         assert len(env.rd_bursts) > 0
         assert len(env.wr_bursts) > 0
         assert await env.axil_read(ADDR_RD_BYTES) > 0
@@ -94,6 +99,9 @@ async def test_fa_baseline_axi_backpressure(dut) -> None:
         await env.start_run(causal=False)
         status = await env.wait_done()
         assert (status & STATUS_ERROR) == 0
+        actual = env.read_output_matrix()
+        expected = attention_golden_rows(q, k, v, scale=0.125, causal=False, q_start=0, q_rows=16)
+        assert_matrix_close(actual[:16], expected)
     finally:
         env.shutdown()
 
@@ -113,6 +121,18 @@ async def test_fa_baseline_axi_soft_reset_mid_transfer(dut) -> None:
         await env.soft_reset()
         status = await env.axil_read(ADDR_STATUS)
         assert (status & STATUS_ERROR) == 0
+
+        q = random_q88_matrix(16, 64, 744, amplitude=48) + [[0.0] * 64 for _ in range(240)]
+        k = random_q88_matrix(16, 64, 745, amplitude=48) + [[0.0] * 64 for _ in range(240)]
+        v = random_q88_matrix(16, 64, 746, amplitude=48) + [[0.0] * 64 for _ in range(240)]
+        env.load_qkv(q, k, v)
+        env.set_axi_patterns(rvalid=ConstantPattern(1))
+        await env.start_run(causal=False)
+        status = await env.wait_done()
+        assert (status & STATUS_ERROR) == 0
+        actual = env.read_output_matrix()
+        expected = attention_golden_rows(q, k, v, scale=0.125, causal=False, q_start=0, q_rows=16)
+        assert_matrix_close(actual[:16], expected)
     finally:
         env.shutdown()
 
