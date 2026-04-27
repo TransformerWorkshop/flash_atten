@@ -18,7 +18,7 @@ import run as cocotb_run  # noqa: E402
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run FA baseline RTL profiling and emit a markdown summary.")
-    parser.add_argument("--sim", default="icarus")
+    parser.add_argument("--sim", default="verilator")
     parser.add_argument("--waves", action="store_true", default=False)
     parser.add_argument("--verbose", action="store_true", default=False)
     return parser.parse_args()
@@ -122,6 +122,7 @@ def render_report(report: dict[str, Any]) -> str:
 
 def run_profile(sim_name: str, waves: bool, verbose: bool, output_dir: Path) -> dict[str, Any]:
     json_path = output_dir / f"{date.today().strftime('%Y%m%d')}_fa_baseline_profile_causal.json"
+    options = cocotb_run.RunOptions()
     config = cocotb_run.RunConfig(
         name="fa_baseline_profile_causal",
         build_name="fa_baseline_profile_causal",
@@ -136,19 +137,20 @@ def run_profile(sim_name: str, waves: bool, verbose: bool, output_dir: Path) -> 
         rtl_params={},
     )
     cocotb_run.ensure_dirs()
-    cocotb_run.run_case(sim_name, "fa_baseline_profile", waves, verbose, config, cocotb_run.APP_TARGET_PT_DMA_TOP)
+    cocotb_run.run_case(sim_name, "fa_baseline_profile", waves, verbose, config, cocotb_run.APP_TARGET_PT_DMA_TOP, options)
     return json.loads(json_path.read_text(encoding="utf-8"))
 
 
 def run_rowstate_profile(sim_name: str, waves: bool, verbose: bool, output_dir: Path) -> dict[str, Any]:
     json_path = output_dir / f"{date.today().strftime('%Y%m%d')}_fa_baseline_rowstate_profile.json"
+    options = cocotb_run.RunOptions()
     config = cocotb_run.RunConfig(
         name="fa_baseline_rowstate_profile",
         build_name="fa_baseline_rowstate_profile",
         x_dim=16,
         y_dim=16,
         test_modules=["tests.test_fa_baseline_perf_rowstate"],
-        hdl_toplevel="FA_TOP_BASELINE_SIM",
+        hdl_toplevel="FA_ROW_STATE_PROFILE_SIM",
         seeds=[cocotb_run.DEFAULT_SEED],
         extra_env={
             "FA_ROWSTATE_PROFILE_JSON": str(json_path),
@@ -156,7 +158,7 @@ def run_rowstate_profile(sim_name: str, waves: bool, verbose: bool, output_dir: 
         rtl_params={},
     )
     cocotb_run.ensure_dirs()
-    cocotb_run.run_case(sim_name, "fa_baseline_profile", waves, verbose, config, cocotb_run.APP_TARGET_PT_DMA_TOP)
+    cocotb_run.run_case(sim_name, "fa_baseline_profile", waves, verbose, config, cocotb_run.APP_TARGET_PT_DMA_TOP, options)
     return json.loads(json_path.read_text(encoding="utf-8"))
 
 

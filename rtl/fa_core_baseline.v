@@ -99,6 +99,7 @@ module FA_CORE_BASELINE #(
     reg        oacc_clear_done_pulse_r;
     wire       qk_req_valid;
     wire       qk_req_ready;
+    wire       qk_core_req_ready_w;
     wire       qk_done_pulse;
     wire       qk_resp_valid;
     wire       score_req_valid;
@@ -171,10 +172,10 @@ module FA_CORE_BASELINE #(
     wire         oacc_row_rd_en;
     wire [3:0]   oacc_row_rd_addr;
     wire         oacc_row_rd_valid;
-    wire [1023:0] oacc_row_rd_data;
+    wire [2047:0] oacc_row_rd_data;
     wire         oacc_row_wr_en;
     wire [3:0]   oacc_row_wr_addr;
-    wire [1023:0] oacc_row_wr_data;
+    wire [2047:0] oacc_row_wr_data;
     reg [31:0]   rd_bytes_r;
     reg [31:0]   wr_bytes_r;
     wire         core_unused_zero_w = (run_ctrl_busy_w & 1'b0)
@@ -407,7 +408,7 @@ module FA_CORE_BASELINE #(
         .rstn(rstn),
         .clear(runtime_clear),
         .req_valid(qk_req_valid),
-        .req_ready(qk_req_ready),
+        .req_ready(qk_core_req_ready_w),
         .q_rd_en(q_qk_rd_en),
         .q_rd_addr(q_qk_rd_addr),
         .q_rd_valid(q_qk_rd_valid),
@@ -421,6 +422,7 @@ module FA_CORE_BASELINE #(
         .result_tile_flat(qk_result_tile_flat),
         .done_pulse(qk_done_pulse)
     );
+    assign qk_req_ready = qk_core_req_ready_w;
 
     FA_SCORE_POST_REAL u_score_post (
         .clk(clk),

@@ -5,10 +5,8 @@ import os
 from pathlib import Path
 
 import cocotb
-from cocotb.handle import Force, Release
+from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge
-
-from tests.fa_baseline_env import create_env
 
 
 def pack_words_to_int(words: list[int]) -> int:
@@ -27,9 +25,9 @@ async def wait_signal_high(dut, signal, timeout_cycles: int) -> None:
 
 
 async def pulse_for_one_cycle(dut, signal) -> None:
-    signal.value = Force(1)
+    signal.value = 1
     await RisingEdge(dut.clk)
-    signal.value = Release()
+    signal.value = 0
 
 
 async def measure_cycles_to_pulse(dut, signal, timeout_cycles: int) -> int:
@@ -38,6 +36,21 @@ async def measure_cycles_to_pulse(dut, signal, timeout_cycles: int) -> int:
         if int(signal.value):
             return cycles
     raise AssertionError("pulse did not arrive before timeout")
+
+
+async def reset_row_state(dut) -> None:
+    dut.rstn.value = 0
+    dut.clear.value = 0
+    dut.init_valid.value = 0
+    dut.update_valid.value = 0
+    dut.neg_large_word.value = 0xFFC0_0000
+    dut.masked_score_tile_flat.value = 0
+    dut.resp_ready.value = 1
+    for _ in range(5):
+        await RisingEdge(dut.clk)
+    dut.rstn.value = 1
+    for _ in range(2):
+        await RisingEdge(dut.clk)
 
 
 def dump_report(report: dict[str, int]) -> None:
@@ -51,41 +64,28 @@ def dump_report(report: dict[str, int]) -> None:
 
 @cocotb.test()
 async def test_fa_baseline_rowstate_latency_samples(dut) -> None:
-    env = await create_env(dut)
-    core = dut.u_core
-    try:
-        await env.reset()
-        await env.program_common_regs(causal=False)
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+    await reset_row_state(dut)
 
-        masked_tile_words = [env.neg_large_word & 0xFFFF_FFFF for _ in range(16 * 16)]
-        valid_tile_words = [0 for _ in range(16 * 16)]
-        report: dict[str, int] = {}
+    neg_large_word = 0xFFC0_0000
+    masked_tile_words = [neg_large_word for _ in range(16 * 16)]
+    valid_tile_words = [0 for _ in range(16 * 16)]
+    extra_cycles = int(os.getenv("FA_ROW_UPDATE_EXTRA_CYCLES", "9"))
+    report: dict[str, int] = {}
 
-        core.u_row_state.masked_score_tile_flat.value = Force(pack_words_to_int(masked_tile_words))
-        await pulse_for_one_cycle(dut, core.u_row_state.init_valid)
-        await wait_signal_high(dut, core.u_row_state.init_done_pulse, timeout_cycles=32)
-        await pulse_for_one_cycle(dut, core.u_row_state.update_valid)
-        report["masked_row_state_cycles"] = await measure_cycles_to_pulse(dut, core.u_row_state.done_pulse, timeout_cycles=256)
-        await wait_signal_high(dut, core.u_p_buf.load_done_pulse, timeout_cycles=32)
-        report["masked_row_update_cycles"] = report["masked_row_state_cycles"] + 9
+    dut.masked_score_tile_flat.value = pack_words_to_int(masked_tile_words)
+    await pulse_for_one_cycle(dut, dut.init_valid)
+    await wait_signal_high(dut, dut.init_done_pulse, timeout_cycles=32)
+    await pulse_for_one_cycle(dut, dut.update_valid)
+    report["masked_row_state_cycles"] = await measure_cycles_to_pulse(dut, dut.done_pulse, timeout_cycles=256)
+    report["masked_row_update_cycles"] = report["masked_row_state_cycles"] + extra_cycles
+    await RisingEdge(dut.clk)
 
-        core.u_row_state.masked_score_tile_flat.value = Force(pack_words_to_int(valid_tile_words))
-        await pulse_for_one_cycle(dut, core.u_row_state.init_valid)
-        await wait_signal_high(dut, core.u_row_state.init_done_pulse, timeout_cycles=32)
-        await pulse_for_one_cycle(dut, core.u_row_state.update_valid)
-        report["valid_row_state_cycles"] = await measure_cycles_to_pulse(dut, core.u_row_state.done_pulse, timeout_cycles=2048)
-        await wait_signal_high(dut, core.u_p_buf.load_done_pulse, timeout_cycles=32)
-        report["valid_row_update_cycles"] = report["valid_row_state_cycles"] + 9
+    dut.masked_score_tile_flat.value = pack_words_to_int(valid_tile_words)
+    await pulse_for_one_cycle(dut, dut.init_valid)
+    await wait_signal_high(dut, dut.init_done_pulse, timeout_cycles=32)
+    await pulse_for_one_cycle(dut, dut.update_valid)
+    report["valid_row_state_cycles"] = await measure_cycles_to_pulse(dut, dut.done_pulse, timeout_cycles=2048)
+    report["valid_row_update_cycles"] = report["valid_row_state_cycles"] + extra_cycles
 
-        dump_report(report)
-    finally:
-        for handle in (
-            core.u_row_state.masked_score_tile_flat,
-            core.u_row_state.init_valid,
-            core.u_row_state.update_valid,
-        ):
-            try:
-                handle.value = Release()
-            except Exception:
-                pass
-        env.shutdown()
+    dump_report(report)

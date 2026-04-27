@@ -296,6 +296,7 @@ class FABaselineEnv:
         self._wr_data_ready_pattern = ConstantPattern(1)
         self._rd_active = None
         self._wr_active = None
+        self._dma_abort_epoch = 0
         self._rd_fault_early_last_beat: int | None = None
         self._rd_fault_suppress_final_last = False
         self._fast_wait_enabled = env_flag("FA_FAST_WAIT", True)
@@ -353,6 +354,7 @@ class FABaselineEnv:
         await ClockCycles(self.dut.clk, cycles)
 
     def _abort_dma_agents(self) -> None:
+        self._dma_abort_epoch += 1
         self._rd_active = None
         self._wr_active = None
         self.dut.rd_beat_valid.value = 0
@@ -562,12 +564,25 @@ class FABaselineEnv:
         valid_held = False
         last_held = False
         beat_words_held = 0
+        seen_abort_epoch = self._dma_abort_epoch
         self.dut.rd_desc_ready.value = 1
         self.dut.rd_beat_valid.value = 0
         self.dut.rd_beat_word_count.value = 0
         self.dut.rd_beat_last.value = 0
         while True:
             await RisingEdge(self.dut.clk)
+            if seen_abort_epoch != self._dma_abort_epoch:
+                active_kind = 0
+                active_addr = 0
+                active_words = 0
+                word_offset = 0
+                valid_held = False
+                last_held = False
+                beat_words_held = 0
+                self.dut.rd_beat_valid.value = 0
+                self.dut.rd_beat_word_count.value = 0
+                self.dut.rd_beat_last.value = 0
+                seen_abort_epoch = self._dma_abort_epoch
             if active_words == 0:
                 if value_to_int(self.dut.rd_desc_valid.value) and value_to_int(self.dut.rd_desc_ready.value):
                     active_addr = value_to_int(self.dut.rd_desc_addr.value)
@@ -626,10 +641,16 @@ class FABaselineEnv:
         active_addr = 0
         active_words = 0
         word_offset = 0
+        seen_abort_epoch = self._dma_abort_epoch
         self.dut.wr_desc_ready.value = 1
         self.dut.wr_data_ready.value = 1
         while True:
             await RisingEdge(self.dut.clk)
+            if seen_abort_epoch != self._dma_abort_epoch:
+                active_addr = 0
+                active_words = 0
+                word_offset = 0
+                seen_abort_epoch = self._dma_abort_epoch
             if active_words == 0:
                 if value_to_int(self.dut.wr_desc_valid.value) and value_to_int(self.dut.wr_desc_ready.value):
                     active_addr = value_to_int(self.dut.wr_desc_addr.value)

@@ -17,7 +17,7 @@ module FA_BANKED_TILE_BUF_REAL (
     reg [31:0] shadow_words_r [0:511];
     wire [511:0] bank_rd_data_w [0:3];
     reg [511:0] bank_wr_data_r [0:3];
-    reg [15:0]  bank_wr_mask_r [0:3];
+    reg [511:0] bank_wr_mask_r [0:3];
     reg [1:0]   rd_bank_sel_r;
     integer wi;
     integer bi;
@@ -33,21 +33,16 @@ module FA_BANKED_TILE_BUF_REAL (
     generate
         genvar gb;
         for (gb = 0; gb < 4; gb = gb + 1) begin : gen_bank
-            PT_MEM_BANK #(
-                .DATA_WIDTH(32),
-                .LANES(16),
+            FA_MASKED_ROWBUF_REAL #(
+                .ROW_WIDTH(512),
                 .DEPTH(8)
             ) u_bank (
                 .clk(clk),
-                .rstn(rstn),
-                .clear(clear),
                 .wr_en(beat_write_valid && beat_write_word_mask[gb]),
-                .wr_buf(1'b0),
-                .wr_mask(bank_wr_mask_r[gb]),
                 .wr_addr(beat_write_local_addr),
                 .wr_data(bank_wr_data_r[gb]),
+                .wr_mask(bank_wr_mask_r[gb]),
                 .rd_en(rd_en && (rd_addr[1:0] == gb[1:0])),
-                .rd_buf(1'b0),
                 .rd_addr(rd_addr[4:2]),
                 .rd_data(bank_rd_data_w[gb])
             );
@@ -57,9 +52,9 @@ module FA_BANKED_TILE_BUF_REAL (
     always @(*) begin
         for (bank_i = 0; bank_i < 4; bank_i = bank_i + 1) begin
             bank_wr_data_r[bank_i] = 512'd0;
-            bank_wr_mask_r[bank_i] = 16'd0;
+            bank_wr_mask_r[bank_i] = 512'd0;
             if (beat_write_valid && beat_write_word_mask[bank_i]) begin
-                bank_wr_mask_r[bank_i][beat_write_row_idx] = 1'b1;
+                bank_wr_mask_r[bank_i][(beat_write_row_idx * 32) +: 32] = 32'hFFFF_FFFF;
                 bank_wr_data_r[bank_i][(beat_write_row_idx * 32) +: 32] = beat_write_data[(bank_i * 32) +: 32];
             end
         end
@@ -181,28 +176,49 @@ module FA_V_BUF_REAL (
     output wire [16383:0] tile_flat
 );
 
-    wire       unused_rd_valid_w;
-    wire [511:0] unused_rd_data_w;
-    wire [16383:0] tile_flat_w;
-    wire unused_v_buf_read_zero_w = (unused_rd_valid_w & 1'b0) | (unused_rd_data_w[0] & 1'b0);
+`ifndef SYNTHESIS
+    // The real datapath consumes V through FA_V_BUF_PV_REAL. Keep only a
+    // simulation-visible shadow here so directed tests can still inspect
+    // write mapping without paying for a redundant synthesized SRAM.
+    reg [31:0] shadow_words_r [0:511];
+    integer wi;
+    integer bi;
 
-    FA_BANKED_TILE_BUF_REAL u_bank_buf (
-        .clk(clk),
-        .rstn(rstn),
-        .clear(clear),
-        .beat_write_valid(beat_write_valid),
-        .beat_write_row_idx(beat_write_row_idx),
-        .beat_write_local_addr(beat_write_local_addr),
-        .beat_write_word_mask(beat_write_word_mask),
-        .beat_write_data(beat_write_data),
-        .rd_en(1'b0),
-        .rd_addr(5'd0),
-        .rd_valid(unused_rd_valid_w),
-        .rd_data(unused_rd_data_w),
-        .tile_flat(tile_flat_w)
-    );
+    generate
+        genvar gi;
+        for (gi = 0; gi < 512; gi = gi + 1) begin : gen_flat
+            assign tile_flat[(gi * 32) +: 32] = shadow_words_r[gi];
+        end
+    endgenerate
 
-    assign tile_flat = tile_flat_w | {16384{unused_v_buf_read_zero_w}};
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            for (wi = 0; wi < 512; wi = wi + 1) begin
+                shadow_words_r[wi] <= 32'd0;
+            end
+        end else if (clear) begin
+            for (wi = 0; wi < 512; wi = wi + 1) begin
+                shadow_words_r[wi] <= 32'd0;
+            end
+        end else if (beat_write_valid) begin
+            for (bi = 0; bi < 4; bi = bi + 1) begin
+                if (beat_write_word_mask[bi]) begin
+                    shadow_words_r[(beat_write_row_idx * 32) + (beat_write_local_addr * 4) + bi] <= beat_write_data[(bi * 32) +: 32];
+                end
+            end
+        end
+    end
+`else
+    wire unused_v_buf_zero_w = (clk & 1'b0)
+                             | (rstn & 1'b0)
+                             | (clear & 1'b0)
+                             | (beat_write_valid & 1'b0)
+                             | ((|beat_write_row_idx) & 1'b0)
+                             | ((|beat_write_local_addr) & 1'b0)
+                             | ((|beat_write_word_mask) & 1'b0)
+                             | ((|beat_write_data) & 1'b0);
+    assign tile_flat = {16384{unused_v_buf_zero_w}};
+`endif
 
 endmodule
 
@@ -223,7 +239,7 @@ module FA_V_BUF_PV_REAL (
 
     reg [31:0] shadow_words_r [0:31][0:15];
     reg [511:0] bank_wr_data_r;
-    reg [15:0]  bank_wr_mask_r;
+    reg [511:0] bank_wr_mask_r;
     wire [4:0]  src_wr_addr_w = {src_word_idx_base[4:3], src_word_idx_base[8:6]};
     integer ai;
     integer li;
@@ -246,28 +262,28 @@ module FA_V_BUF_PV_REAL (
         end
     endgenerate
 
-    PT_MEM_BANK #(
-        .DATA_WIDTH(32),
-        .LANES(16),
+    FA_MASKED_ROWBUF_REAL #(
+        .ROW_WIDTH(512),
         .DEPTH(32)
     ) u_bank (
         .clk(clk),
-        .rstn(rstn),
-        .clear(clear),
         .wr_en(src_wr_valid),
-        .wr_buf(1'b0),
-        .wr_mask(bank_wr_mask_r),
         .wr_addr(src_wr_addr_w),
         .wr_data(bank_wr_data_r),
+        .wr_mask(bank_wr_mask_r),
         .rd_en(rd_en),
-        .rd_buf(1'b0),
         .rd_addr(rd_addr),
         .rd_data(rd_data)
     );
 
     always @(*) begin
         bank_wr_data_r = 512'd0;
-        bank_wr_mask_r = 16'd0;
+        bank_wr_mask_r = 512'd0;
+        src_word_idx_r = 9'd0;
+        src_word_r = 32'd0;
+        lane_lo_idx_r = 4'd0;
+        lane_hi_idx_r = 4'd0;
+        hi_half_r = 1'b0;
         for (li = 0; li < 16; li = li + 1) begin
             next_lane_words_r[li] = shadow_words_r[src_wr_addr_w][li];
         end
@@ -281,12 +297,14 @@ module FA_V_BUF_PV_REAL (
                 if (hi_half_r) begin
                     next_lane_words_r[lane_lo_idx_r][31:16] = src_word_r[15:0];
                     next_lane_words_r[lane_hi_idx_r][31:16] = src_word_r[31:16];
+                    bank_wr_mask_r[(lane_lo_idx_r * 32) + 16 +: 16] = 16'hFFFF;
+                    bank_wr_mask_r[(lane_hi_idx_r * 32) + 16 +: 16] = 16'hFFFF;
                 end else begin
                     next_lane_words_r[lane_lo_idx_r][15:0] = src_word_r[15:0];
                     next_lane_words_r[lane_hi_idx_r][15:0] = src_word_r[31:16];
+                    bank_wr_mask_r[(lane_lo_idx_r * 32) +: 16] = 16'hFFFF;
+                    bank_wr_mask_r[(lane_hi_idx_r * 32) +: 16] = 16'hFFFF;
                 end
-                bank_wr_mask_r[lane_lo_idx_r] = 1'b1;
-                bank_wr_mask_r[lane_hi_idx_r] = 1'b1;
             end
         end
         for (li = 0; li < 16; li = li + 1) begin
@@ -313,7 +331,7 @@ module FA_V_BUF_PV_REAL (
             rd_valid <= rd_en;
             if (src_wr_valid) begin
                 for (li = 0; li < 16; li = li + 1) begin
-                    if (bank_wr_mask_r[li]) begin
+                    if (|bank_wr_mask_r[(li * 32) +: 32]) begin
                         shadow_words_r[src_wr_addr_w][li] <= next_lane_words_r[li];
                     end
                 end
@@ -345,6 +363,7 @@ module FA_P_BUF_REAL (
     reg [4095:0] load_data_r;
     reg [31:0] shadow_words_r [0:127];
     reg [511:0] bank_wr_data_r;
+    reg [511:0] bank_wr_mask_r;
     integer wi;
     integer ri;
 
@@ -397,27 +416,23 @@ module FA_P_BUF_REAL (
         end
     endgenerate
 
-    PT_MEM_BANK #(
-        .DATA_WIDTH(32),
-        .LANES(16),
+    FA_MASKED_ROWBUF_REAL #(
+        .ROW_WIDTH(512),
         .DEPTH(8)
     ) u_bank (
         .clk(clk),
-        .rstn(rstn),
-        .clear(clear),
         .wr_en(state_r == ST_LOAD),
-        .wr_buf(1'b0),
-        .wr_mask(16'hFFFF),
         .wr_addr(load_addr_r),
         .wr_data(bank_wr_data_r),
+        .wr_mask(bank_wr_mask_r),
         .rd_en(pv_rd_en),
-        .rd_buf(1'b0),
         .rd_addr(pv_rd_addr),
         .rd_data(pv_rd_data)
     );
 
     always @(*) begin
         bank_wr_data_r = 512'd0;
+        bank_wr_mask_r = (state_r == ST_LOAD) ? {512{1'b1}} : 512'd0;
         for (ri = 0; ri < 16; ri = ri + 1) begin
             bank_wr_data_r[(ri * 32) +: 32] = load_data_r[((ri * 8) + load_addr_r) * 32 +: 32];
         end
@@ -470,10 +485,10 @@ module FA_OACC_BUF_REAL (
     input  wire            row_rd_en,
     input  wire [3:0]      row_rd_addr,
     output reg             row_rd_valid,
-    output wire [1023:0]   row_rd_data,
+    output wire [2047:0]   row_rd_data,
     input  wire            row_wr_en,
     input  wire [3:0]      row_wr_addr,
-    input  wire [1023:0]   row_wr_data,
+    input  wire [2047:0]   row_wr_data,
     input  wire            exp_rd_en,
     input  wire [3:0]      exp_rd_addr,
     output reg             exp_rd_valid,
@@ -490,13 +505,59 @@ module FA_OACC_BUF_REAL (
     reg [3:0] row_idx_r;
     reg [3:0] row_idx_n;
     reg [16383:0] load_data_r;
-    reg [31:0] shadow_words_r [0:511];
-    reg [1023:0] mem_wr_data_r;
+    reg [31:0] shadow_q16_words_r [0:1023];
+    reg [2047:0] mem_wr_data_r;
     reg [3:0]    mem_wr_addr_r;
-    reg [31:0]   mem_wr_mask_r;
+    reg [2047:0] mem_wr_mask_r;
     reg          mem_wr_en_r;
+    wire         mem_rd_en_w;
+    wire [3:0]   mem_rd_addr_w;
+    wire [2047:0] mem_rd_data_w;
+    wire [1023:0] exp_rd_data_w;
+    wire         row_rd_sel_w = row_rd_en;
+    wire         exp_rd_sel_w = !row_rd_en && exp_rd_en;
     integer wi;
     integer li;
+
+    function automatic signed [15:0] q16_to_q88_rn_sat;
+        input signed [31:0] value;
+        reg signed [31:0] rounded;
+        reg signed [31:0] shifted;
+        begin
+            if (value >= 0) begin
+                rounded = value + 32'sd128;
+            end else begin
+                rounded = value - 32'sd128;
+            end
+            shifted = rounded >>> 8;
+            if (shifted > 32'sd32767) begin
+                q16_to_q88_rn_sat = 16'sh7FFF;
+            end else if (shifted < -32'sd32768) begin
+                q16_to_q88_rn_sat = -16'sh8000;
+            end else begin
+                q16_to_q88_rn_sat = shifted[15:0];
+            end
+        end
+    endfunction
+
+    function automatic signed [31:0] q88_to_q16;
+        input signed [15:0] value;
+        begin
+            q88_to_q16 = {{8{value[15]}}, value, 8'd0};
+        end
+    endfunction
+
+    function automatic [31:0] pack_q16_pair_to_q88;
+        input signed [31:0] lo_q16;
+        input signed [31:0] hi_q16;
+        reg signed [15:0] lo_q88;
+        reg signed [15:0] hi_q88;
+        begin
+            lo_q88 = q16_to_q88_rn_sat(lo_q16);
+            hi_q88 = q16_to_q88_rn_sat(hi_q16);
+            pack_q16_pair_to_q88 = {hi_q88, lo_q88};
+        end
+    endfunction
 
     assign clear_req_ready = (state_r == ST_IDLE);
     assign load_ready = (state_r == ST_IDLE);
@@ -551,57 +612,77 @@ module FA_OACC_BUF_REAL (
     generate
         genvar gi;
         for (gi = 0; gi < 512; gi = gi + 1) begin : gen_flat
-            assign tile_flat[(gi * 32) +: 32] = shadow_words_r[gi];
+            assign tile_flat[(gi * 32) +: 32] = pack_q16_pair_to_q88(
+                shadow_q16_words_r[gi * 2],
+                shadow_q16_words_r[(gi * 2) + 1]
+            );
         end
     endgenerate
 
-    PT_M_MEM #(
-        .DATA_WIDTH(32),
-        .B_LANES(32),
-        .DEPTH(16),
-        .M_PHYSICAL_COPIES(2)
+    assign mem_rd_en_w = row_rd_en || exp_rd_en;
+    assign mem_rd_addr_w = row_rd_en ? row_rd_addr : exp_rd_addr;
+    assign row_rd_data = mem_rd_data_w;
+    assign exp_rd_data = exp_rd_data_w;
+
+    generate
+        genvar go;
+        for (go = 0; go < 32; go = go + 1) begin : gen_exp_pack
+            assign exp_rd_data_w[(go * 32) +: 32] = pack_q16_pair_to_q88(
+                mem_rd_data_w[((go * 2) * 32) +: 32],
+                mem_rd_data_w[(((go * 2) + 1) * 32) +: 32]
+            );
+        end
+    endgenerate
+
+// synthesis translate_off
+`ifndef SYNTHESIS
+    always @(posedge clk) begin
+        if (row_rd_en && exp_rd_en) begin
+            $fatal(1, "FA_OACC_BUF_REAL does not support simultaneous row/export reads on the shared SRAM");
+        end
+    end
+`endif
+// synthesis translate_on
+
+    FA_MASKED_ROWBUF_REAL #(
+        .ROW_WIDTH(2048),
+        .DEPTH(16)
     ) u_mem (
         .clk(clk),
-        .rstn(rstn),
-        .clear(clear),
         .wr_en(mem_wr_en_r),
-        .wr_buf(1'b0),
-        .wr_mask(mem_wr_mask_r),
         .wr_addr(mem_wr_addr_r),
         .wr_data(mem_wr_data_r),
-        .rd_b_en(row_rd_en),
-        .rd_b_buf(1'b0),
-        .rd_b_addr(row_rd_addr),
-        .rd_b_data(row_rd_data),
-        .rd_exp_en(exp_rd_en),
-        .rd_exp_buf(1'b0),
-        .rd_exp_addr(exp_rd_addr),
-        .rd_exp_data(exp_rd_data)
+        .wr_mask(mem_wr_mask_r),
+        .rd_en(mem_rd_en_w),
+        .rd_addr(mem_rd_addr_w),
+        .rd_data(mem_rd_data_w)
     );
 
     always @(*) begin
         mem_wr_en_r = 1'b0;
         mem_wr_addr_r = 4'd0;
-        mem_wr_data_r = 1024'd0;
-        mem_wr_mask_r = 32'd0;
+        mem_wr_data_r = 2048'd0;
+        mem_wr_mask_r = 2048'd0;
         if (state_r == ST_CLEAR) begin
             mem_wr_en_r = 1'b1;
             mem_wr_addr_r = row_idx_r;
-            mem_wr_data_r = 1024'd0;
-            mem_wr_mask_r = 32'hFFFF_FFFF;
+            mem_wr_data_r = 2048'd0;
+            mem_wr_mask_r = {2048{1'b1}};
         end else if (state_r == ST_LOAD) begin
             mem_wr_en_r = 1'b1;
             mem_wr_addr_r = row_idx_r;
-            mem_wr_mask_r = 32'hFFFF_FFFF;
-            mem_wr_data_r = 1024'd0;
-            for (li = 0; li < 32; li = li + 1) begin
-                mem_wr_data_r[(li * 32) +: 32] = load_data_r[((row_idx_r * 32) + li) * 32 +: 32];
+            mem_wr_mask_r = {2048{1'b1}};
+            mem_wr_data_r = 2048'd0;
+            for (li = 0; li < 64; li = li + 1) begin
+                mem_wr_data_r[(li * 32) +: 32] = q88_to_q16(
+                    load_data_r[(((row_idx_r * 32) + (li >> 1)) * 32) + ((li & 1) * 16) +: 16]
+                );
             end
         end else if (row_wr_en) begin
             mem_wr_en_r = 1'b1;
             mem_wr_addr_r = row_wr_addr;
             mem_wr_data_r = row_wr_data;
-            mem_wr_mask_r = 32'hFFFF_FFFF;
+            mem_wr_mask_r = {2048{1'b1}};
         end
     end
 
@@ -612,8 +693,8 @@ module FA_OACC_BUF_REAL (
             load_done_pulse <= 1'b0;
             row_rd_valid <= 1'b0;
             exp_rd_valid <= 1'b0;
-            for (wi = 0; wi < 512; wi = wi + 1) begin
-                shadow_words_r[wi] <= 32'd0;
+            for (wi = 0; wi < 1024; wi = wi + 1) begin
+                shadow_q16_words_r[wi] <= 32'd0;
             end
         end else if (clear) begin
             load_data_r <= 16384'd0;
@@ -621,29 +702,31 @@ module FA_OACC_BUF_REAL (
             load_done_pulse <= 1'b0;
             row_rd_valid <= 1'b0;
             exp_rd_valid <= 1'b0;
-            for (wi = 0; wi < 512; wi = wi + 1) begin
-                shadow_words_r[wi] <= 32'd0;
+            for (wi = 0; wi < 1024; wi = wi + 1) begin
+                shadow_q16_words_r[wi] <= 32'd0;
             end
         end else begin
             clear_done_pulse <= 1'b0;
             load_done_pulse <= 1'b0;
-            row_rd_valid <= row_rd_en;
-            exp_rd_valid <= exp_rd_en;
+            row_rd_valid <= row_rd_sel_w;
+            exp_rd_valid <= exp_rd_sel_w;
                 if (row_wr_en && (state_r == ST_IDLE)) begin
-                    for (wi = 0; wi < 32; wi = wi + 1) begin
-                        shadow_words_r[(row_wr_addr * 32) + wi] <= row_wr_data[(wi * 32) +: 32];
+                    for (wi = 0; wi < 64; wi = wi + 1) begin
+                        shadow_q16_words_r[(row_wr_addr * 64) + wi] <= row_wr_data[(wi * 32) +: 32];
                     end
                 end
                 case (state_r)
                     ST_IDLE: begin
                         if (clear_req_valid) begin
-                            for (wi = 0; wi < 512; wi = wi + 1) begin
-                                shadow_words_r[wi] <= 32'd0;
+                            for (wi = 0; wi < 1024; wi = wi + 1) begin
+                                shadow_q16_words_r[wi] <= 32'd0;
                             end
                         end else if (load_valid) begin
                             load_data_r <= tile_load_data;
-                            for (wi = 0; wi < 512; wi = wi + 1) begin
-                                shadow_words_r[wi] <= tile_load_data[(wi * 32) +: 32];
+                            for (wi = 0; wi < 1024; wi = wi + 1) begin
+                                shadow_q16_words_r[wi] <= q88_to_q16(
+                                    tile_load_data[((wi >> 1) * 32) + ((wi & 1) * 16) +: 16]
+                                );
                             end
                         end
                     end

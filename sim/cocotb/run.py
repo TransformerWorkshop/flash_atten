@@ -34,7 +34,7 @@ LOG_ROOT = REPO_ROOT / "sim" / "cocotb" / "logs"
 COVERAGE_ROOT = REPO_ROOT / "sim" / "cocotb" / "coverage"
 BUILD_METADATA_NAME = ".runner_build_metadata.json"
 DEFAULT_TIMESCALE = ("1ns", "1ps")
-FA_DEFAULT_VERILATOR_SUITES = {"fa_baseline", "fa_baseline_axi", "fa_full", "fa_full_axi"}
+DEFAULT_SIMULATOR = "verilator"
 
 DEFAULT_SEED = 10
 DEFAULT_A_BANK_DEPTH = 16
@@ -170,8 +170,8 @@ def parse_args() -> argparse.Namespace:
 
 def normalize_sim_name(sim_name: str) -> str:
 	name = sim_name.strip().lower()
-	if name in {"icarus", "iverilog"}:
-		return "icarus"
+	if name in {"icarus", "iverilog", "vvp"}:
+		return "verilator"
 	if name in {"questa", "questasim", "modelsim"}:
 		return "questa"
 	if name == "verilator":
@@ -224,9 +224,7 @@ def normalize_target(target: str) -> str:
 def resolve_sim_name(sim_name: Optional[str], suite: str) -> str:
 	if sim_name:
 		return normalize_sim_name(sim_name)
-	if suite in FA_DEFAULT_VERILATOR_SUITES:
-		return "verilator"
-	return "icarus"
+	return DEFAULT_SIMULATOR
 
 
 def resolve_test_selection(test_filter: Optional[str], testcase: Optional[str]) -> tuple[Optional[str], Optional[List[str]]]:
@@ -261,12 +259,6 @@ def target_rtl_param_overrides(target: str, x_dim: int, y_dim: int) -> Mapping[s
 		APP_TARGET_PT_DMA_TOP_V3_CH2,
 		APP_TARGET_PT_DMA_TOP_V3_CH4,
 	}
-	if normalized_target == APP_TARGET_PT_DMA_TOP:
-		return {
-			"STREAM_CHANNELS": 1,
-			"S_AXIS_CHANNEL_WIDTH": base_stream_width,
-			"M_AXIS_CHANNEL_WIDTH": m_export_width,
-		}
 	if normalized_target in v3_family_targets:
 		params = {
 			"WORD_WIDTH": 32,
@@ -321,6 +313,15 @@ def target_rtl_param_overrides(target: str, x_dim: int, y_dim: int) -> Mapping[s
 		}
 		return params
 	return {}
+
+
+def hdl_toplevel_supports_stream_params(hdl_toplevel: str) -> bool:
+	return hdl_toplevel in {
+		"PT_DMA_TOP_V3",
+		"PT_DMA_TOP_V3_SHELL_SIM",
+		"FA_TOP_BASELINE",
+		"FA_TOP_BASELINE_SIM",
+	}
 
 
 def config_suffix_for_target(target: str) -> str:
@@ -380,8 +381,6 @@ def build_metadata_path(build_dir: Path) -> Path:
 
 def build_output_path(sim_name: str, build_dir: Path, hdl_toplevel: str) -> Optional[Path]:
 	normalized = normalize_sim_name(sim_name)
-	if normalized == "icarus":
-		return build_dir / "sim.vvp"
 	if normalized == "verilator":
 		return build_dir / hdl_toplevel
 	return None
@@ -1065,14 +1064,15 @@ def run_case(
 		"M_WRITE_LANES": 1,
 		"M_EXPORT_LANES": 1,
 		"M_PHYSICAL_COPIES": 3,
-		"STREAM_CHANNELS": 1,
 	}
 	if config.rtl_params:
 		params.update(config.rtl_params)
-	if "S_AXIS_CHANNEL_WIDTH" not in params:
-		params["S_AXIS_CHANNEL_WIDTH"] = max(int(params["A_LOAD_LANES"]), int(params["B_LOAD_LANES"])) * int(params["DATA_WIDTH"])
-	if "M_AXIS_CHANNEL_WIDTH" not in params:
-		params["M_AXIS_CHANNEL_WIDTH"] = int(params["M_EXPORT_LANES"]) * int(params["DATA_WIDTH"])
+	if hdl_toplevel_supports_stream_params(config.hdl_toplevel):
+		params.setdefault("STREAM_CHANNELS", 1)
+		if "S_AXIS_CHANNEL_WIDTH" not in params:
+			params["S_AXIS_CHANNEL_WIDTH"] = max(int(params["A_LOAD_LANES"]), int(params["B_LOAD_LANES"])) * int(params["DATA_WIDTH"])
+		if "M_AXIS_CHANNEL_WIDTH" not in params:
+			params["M_AXIS_CHANNEL_WIDTH"] = int(params["M_EXPORT_LANES"]) * int(params["DATA_WIDTH"])
 
 	startup_error = validate_bank_config(int(params["M_BANK_DEPTH"]), config.x_dim, config.y_dim)
 	if startup_error and not config.expect_startup_fail:
@@ -1171,9 +1171,6 @@ def run_case(
 			"PT_M_WRITE_LANES": str(params["M_WRITE_LANES"]),
 			"PT_M_EXPORT_LANES": str(params["M_EXPORT_LANES"]),
 			"PT_M_PHYSICAL_COPIES": str(params["M_PHYSICAL_COPIES"]),
-			"PT_STREAM_CHANNELS": str(params["STREAM_CHANNELS"]),
-			"PT_S_AXIS_CHAN_WIDTH": str(params["S_AXIS_CHANNEL_WIDTH"]),
-			"PT_M_AXIS_CHAN_WIDTH": str(params["M_AXIS_CHANNEL_WIDTH"]),
 			"PT_TEST_SEED": str(seed),
 			"PT_RANDOM_CASES": str(config.random_cases),
 			"PT_SUITE_NAME": suite_name,
@@ -1181,6 +1178,10 @@ def run_case(
 			"PT_FUNC_COV_DIR": str(func_cov_dir),
 			"PT_TOPLEVEL": config.hdl_toplevel,
 		}
+		if "STREAM_CHANNELS" in params:
+			extra_env["PT_STREAM_CHANNELS"] = str(params["STREAM_CHANNELS"])
+			extra_env["PT_S_AXIS_CHAN_WIDTH"] = str(params["S_AXIS_CHANNEL_WIDTH"])
+			extra_env["PT_M_AXIS_CHAN_WIDTH"] = str(params["M_AXIS_CHANNEL_WIDTH"])
 		for env_key, param_key in (
 			("PT_WORD_WIDTH", "WORD_WIDTH"),
 			("PT_ELEM_WIDTH", "ELEM_WIDTH"),

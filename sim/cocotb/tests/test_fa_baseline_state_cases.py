@@ -53,6 +53,30 @@ async def test_fa_state_soft_reset_clears_status_and_counters(dut) -> None:
 
 
 @cocotb.test()
+async def test_fa_state_noncausal_restart_after_soft_reset_no_error(dut) -> None:
+    env = await create_env(dut)
+    try:
+        await env.reset()
+        q, k, v = make_single_tile_case(1315)
+        env.load_qkv(q, k, v)
+        await env.start_run(causal=False)
+        await env.wait_busy(True)
+        await ClockCycles(dut.clk, 64)
+        await env.soft_reset()
+        await env.wait_busy(False)
+        assert await env.axil_read(ADDR_STATUS) == 0
+
+        await env.start_run(causal=False)
+        status = await env.wait_done()
+        assert status & STATUS_DONE
+        assert (status & STATUS_ERROR) == 0
+        assert await env.axil_read(ADDR_RD_BYTES) > 0
+        assert await env.axil_read(ADDR_WR_BYTES) > 0
+    finally:
+        env.shutdown()
+
+
+@cocotb.test()
 async def test_fa_state_start_while_busy_is_ignored(dut) -> None:
     env = await create_env(dut)
     try:

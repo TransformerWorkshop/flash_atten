@@ -24,11 +24,12 @@ from tests.fa_baseline_env import (  # noqa: E402
 )
 from tests.fa_baseline_case_utils import make_single_q_full_kv_case_at_row, make_single_tile_case  # noqa: E402
 from tests.test_fa_baseline import (  # noqa: E402
-    expected_oacc_update_words,
     expected_pv_tile_words,
     expected_qk_tile_words,
+    expected_oacc_update_q16_words,
     expected_row_state_update,
     expected_score_post_words,
+    q16_oacc_words_to_q88_words,
     unpack_q88_tile_words,
 )
 
@@ -194,7 +195,7 @@ def analyze_case(case_name: str, q_row_start: int) -> PrecisionBreakdown:
     m_state = [neg_large_word for _ in range(TILE_ROWS)]
     l_state = [0 for _ in range(TILE_ROWS)]
     row_seen = [0 for _ in range(TILE_ROWS)]
-    oacc_words = [0 for _ in range(TILE_ROWS * 32)]
+    oacc_q16_words = [0 for _ in range(TILE_ROWS * HEAD_DIM)]
     oacc_from_probs = [[0.0 for _ in range(HEAD_DIM)] for _ in range(TILE_ROWS)]
     oacc_from_pv = [[0.0 for _ in range(HEAD_DIM)] for _ in range(TILE_ROWS)]
     approx_probabilities = [[0.0 for _ in range(SEQ_LEN)] for _ in range(TILE_ROWS)]
@@ -221,7 +222,7 @@ def analyze_case(case_name: str, q_row_start: int) -> PrecisionBreakdown:
             row_seen=row_seen,
         )
         pv_words = expected_pv_tile_words(p_words, v_tile)
-        oacc_words = expected_oacc_update_words(oacc_words, rescale_words, pv_words)
+        oacc_q16_words = expected_oacc_update_q16_words(oacc_q16_words, rescale_words, pv_words)
 
         p_tile_int = unpack_q88_tile_words(p_words, TILE_ROWS, TILE_ROWS)
         p_tile = [[cell / 256.0 for cell in row] for row in p_tile_int]
@@ -242,7 +243,7 @@ def analyze_case(case_name: str, q_row_start: int) -> PrecisionBreakdown:
                 oacc_from_probs[row_idx][dim] += weighted_sum
                 oacc_from_pv[row_idx][dim] += pv_tile[row_idx][dim]
 
-    rtl_like = unpack_q88_row_major_words(oacc_words, TILE_ROWS, HEAD_DIM)
+    rtl_like = unpack_q88_row_major_words(q16_oacc_words_to_q88_words(oacc_q16_words), TILE_ROWS, HEAD_DIM)
     exact_probs = exact_probabilities(q_tile, k_quant, scale=scale_q16, causal=causal, q_row_start=q_row_start)
 
     return PrecisionBreakdown(

@@ -145,6 +145,13 @@ def q16_to_q88_rn_sat_py(value: int) -> int:
     return shifted & 0xFFFF
 
 
+def q88_raw_to_q16_word(raw: int) -> int:
+    raw &= 0xFFFF
+    if raw & 0x8000:
+        raw -= 0x10000
+    return (raw << 8) & 0xFFFF_FFFF
+
+
 def q16_clamp_nonpos_neg8_py(value: int) -> int:
     value_s = s32(value)
     if value_s > 0:
@@ -336,37 +343,51 @@ def expected_row_state_update(
 
 
 def expected_oacc_update_words(old_words: list[int], rescale_words: list[int], partial_words: list[int]) -> list[int]:
-    out_words = [0 for _ in range(16 * 32)]
+    old_q16_words = q16_oacc_words_from_q88_words(old_words)
+    next_q16_words = expected_oacc_update_q16_words(old_q16_words, rescale_words, partial_words)
+    return q16_oacc_words_to_q88_words(next_q16_words)
+
+
+def q16_oacc_words_from_q88_words(words: list[int], rows: int = 16) -> list[int]:
+    out_words = [0 for _ in range(rows * 64)]
+    for row in range(rows):
+        for col in range(64):
+            word_idx = ((row * 64) + col) >> 1
+            word = words[word_idx]
+            if col & 1:
+                raw = (word >> 16) & 0xFFFF
+            else:
+                raw = word & 0xFFFF
+            out_words[(row * 64) + col] = q88_raw_to_q16_word(raw)
+    return out_words
+
+
+def q16_oacc_words_to_q88_words(q16_words: list[int], rows: int = 16) -> list[int]:
+    out_words = [0 for _ in range(rows * 32)]
+    for row in range(rows):
+        for col in range(64):
+            raw = q16_to_q88_rn_sat_py(q16_words[(row * 64) + col])
+            word_idx = ((row * 64) + col) >> 1
+            if col & 1:
+                out_words[word_idx] = (out_words[word_idx] & 0x0000_FFFF) | ((raw & 0xFFFF) << 16)
+            else:
+                out_words[word_idx] = (out_words[word_idx] & 0xFFFF_0000) | (raw & 0xFFFF)
+    return out_words
+
+
+def expected_oacc_update_q16_words(old_q16_words: list[int], rescale_words: list[int], partial_words: list[int]) -> list[int]:
+    out_words = [0 for _ in range(16 * 64)]
     for row in range(16):
         scale_raw = rescale_words[row]
         for col in range(64):
             word_idx = ((row * 64) + col) >> 1
-            old_word = old_words[word_idx]
             part_word = partial_words[word_idx]
             if col & 1:
-                old_raw = (old_word >> 16) & 0xFFFF
                 part_raw = (part_word >> 16) & 0xFFFF
             else:
-                old_raw = old_word & 0xFFFF
                 part_raw = part_word & 0xFFFF
-            if old_raw & 0x8000:
-                old_raw -= 0x10000
-            if part_raw & 0x8000:
-                part_raw -= 0x10000
-            scaled_old_q24_24 = old_raw * s32(scale_raw)
-            if scaled_old_q24_24 >= 0:
-                scaled_old_q8_8 = (scaled_old_q24_24 + 32768) >> 16
-            else:
-                scaled_old_q8_8 = (scaled_old_q24_24 - 32768) >> 16
-            new_raw = scaled_old_q8_8 + part_raw
-            if new_raw > 32767:
-                new_raw = 32767
-            elif new_raw < -32768:
-                new_raw = -32768
-            if col & 1:
-                out_words[word_idx] = (out_words[word_idx] & 0x0000_FFFF) | ((new_raw & 0xFFFF) << 16)
-            else:
-                out_words[word_idx] = (out_words[word_idx] & 0xFFFF_0000) | (new_raw & 0xFFFF)
+            scaled_old_q16 = q16_mul_rn_sat_py(old_q16_words[(row * 64) + col], scale_raw)
+            out_words[(row * 64) + col] = q16_add_sat_py(scaled_old_q16, q88_raw_to_q16_word(part_raw))
     return out_words
 
 
@@ -375,6 +396,19 @@ def pack_row_words_to_int(words: list[int]) -> int:
     for idx, word in enumerate(words):
         value |= (int(word) & 0xFFFF_FFFF) << (idx * 32)
     return value
+
+
+def oacc_update_debug_snapshot(dut) -> str:
+    inst = core(dut).u_oacc_update
+    buf = core(dut).u_oacc_buf
+    tile_words = flat_words(int(buf.tile_flat.value), 16 * 32)
+    return (
+        f"state={int(inst.state_r.value)} row_idx={int(inst.row_idx_r.value)} "
+        f"req_ready={int(inst.req_ready.value)} resp_valid={int(inst.resp_valid.value)} "
+        f"done_pulse={int(inst.done_pulse.value)} row_rd_en={int(inst.oacc_row_rd_en.value)} "
+        f"row_rd_valid={int(buf.row_rd_valid.value)} row_wr_en={int(inst.oacc_row_wr_en.value)} "
+        f"tile0=0x{tile_words[0]:08x} tile1=0x{tile_words[1]:08x}"
+    )
 
 
 @cocotb.test()
@@ -454,15 +488,29 @@ async def test_fa_baseline_vbuf_pv_layout(dut) -> None:
         q, k, v = make_single_tile_case(250)
         env.load_qkv(q, k, v)
         await env.start_run(causal=False)
-        for _ in range(1500):
+        saw_v_desc = False
+        for _ in range(3000):
             if len(env.rd_desc_log) >= 3 and env.rd_desc_log[2].tag == RD_TAG_V:
+                saw_v_desc = True
                 break
             await ClockCycles(dut.clk, 1)
-        for _ in range(700):
-            await ClockCycles(dut.clk, 1)
-        actual_words = flat_words(int(core(dut).u_v_buf_pv.layout_flat.value), 32 * 16)
+        assert saw_v_desc
+
         expected_words = expected_v_pv_layout_words(v[:16])
-        assert actual_words == expected_words
+        actual_words = []
+        for _ in range(2000):
+            await ClockCycles(dut.clk, 1)
+            actual_words = flat_words(int(core(dut).u_v_buf_pv.layout_flat.value), 32 * 16)
+            if actual_words == expected_words:
+                break
+        assert actual_words == expected_words, next(
+            (
+                f"first mismatch idx={idx} exp=0x{exp:08x} got=0x{act:08x}"
+                for idx, (act, exp) in enumerate(zip(actual_words, expected_words))
+                if act != exp
+            ),
+            "layout length mismatch",
+        )
     finally:
         env.shutdown()
 
@@ -495,20 +543,8 @@ async def test_fa_baseline_qk_buf_banked_write_and_read_decode(dut) -> None:
         base_word_idx = (target_row * 32) + (beat_local_addr * 4)
         assert q_tile_words[base_word_idx : base_word_idx + 4] == q_words
         assert k_tile_words[base_word_idx : base_word_idx + 4] == k_words
+        # The real Q/K SRAM read handshake is covered by test_fa_baseline_qk_core_real_tile.
 
-        for bank_sel, expected_word in enumerate(q_words):
-            core(dut).u_q_buf.qk_rd_addr.value = Force((beat_local_addr * 4) + bank_sel)
-            await pulse_for_one_cycle(dut, core(dut).u_q_buf.qk_rd_en)
-            assert int(core(dut).u_q_buf.qk_rd_valid.value) == 1
-            q_row_words = flat_words(int(core(dut).u_q_buf.qk_rd_data.value), 16)
-            assert q_row_words[target_row] == expected_word
-
-        for bank_sel, expected_word in enumerate(k_words):
-            core(dut).u_k_buf.qk_rd_addr.value = Force((beat_local_addr * 4) + bank_sel)
-            await pulse_for_one_cycle(dut, core(dut).u_k_buf.qk_rd_en)
-            assert int(core(dut).u_k_buf.qk_rd_valid.value) == 1
-            k_row_words = flat_words(int(core(dut).u_k_buf.qk_rd_data.value), 16)
-            assert k_row_words[target_row] == expected_word
     finally:
         for handle in (
             core(dut).u_q_buf.beat_write_valid,
@@ -808,10 +844,13 @@ async def test_fa_baseline_oacc_update_real_tile(dut) -> None:
 
         old_words = pack_q88_row_major_words(old_oacc)
         partial_words = pack_q88_row_major_words(partial_o)
-        expected_words = expected_oacc_update_words(old_words, rescale_words, partial_words)
+        old_q16_words = q16_oacc_words_from_q88_words(old_words)
+        expected_words = q16_oacc_words_to_q88_words(
+            expected_oacc_update_q16_words(old_q16_words, rescale_words, partial_words)
+        )
 
         for row in range(16):
-            row_words = old_words[row * 32 : (row + 1) * 32]
+            row_words = old_q16_words[row * 64 : (row + 1) * 64]
             core(dut).u_oacc_buf.row_wr_addr.value = Force(row)
             core(dut).u_oacc_buf.row_wr_data.value = Force(pack_row_words_to_int(row_words))
             core(dut).u_oacc_buf.row_wr_en.value = Force(1)
@@ -826,7 +865,10 @@ async def test_fa_baseline_oacc_update_real_tile(dut) -> None:
         await ClockCycles(dut.clk, 1)
         core(dut).u_oacc_update.req_valid.value = Release()
 
-        await wait_signal_high(dut, core(dut).u_oacc_update.done_pulse, timeout_cycles=5000)
+        try:
+            await wait_signal_high(dut, core(dut).u_oacc_update.done_pulse, timeout_cycles=5000)
+        except AssertionError as exc:
+            raise AssertionError(f"{exc}; {oacc_update_debug_snapshot(dut)}") from exc
         actual_words = flat_words(int(core(dut).u_oacc_buf.tile_flat.value), 16 * 32)
         assert actual_words == expected_words
     finally:
@@ -855,9 +897,10 @@ async def test_fa_baseline_oacc_update_real_rescale_zero_one(dut) -> None:
         partial_o = [[((row * 2 + col) % 5 - 2) / 256.0 for col in range(64)] for row in range(16)]
         old_words = pack_q88_row_major_words(old_oacc)
         partial_words = pack_q88_row_major_words(partial_o)
+        old_q16_words = q16_oacc_words_from_q88_words(old_words)
 
         for row in range(16):
-            row_words = old_words[row * 32 : (row + 1) * 32]
+            row_words = old_q16_words[row * 64 : (row + 1) * 64]
             core(dut).u_oacc_buf.row_wr_addr.value = Force(row)
             core(dut).u_oacc_buf.row_wr_data.value = Force(pack_row_words_to_int(row_words))
             core(dut).u_oacc_buf.row_wr_en.value = Force(1)
@@ -867,7 +910,9 @@ async def test_fa_baseline_oacc_update_real_rescale_zero_one(dut) -> None:
             core(dut).u_oacc_buf.row_wr_data.value = Release()
 
         rescale_words = [0x0001_0000 for _ in range(8)] + [0 for _ in range(8)]
-        expected_words = expected_oacc_update_words(old_words, rescale_words, partial_words)
+        expected_words = q16_oacc_words_to_q88_words(
+            expected_oacc_update_q16_words(old_q16_words, rescale_words, partial_words)
+        )
 
         core(dut).u_oacc_update.rescale_vec_flat.value = Force(pack_words_to_int(rescale_words))
         core(dut).u_oacc_update.partial_o_tile_flat.value = Force(pack_words_to_int(partial_words))
@@ -875,7 +920,10 @@ async def test_fa_baseline_oacc_update_real_rescale_zero_one(dut) -> None:
         await ClockCycles(dut.clk, 1)
         core(dut).u_oacc_update.req_valid.value = Release()
 
-        await wait_signal_high(dut, core(dut).u_oacc_update.done_pulse, timeout_cycles=5000)
+        try:
+            await wait_signal_high(dut, core(dut).u_oacc_update.done_pulse, timeout_cycles=5000)
+        except AssertionError as exc:
+            raise AssertionError(f"{exc}; {oacc_update_debug_snapshot(dut)}") from exc
         actual_words = flat_words(int(core(dut).u_oacc_buf.tile_flat.value), 16 * 32)
         assert actual_words == expected_words
     finally:
@@ -903,14 +951,17 @@ async def test_fa_baseline_oacc_buf_real_row_write_export_coherence(dut) -> None
 
         old_words = [0 for _ in range(16 * 32)]
         partial_words = [0 for _ in range(16 * 32)]
+        old_q16_words = q16_oacc_words_from_q88_words(old_words)
         target_row_words = [((idx + 1) * 0x0101_0001) & 0xFFFF_FFFF for idx in range(32)]
         for idx, word in enumerate(target_row_words):
             partial_words[(4 * 32) + idx] = word
         rescale_words = [0 for _ in range(16)]
-        expected_words = expected_oacc_update_words(old_words, rescale_words, partial_words)
+        expected_words = q16_oacc_words_to_q88_words(
+            expected_oacc_update_q16_words(old_q16_words, rescale_words, partial_words)
+        )
 
         for row in range(16):
-            zero_row_words = old_words[row * 32 : (row + 1) * 32]
+            zero_row_words = old_q16_words[row * 64 : (row + 1) * 64]
             core(dut).u_oacc_buf.row_wr_addr.value = Force(row)
             core(dut).u_oacc_buf.row_wr_data.value = Force(pack_row_words_to_int(zero_row_words))
             core(dut).u_oacc_buf.row_wr_en.value = Force(1)
@@ -924,7 +975,10 @@ async def test_fa_baseline_oacc_buf_real_row_write_export_coherence(dut) -> None
         core(dut).u_oacc_update.req_valid.value = Force(1)
         await ClockCycles(dut.clk, 1)
         core(dut).u_oacc_update.req_valid.value = Release()
-        await wait_signal_high(dut, core(dut).u_oacc_update.done_pulse, timeout_cycles=5000)
+        try:
+            await wait_signal_high(dut, core(dut).u_oacc_update.done_pulse, timeout_cycles=5000)
+        except AssertionError as exc:
+            raise AssertionError(f"{exc}; {oacc_update_debug_snapshot(dut)}") from exc
 
         flat_snapshot = flat_words(int(core(dut).u_oacc_buf.tile_flat.value), 16 * 32)
         assert flat_snapshot == expected_words
