@@ -1,0 +1,6 @@
+{
+  "masked_row_state_cycles": 33,
+  "masked_row_update_cycles": 42,
+  "valid_row_state_cycles": 81,
+  "valid_row_update_cycles": 90
+}
