@@ -40,7 +40,7 @@
         82
       ],
       "per_invocation_cycles": 82,
-      "share_pct": 0.818771842236645,
+      "share_pct": 0.8253648716658278,
       "total_cycles": 1312
     },
     "future_masked": {
@@ -50,7 +50,7 @@
         34
       ],
       "per_invocation_cycles": 34,
-      "share_pct": 2.54618072890664,
+      "share_pct": 2.5666834423754405,
       "total_cycles": 4080
     },
     "history": {
@@ -60,7 +60,7 @@
         82
       ],
       "per_invocation_cycles": 82,
-      "share_pct": 6.140788816774838,
+      "share_pct": 6.190236537493709,
       "total_cycles": 9840
     }
   },
@@ -73,7 +73,7 @@
         82
       ],
       "per_invocation_cycles": 82,
-      "share_pct": 0.818771842236645,
+      "share_pct": 0.8253648716658278,
       "total_cycles": 1312
     },
     "future_masked": {
@@ -83,7 +83,7 @@
         34
       ],
       "per_invocation_cycles": 34,
-      "share_pct": 2.54618072890664,
+      "share_pct": 2.5666834423754405,
       "total_cycles": 4080
     },
     "history": {
@@ -93,7 +93,7 @@
         82
       ],
       "per_invocation_cycles": 82,
-      "share_pct": 6.140788816774838,
+      "share_pct": 6.190236537493709,
       "total_cycles": 9840
     }
   },
@@ -105,7 +105,7 @@
         130
       ],
       "per_invocation_cycles": 130,
-      "share_pct": 20.768846729905142,
+      "share_pct": 20.936084549572218,
       "total_cycles": 33280
     },
     "oacc_clear": {
@@ -115,7 +115,7 @@
         17
       ],
       "per_invocation_cycles": 17,
-      "share_pct": 0.16974538192710933,
+      "share_pct": 0.17111222949169602,
       "total_cycles": 272
     },
     "oacc_update": {
@@ -125,18 +125,18 @@
         81
       ],
       "per_invocation_cycles": 81,
-      "share_pct": 12.940589116325512,
+      "share_pct": 13.044791142425767,
       "total_cycles": 20736
     },
     "pv": {
       "count": 256,
       "observed_count": 16,
       "observed_unique_cycles": [
-        110
+        106
       ],
-      "per_invocation_cycles": 110,
-      "share_pct": 17.573639540688966,
-      "total_cycles": 28160
+      "per_invocation_cycles": 106,
+      "share_pct": 17.070961248112734,
+      "total_cycles": 27136
     },
     "q_load": {
       "count": 16,
@@ -145,18 +145,18 @@
         130
       ],
       "per_invocation_cycles": 130,
-      "share_pct": 1.2980529206190714,
+      "share_pct": 1.3085052843482636,
       "total_cycles": 2080
     },
     "qk": {
       "count": 256,
       "observed_count": 17,
       "observed_unique_cycles": [
-        53
+        52
       ],
-      "per_invocation_cycles": 53,
-      "share_pct": 8.467299051422867,
-      "total_cycles": 13568
+      "per_invocation_cycles": 52,
+      "share_pct": 8.374433819828887,
+      "total_cycles": 13312
     },
     "row_init": {
       "count": 16,
@@ -165,7 +165,7 @@
         2
       ],
       "per_invocation_cycles": 2,
-      "share_pct": 0.0199700449326011,
+      "share_pct": 0.020130850528434826,
       "total_cycles": 32
     },
     "row_update": {
@@ -173,7 +173,7 @@
       "observed_count": 17,
       "observed_unique_cycles": [],
       "per_invocation_cycles": null,
-      "share_pct": 9.505741387918123,
+      "share_pct": 9.582284851534977,
       "total_cycles": 15232
     },
     "score_post": {
@@ -183,7 +183,7 @@
         18
       ],
       "per_invocation_cycles": 18,
-      "share_pct": 2.8756864702945584,
+      "share_pct": 2.898842476094615,
       "total_cycles": 4608
     },
     "store": {
@@ -193,7 +193,7 @@
         562
       ],
       "per_invocation_cycles": 562,
-      "share_pct": 5.611582626060908,
+      "share_pct": 5.656768998490186,
       "total_cycles": 8992
     },
     "v_load": {
@@ -203,11 +203,11 @@
         130
       ],
       "per_invocation_cycles": 130,
-      "share_pct": 20.768846729905142,
+      "share_pct": 20.936084549572218,
       "total_cycles": 33280
     }
   },
-  "extrapolated_total_cycles": 160240,
+  "extrapolated_total_cycles": 158960,
   "full_run_counts": {
     "k_load": 256,
     "oacc_clear": 16,
@@ -326,9 +326,9 @@
     "pv": {
       "observed_count": 16,
       "observed_unique_cycles": [
-        110
+        106
       ],
-      "selected_cycles": 110
+      "selected_cycles": 106
     },
     "q_load": {
       "observed_count": 2,
@@ -340,9 +340,9 @@
     "qk": {
       "observed_count": 17,
       "observed_unique_cycles": [
-        53
+        52
       ],
-      "selected_cycles": 53
+      "selected_cycles": 52
     },
     "row_init": {
       "observed_count": 2,
@@ -377,37 +377,37 @@
     "diagonal": {
       "count": 16,
       "first_iteration_count": 1,
-      "first_iteration_cycles": 474,
+      "first_iteration_cycles": 469,
       "hidden_k_prefetch_cycles": 130,
       "hidden_v_load_cycles": 0,
       "steady_iteration_count": 15,
-      "steady_iteration_cycles": 344,
-      "total_cycles": 5634
+      "steady_iteration_cycles": 339,
+      "total_cycles": 5554
     },
     "future_masked": {
       "count": 120,
       "first_iteration_count": 0,
-      "first_iteration_cycles": 451,
+      "first_iteration_cycles": 447,
       "hidden_k_prefetch_cycles": 130,
-      "hidden_v_load_cycles": 25,
+      "hidden_v_load_cycles": 26,
       "steady_iteration_count": 120,
-      "steady_iteration_cycles": 321,
-      "total_cycles": 38520
+      "steady_iteration_cycles": 317,
+      "total_cycles": 38040
     },
     "history": {
       "count": 120,
       "first_iteration_count": 15,
-      "first_iteration_cycles": 474,
+      "first_iteration_cycles": 469,
       "hidden_k_prefetch_cycles": 130,
       "hidden_v_load_cycles": 0,
       "steady_iteration_count": 105,
-      "steady_iteration_cycles": 344,
-      "total_cycles": 43230
+      "steady_iteration_cycles": 339,
+      "total_cycles": 42630
     }
   },
   "scheduler_overlap_model": "v_load_overlapped_with_qk_score_row_update_and_next_k_prefetched_after_qk",
-  "scheduler_overlap_savings_cycles": 61480,
-  "scheduler_overlap_total_cycles": 98760,
+  "scheduler_overlap_savings_cycles": 61360,
+  "scheduler_overlap_total_cycles": 97600,
   "shape": {
     "head_dim": 64,
     "seq_len": 256
