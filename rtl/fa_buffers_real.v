@@ -248,7 +248,7 @@ module FA_K_BUF_REAL (
     output wire [16383:0] tile_flat
 );
 
-    FA_BANKED_TILE_BUF_REAL u_bank_buf (
+    FA_REG_TILE_BUF_REAL u_reg_buf (
         .clk(clk),
         .rstn(rstn),
         .clear(clear),
