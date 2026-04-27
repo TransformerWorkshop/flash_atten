@@ -174,9 +174,6 @@ module FA_CORE_BASELINE #(
     wire         oacc_row_wr_en;
     wire [3:0]   oacc_row_wr_addr;
     wire [1023:0] oacc_row_wr_data;
-    reg          p_pv_rd_valid_r;
-    reg [511:0] p_pv_rd_data_r;
-    integer      p_bypass_row_i;
     reg [31:0]   rd_bytes_r;
     reg [31:0]   wr_bytes_r;
     wire         core_unused_zero_w = (run_ctrl_busy_w & 1'b0)
@@ -464,28 +461,19 @@ module FA_CORE_BASELINE #(
     );
 
     assign p_tile_flat = row_p_tile_flat;
-    assign p_pv_rd_valid = p_pv_rd_valid_r;
-    assign p_pv_rd_data = p_pv_rd_data_r;
     assign row_update_ready = row_proxy_ready_w;
     assign row_update_done_pulse = row_proxy_done_pulse;
 
-    always @(posedge clk or negedge rstn) begin
-        if (!rstn) begin
-            p_pv_rd_valid_r <= 1'b0;
-            p_pv_rd_data_r <= 512'd0;
-        end else if (runtime_clear) begin
-            p_pv_rd_valid_r <= 1'b0;
-            p_pv_rd_data_r <= 512'd0;
-        end else begin
-            p_pv_rd_valid_r <= p_pv_rd_en;
-            if (p_pv_rd_en) begin
-                for (p_bypass_row_i = 0; p_bypass_row_i < 16; p_bypass_row_i = p_bypass_row_i + 1) begin
-                    p_pv_rd_data_r[(p_bypass_row_i * 32) +: 32] <=
-                        row_p_tile_flat[(((p_bypass_row_i * 8) + p_pv_rd_addr) * 32) +: 32];
-                end
-            end
-        end
-    end
+    FA_P_BYPASS_REAL u_p_bypass (
+        .clk(clk),
+        .rstn(rstn),
+        .clear(runtime_clear),
+        .row_p_tile_flat(row_p_tile_flat),
+        .rd_en(p_pv_rd_en),
+        .rd_addr(p_pv_rd_addr),
+        .rd_valid(p_pv_rd_valid),
+        .rd_data(p_pv_rd_data)
+    );
 
     FA_OACC_UPDATE_REAL u_oacc_update (
         .clk(clk),

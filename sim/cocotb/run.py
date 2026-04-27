@@ -155,7 +155,7 @@ class RunOptions:
 
 def parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(description="Run PT cocotb blackbox regressions")
-	parser.add_argument("suite", choices=["smoke", "full", "randomized", "extended", "ci", "stress", "soak", "coverage", "perf", "axil", "axil_perf", "shell_sim", "fa_baseline", "fa_full", "fa_baseline_axi", "fa_full_axi"])
+	parser.add_argument("suite", choices=["smoke", "full", "randomized", "extended", "ci", "stress", "soak", "coverage", "perf", "axil", "axil_perf", "shell_sim", "fa_baseline", "fa_full", "fa_baseline_axi", "fa_full_axi", "fa_p_bypass"])
 	parser.add_argument("--sim", default=os.getenv("SIM"))
 	parser.add_argument("--target", default=os.getenv("TARGET", DEFAULT_RUN_TARGET), help="Regression target: pt or pt_dma_top")
 	parser.add_argument("--seed", type=int, default=None, help="Override random seed for the selected suite")
@@ -768,6 +768,20 @@ def suite_configs(suite: str, seed_override: Optional[int], target: str) -> List
 				y_dim=16,
 				test_modules=["tests.test_fa_baseline_axi", "tests.test_fa_baseline_axi_full_cases"],
 				hdl_toplevel="FA_TOP_BASELINE",
+				seeds=[default_seed],
+				rtl_params={},
+			)
+		]
+
+	if suite == "fa_p_bypass":
+		return [
+			RunConfig(
+				name="fa_p_bypass",
+				build_name="fa_p_bypass",
+				x_dim=16,
+				y_dim=16,
+				test_modules=["tests.test_fa_p_bypass"],
+				hdl_toplevel="FA_P_BYPASS_REAL",
 				seeds=[default_seed],
 				rtl_params={},
 			)
