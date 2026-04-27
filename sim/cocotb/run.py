@@ -155,7 +155,7 @@ class RunOptions:
 
 def parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(description="Run PT cocotb blackbox regressions")
-	parser.add_argument("suite", choices=["smoke", "full", "randomized", "extended", "ci", "stress", "soak", "coverage", "perf", "axil", "axil_perf", "shell_sim", "fa_baseline", "fa_full", "fa_baseline_axi", "fa_full_axi", "fa_p_bypass"])
+	parser.add_argument("suite", choices=["smoke", "full", "randomized", "extended", "ci", "stress", "soak", "coverage", "perf", "axil", "axil_perf", "shell_sim", "fa_baseline", "fa_full", "fa_baseline_axi", "fa_full_axi", "fa_p_bypass", "fa_shared_gemm"])
 	parser.add_argument("--sim", default=os.getenv("SIM"))
 	parser.add_argument("--target", default=os.getenv("TARGET", DEFAULT_RUN_TARGET), help="Regression target: pt or pt_dma_top")
 	parser.add_argument("--seed", type=int, default=None, help="Override random seed for the selected suite")
@@ -782,6 +782,20 @@ def suite_configs(suite: str, seed_override: Optional[int], target: str) -> List
 				y_dim=16,
 				test_modules=["tests.test_fa_p_bypass"],
 				hdl_toplevel="FA_P_BYPASS_REAL",
+				seeds=[default_seed],
+				rtl_params={},
+			)
+		]
+
+	if suite == "fa_shared_gemm":
+		return [
+			RunConfig(
+				name="fa_shared_gemm",
+				build_name="fa_shared_gemm",
+				x_dim=16,
+				y_dim=16,
+				test_modules=["tests.test_fa_shared_gemm"],
+				hdl_toplevel="FA_QK_PV_SHARED_CORE_SIM",
 				seeds=[default_seed],
 				rtl_params={},
 			)
