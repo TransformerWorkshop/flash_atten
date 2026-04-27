@@ -930,8 +930,14 @@ def junit_failure_counts(results_xml: Path) -> tuple[int, int]:
 	failures = 0
 	errors = 0
 	for suite in root.iter("testsuite"):
-		failures += int(suite.attrib.get("failures", "0"))
-		errors += int(suite.attrib.get("errors", "0"))
+		if "failures" in suite.attrib:
+			failures += int(suite.attrib.get("failures", "0"))
+		else:
+			failures += len(suite.findall("./testcase/failure"))
+		if "errors" in suite.attrib:
+			errors += int(suite.attrib.get("errors", "0"))
+		else:
+			errors += len(suite.findall("./testcase/error"))
 	return failures, errors
 
 
