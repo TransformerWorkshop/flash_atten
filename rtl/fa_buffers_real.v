@@ -14,14 +14,16 @@ module FA_BANKED_TILE_BUF_REAL (
     output wire [16383:0] tile_flat
 );
 
-    reg [31:0] shadow_words_r [0:511];
     wire [511:0] bank_rd_data_w [0:3];
     reg [511:0] bank_wr_data_r [0:3];
     reg [511:0] bank_wr_mask_r [0:3];
     reg [1:0]   rd_bank_sel_r;
+    integer bank_i;
+
+`ifndef SYNTHESIS
+    reg [31:0] shadow_words_r [0:511];
     integer wi;
     integer bi;
-    integer bank_i;
 
     generate
         genvar gi;
@@ -29,6 +31,17 @@ module FA_BANKED_TILE_BUF_REAL (
             assign tile_flat[(gi * 32) +: 32] = shadow_words_r[gi];
         end
     endgenerate
+`else
+    wire unused_tile_flat_zero_w = (clk & 1'b0)
+                                 | (rstn & 1'b0)
+                                 | (clear & 1'b0)
+                                 | (beat_write_valid & 1'b0)
+                                 | ((|beat_write_row_idx) & 1'b0)
+                                 | ((|beat_write_local_addr) & 1'b0)
+                                 | ((|beat_write_word_mask) & 1'b0)
+                                 | ((|beat_write_data) & 1'b0);
+    assign tile_flat = {16384{unused_tile_flat_zero_w}};
+`endif
 
     generate
         genvar gb;
@@ -70,20 +83,25 @@ module FA_BANKED_TILE_BUF_REAL (
         if (!rstn) begin
             rd_valid <= 1'b0;
             rd_bank_sel_r <= 2'd0;
+`ifndef SYNTHESIS
             for (wi = 0; wi < 512; wi = wi + 1) begin
                 shadow_words_r[wi] <= 32'd0;
             end
+`endif
         end else if (clear) begin
             rd_valid <= 1'b0;
             rd_bank_sel_r <= 2'd0;
+`ifndef SYNTHESIS
             for (wi = 0; wi < 512; wi = wi + 1) begin
                 shadow_words_r[wi] <= 32'd0;
             end
+`endif
         end else begin
             rd_valid <= rd_en;
             if (rd_en) begin
                 rd_bank_sel_r <= rd_addr[1:0];
             end
+`ifndef SYNTHESIS
             if (beat_write_valid) begin
                 for (bi = 0; bi < 4; bi = bi + 1) begin
                     if (beat_write_word_mask[bi]) begin
@@ -91,6 +109,7 @@ module FA_BANKED_TILE_BUF_REAL (
                     end
                 end
             end
+`endif
         end
     end
 
@@ -237,11 +256,13 @@ module FA_V_BUF_PV_REAL (
     output wire [16383:0]  layout_flat
 );
 
-    reg [31:0] shadow_words_r [0:31][0:15];
     reg [511:0] bank_wr_data_r;
     reg [511:0] bank_wr_mask_r;
     wire [4:0]  src_wr_addr_w = {src_word_idx_base[4:3], src_word_idx_base[8:6]};
+`ifndef SYNTHESIS
+    reg [31:0] shadow_words_r [0:31][0:15];
     integer ai;
+`endif
     integer li;
     integer src_i;
     reg [8:0] src_word_idx_r;
@@ -249,8 +270,8 @@ module FA_V_BUF_PV_REAL (
     reg [3:0] lane_lo_idx_r;
     reg [3:0] lane_hi_idx_r;
     reg       hi_half_r;
-    reg [31:0] next_lane_words_r [0:15];
 
+`ifndef SYNTHESIS
     generate
         genvar ga;
         genvar gl;
@@ -261,6 +282,16 @@ module FA_V_BUF_PV_REAL (
             end
         end
     endgenerate
+`else
+    wire unused_layout_zero_w = (clk & 1'b0)
+                              | (rstn & 1'b0)
+                              | (clear & 1'b0)
+                              | (src_wr_valid & 1'b0)
+                              | ((|src_word_idx_base) & 1'b0)
+                              | ((|src_word_mask) & 1'b0)
+                              | ((|src_data) & 1'b0);
+    assign layout_flat = {16384{unused_layout_zero_w}};
+`endif
 
     FA_MASKED_ROWBUF_REAL #(
         .ROW_WIDTH(512),
@@ -284,9 +315,6 @@ module FA_V_BUF_PV_REAL (
         lane_lo_idx_r = 4'd0;
         lane_hi_idx_r = 4'd0;
         hi_half_r = 1'b0;
-        for (li = 0; li < 16; li = li + 1) begin
-            next_lane_words_r[li] = shadow_words_r[src_wr_addr_w][li];
-        end
         for (src_i = 0; src_i < 4; src_i = src_i + 1) begin
             if (src_word_mask[src_i]) begin
                 src_word_idx_r = src_word_idx_base + src_i;
@@ -295,47 +323,52 @@ module FA_V_BUF_PV_REAL (
                 lane_hi_idx_r = {src_word_idx_r[2:0], 1'b1};
                 hi_half_r = src_word_idx_r[5];
                 if (hi_half_r) begin
-                    next_lane_words_r[lane_lo_idx_r][31:16] = src_word_r[15:0];
-                    next_lane_words_r[lane_hi_idx_r][31:16] = src_word_r[31:16];
+                    bank_wr_data_r[(lane_lo_idx_r * 32) + 16 +: 16] = src_word_r[15:0];
+                    bank_wr_data_r[(lane_hi_idx_r * 32) + 16 +: 16] = src_word_r[31:16];
                     bank_wr_mask_r[(lane_lo_idx_r * 32) + 16 +: 16] = 16'hFFFF;
                     bank_wr_mask_r[(lane_hi_idx_r * 32) + 16 +: 16] = 16'hFFFF;
                 end else begin
-                    next_lane_words_r[lane_lo_idx_r][15:0] = src_word_r[15:0];
-                    next_lane_words_r[lane_hi_idx_r][15:0] = src_word_r[31:16];
+                    bank_wr_data_r[(lane_lo_idx_r * 32) +: 16] = src_word_r[15:0];
+                    bank_wr_data_r[(lane_hi_idx_r * 32) +: 16] = src_word_r[31:16];
                     bank_wr_mask_r[(lane_lo_idx_r * 32) +: 16] = 16'hFFFF;
                     bank_wr_mask_r[(lane_hi_idx_r * 32) +: 16] = 16'hFFFF;
                 end
             end
-        end
-        for (li = 0; li < 16; li = li + 1) begin
-            bank_wr_data_r[(li * 32) +: 32] = next_lane_words_r[li];
         end
     end
 
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
             rd_valid <= 1'b0;
+`ifndef SYNTHESIS
             for (ai = 0; ai < 32; ai = ai + 1) begin
                 for (li = 0; li < 16; li = li + 1) begin
                     shadow_words_r[ai][li] <= 32'd0;
                 end
             end
+`endif
         end else if (clear) begin
             rd_valid <= 1'b0;
+`ifndef SYNTHESIS
             for (ai = 0; ai < 32; ai = ai + 1) begin
                 for (li = 0; li < 16; li = li + 1) begin
                     shadow_words_r[ai][li] <= 32'd0;
                 end
             end
+`endif
         end else begin
             rd_valid <= rd_en;
+`ifndef SYNTHESIS
             if (src_wr_valid) begin
                 for (li = 0; li < 16; li = li + 1) begin
                     if (|bank_wr_mask_r[(li * 32) +: 32]) begin
-                        shadow_words_r[src_wr_addr_w][li] <= next_lane_words_r[li];
+                        shadow_words_r[src_wr_addr_w][li] <=
+                            (shadow_words_r[src_wr_addr_w][li] & ~bank_wr_mask_r[(li * 32) +: 32])
+                            | (bank_wr_data_r[(li * 32) +: 32] & bank_wr_mask_r[(li * 32) +: 32]);
                     end
                 end
             end
+`endif
         end
     end
 
@@ -361,11 +394,13 @@ module FA_P_BUF_REAL (
     reg [2:0] load_addr_r;
     reg [2:0] load_addr_n;
     reg [4095:0] load_data_r;
-    reg [31:0] shadow_words_r [0:127];
     reg [511:0] bank_wr_data_r;
     reg [511:0] bank_wr_mask_r;
-    integer wi;
     integer ri;
+`ifndef SYNTHESIS
+    reg [31:0] shadow_words_r [0:127];
+    integer wi;
+`endif
 
     localparam [1:0] ST_IDLE = 2'd0;
     localparam [1:0] ST_LOAD = 2'd1;
@@ -409,12 +444,23 @@ module FA_P_BUF_REAL (
         end
     end
 
+`ifndef SYNTHESIS
     generate
         genvar gi;
         for (gi = 0; gi < 128; gi = gi + 1) begin : gen_flat
             assign tile_flat[(gi * 32) +: 32] = shadow_words_r[gi];
         end
     endgenerate
+`else
+    wire unused_p_tile_flat_zero_w = (clk & 1'b0)
+                                   | (rstn & 1'b0)
+                                   | (clear & 1'b0)
+                                   | (load_valid & 1'b0)
+                                   | ((|tile_load_data) & 1'b0)
+                                   | (pv_rd_en & 1'b0)
+                                   | ((|pv_rd_addr) & 1'b0);
+    assign tile_flat = {4096{unused_p_tile_flat_zero_w}};
+`endif
 
     FA_MASKED_ROWBUF_REAL #(
         .ROW_WIDTH(512),
@@ -443,24 +489,30 @@ module FA_P_BUF_REAL (
             load_data_r <= 4096'd0;
             load_done_pulse <= 1'b0;
             pv_rd_valid <= 1'b0;
+`ifndef SYNTHESIS
             for (wi = 0; wi < 128; wi = wi + 1) begin
                 shadow_words_r[wi] <= 32'd0;
             end
+`endif
         end else if (clear) begin
             load_data_r <= 4096'd0;
             load_done_pulse <= 1'b0;
             pv_rd_valid <= 1'b0;
+`ifndef SYNTHESIS
             for (wi = 0; wi < 128; wi = wi + 1) begin
                 shadow_words_r[wi] <= 32'd0;
             end
+`endif
         end else begin
                 load_done_pulse <= 1'b0;
                 pv_rd_valid <= pv_rd_en;
                 if ((state_r == ST_IDLE) && load_valid) begin
                     load_data_r <= tile_load_data;
+`ifndef SYNTHESIS
                     for (wi = 0; wi < 128; wi = wi + 1) begin
                         shadow_words_r[wi] <= tile_load_data[(wi * 32) +: 32];
                     end
+`endif
                 end else if (state_r == ST_LOAD) begin
                     if (load_addr_r == 3'd7) begin
                         load_done_pulse <= 1'b1;
@@ -505,7 +557,6 @@ module FA_OACC_BUF_REAL (
     reg [3:0] row_idx_r;
     reg [3:0] row_idx_n;
     reg [16383:0] load_data_r;
-    reg [15:0] shadow_q412_words_r [0:1023];
     reg [1023:0] mem_wr_data_r;
     reg [3:0]    mem_wr_addr_r;
     reg [1023:0] mem_wr_mask_r;
@@ -516,8 +567,11 @@ module FA_OACC_BUF_REAL (
     wire [1023:0] exp_rd_data_w;
     wire         row_rd_sel_w = row_rd_en;
     wire         exp_rd_sel_w = !row_rd_en && exp_rd_en;
-    integer wi;
     integer li;
+`ifndef SYNTHESIS
+    reg [15:0] shadow_q412_words_r [0:1023];
+    integer wi;
+`endif
 
     function automatic signed [15:0] q412_to_q88_rn_sat;
         input signed [15:0] value;
@@ -619,6 +673,7 @@ module FA_OACC_BUF_REAL (
         end
     end
 
+`ifndef SYNTHESIS
     generate
         genvar gi;
         for (gi = 0; gi < 512; gi = gi + 1) begin : gen_flat
@@ -628,6 +683,22 @@ module FA_OACC_BUF_REAL (
             );
         end
     endgenerate
+`else
+    wire unused_oacc_tile_flat_zero_w = (clk & 1'b0)
+                                      | (rstn & 1'b0)
+                                      | (clear & 1'b0)
+                                      | (clear_req_valid & 1'b0)
+                                      | (load_valid & 1'b0)
+                                      | ((|tile_load_data) & 1'b0)
+                                      | (row_rd_en & 1'b0)
+                                      | ((|row_rd_addr) & 1'b0)
+                                      | (row_wr_en & 1'b0)
+                                      | ((|row_wr_addr) & 1'b0)
+                                      | ((|row_wr_data) & 1'b0)
+                                      | (exp_rd_en & 1'b0)
+                                      | ((|exp_rd_addr) & 1'b0);
+    assign tile_flat = {16384{unused_oacc_tile_flat_zero_w}};
+`endif
 
     assign mem_rd_en_w = row_rd_en || exp_rd_en;
     assign mem_rd_addr_w = row_rd_en ? row_rd_addr : exp_rd_addr;
@@ -703,41 +774,51 @@ module FA_OACC_BUF_REAL (
             load_done_pulse <= 1'b0;
             row_rd_valid <= 1'b0;
             exp_rd_valid <= 1'b0;
+`ifndef SYNTHESIS
             for (wi = 0; wi < 1024; wi = wi + 1) begin
                 shadow_q412_words_r[wi] <= 16'd0;
             end
+`endif
         end else if (clear) begin
             load_data_r <= 16384'd0;
             clear_done_pulse <= 1'b0;
             load_done_pulse <= 1'b0;
             row_rd_valid <= 1'b0;
             exp_rd_valid <= 1'b0;
+`ifndef SYNTHESIS
             for (wi = 0; wi < 1024; wi = wi + 1) begin
                 shadow_q412_words_r[wi] <= 16'd0;
             end
+`endif
         end else begin
             clear_done_pulse <= 1'b0;
             load_done_pulse <= 1'b0;
             row_rd_valid <= row_rd_sel_w;
             exp_rd_valid <= exp_rd_sel_w;
+`ifndef SYNTHESIS
                 if (row_wr_en && (state_r == ST_IDLE)) begin
                     for (wi = 0; wi < 64; wi = wi + 1) begin
                         shadow_q412_words_r[(row_wr_addr * 64) + wi] <= row_wr_data[(wi * 16) +: 16];
                     end
                 end
+`endif
                 case (state_r)
                     ST_IDLE: begin
                         if (clear_req_valid) begin
+`ifndef SYNTHESIS
                             for (wi = 0; wi < 1024; wi = wi + 1) begin
                                 shadow_q412_words_r[wi] <= 16'd0;
                             end
+`endif
                         end else if (load_valid) begin
                             load_data_r <= tile_load_data;
+`ifndef SYNTHESIS
                             for (wi = 0; wi < 1024; wi = wi + 1) begin
                                 shadow_q412_words_r[wi] <= q88_to_q412_sat(
                                     tile_load_data[((wi >> 1) * 32) + ((wi & 1) * 16) +: 16]
                                 );
                             end
+`endif
                         end
                     end
                     ST_CLEAR: begin
