@@ -3,7 +3,7 @@ from __future__ import annotations
 import cocotb
 from cocotb.triggers import ClockCycles
 
-from tests.fa_baseline_env import ADDR_STATUS, HEAD_DIM, SEQ_LEN, attention_golden, create_env, matrix_error, random_q88_matrix
+from tests.fa_baseline_env import ADDR_CYCLES, ADDR_STATUS, HEAD_DIM, SEQ_LEN, attention_golden, create_env, matrix_error, random_q88_matrix
 
 
 @cocotb.test()
@@ -17,6 +17,8 @@ async def test_fa_baseline_full_causal_end_to_end(dut) -> None:
         env.load_qkv(q, k, v)
         await env.start_run(causal=True)
         await env.wait_done()
+        cycles = await env.axil_read(ADDR_CYCLES)
+        assert cycles <= 300000, f"cycles={cycles}"
         actual = env.read_output_matrix()
         expected = attention_golden(q, k, v, scale=0.125, causal=True)
         mean_err, max_err = matrix_error(actual, expected)
@@ -51,6 +53,8 @@ async def test_fa_baseline_full_noncausal_and_soft_reset(dut) -> None:
 
         await env.start_run(causal=False)
         await env.wait_done()
+        cycles = await env.axil_read(ADDR_CYCLES)
+        assert cycles <= 300000, f"cycles={cycles}"
         actual = env.read_output_matrix()
         expected = attention_golden(q, k, v, scale=0.125, causal=False)
         mean_err, max_err = matrix_error(actual, expected)

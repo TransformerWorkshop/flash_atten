@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import cocotb
 
-from tests.fa_baseline_case_utils import assert_matrix_close, make_single_q_full_kv_case, make_single_tile_case
+from tests.fa_baseline_case_utils import assert_matrix_close, make_single_q_full_kv_case_at_row, make_single_tile_case
 from tests.fa_baseline_env import SequencePattern, attention_golden_rows, create_env
 
 
@@ -59,8 +59,8 @@ async def test_fa_backpressure_combined_single_q_full_kv_causal(dut) -> None:
             desc_ready=SequencePattern([1, 0, 1, 1]),
             data_ready=SequencePattern([1, 0, 1, 1, 0, 1]),
         )
-        q_row_start = 0
-        q, k, v = make_single_q_full_kv_case(1420)
+        q_row_start = 240
+        q, k, v = make_single_q_full_kv_case_at_row(1420, q_row_start)
         env.load_qkv(q, k, v)
         await env.start_run(causal=True)
         await env.wait_done()
