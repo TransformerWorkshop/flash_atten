@@ -10,8 +10,8 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_WIDE_SWEEP_PATH = REPO_ROOT / "app" / "pt_tiled_gemm" / "out" / "multitile_sweep_pt_dma_top_v3_icarus_compact.json"
-DEFAULT_STRICT_SWEEP_PATH = REPO_ROOT / "app" / "pt_tiled_gemm" / "out" / "multitile_sweep_pt_dma_top_v3_128b_strict_icarus_compact.json"
+DEFAULT_WIDE_SWEEP_PATH = REPO_ROOT / "app" / "pt_tiled_gemm" / "out" / "multitile_sweep_pt_dma_top_v3_verilator_compact.json"
+DEFAULT_STRICT_SWEEP_PATH = REPO_ROOT / "app" / "pt_tiled_gemm" / "out" / "multitile_sweep_pt_dma_top_v3_128b_strict_verilator_compact.json"
 
 VALID_CHANNELS = (1, 2, 4)
 VALID_FREQ_RATIOS = (1.0, 2.0)

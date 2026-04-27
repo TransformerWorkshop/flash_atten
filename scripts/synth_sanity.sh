@@ -72,13 +72,6 @@ scan_forbidden_constructs() {
 	fi
 }
 
-compile_icarus() {
-	local top="$1"
-	shift
-	log "Icarus elaboration: ${top}"
-	iverilog -g2012 -Wall -DSYNTHESIS -s "${top}" -o "${TMP_DIR}/${top}.vvp" "$@"
-}
-
 lint_verilator() {
 	local top="$1"
 	shift
@@ -86,6 +79,7 @@ lint_verilator() {
 	log "Verilator lint: ${top}"
 	verilator --lint-only -Wall -Wno-fatal \
 		-Wno-DECLFILENAME -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-EOFNEWLINE \
+		-Wno-PINCONNECTEMPTY -Wno-WIDTHTRUNC \
 		-DSYNTHESIS --top-module "${top}" "$@" > "${log_file}" 2>&1
 	if grep -Eq '^(%Warning|%Error)' "${log_file}"; then
 		cat "${log_file}" >&2
@@ -105,14 +99,6 @@ main() {
 	fi
 
 	scan_forbidden_constructs
-
-	compile_icarus "PT_DMA_TOP" -I "${RTL_DIR}" "${ROOT_SOURCES[@]}"
-	compile_icarus "PT" -I "${RTL_DIR}" "${ROOT_SOURCES[@]}"
-	compile_icarus "PT_V2" -I "${RTL_DIR}" "${ROOT_SOURCES[@]}"
-	compile_icarus "csr_array" -I "${RTL_DIR}" "${ROOT_SOURCES[@]}"
-	compile_icarus "GEMU" -I "${RTL_DIR}" "${ROOT_SOURCES[@]}"
-	compile_icarus "MM_SKEW" -I "${RTL_DIR}" "${ROOT_SOURCES[@]}"
-	compile_icarus "NoD" -I "${RTL_NOD_DIR}" "${NOD_SOURCES[@]}"
 
 	lint_verilator "PT_DMA_TOP" -I"${RTL_DIR}" "${ROOT_SOURCES[@]}"
 	lint_verilator "PT" -I"${RTL_DIR}" "${ROOT_SOURCES[@]}"

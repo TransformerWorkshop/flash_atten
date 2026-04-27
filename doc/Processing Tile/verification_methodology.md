@@ -297,17 +297,17 @@ make -C sim/cocotb perf TARGET=pt
 Direct runner usage:
 
 ```bash
-python3 sim/cocotb/run.py smoke --sim icarus
-python3 sim/cocotb/run.py full --sim icarus
-python3 sim/cocotb/run.py ci --sim icarus
-python3 sim/cocotb/run.py stress --sim icarus
-python3 sim/cocotb/run.py randomized --sim icarus
-python3 sim/cocotb/run.py perf --sim icarus
-python3 sim/cocotb/run.py axil --sim icarus
-python3 sim/cocotb/run.py axil_perf --sim icarus
+python3 sim/cocotb/run.py smoke --sim verilator
+python3 sim/cocotb/run.py full --sim verilator
+python3 sim/cocotb/run.py ci --sim verilator
+python3 sim/cocotb/run.py stress --sim verilator
+python3 sim/cocotb/run.py randomized --sim verilator
+python3 sim/cocotb/run.py perf --sim verilator
+python3 sim/cocotb/run.py axil --sim verilator
+python3 sim/cocotb/run.py axil_perf --sim verilator
 python3 sim/cocotb/run.py coverage --sim verilator
-python3 sim/cocotb/run.py smoke --sim icarus --target pt
-python3 sim/cocotb/run.py perf --sim icarus --target pt
+python3 sim/cocotb/run.py smoke --sim verilator --target pt
+python3 sim/cocotb/run.py perf --sim verilator --target pt
 ```
 
 `sim/cocotb/Makefile` now defaults `TARGET ?= pt_dma_top`.

@@ -105,6 +105,8 @@
           },
           "pt_md_v2": {
             "a_fill": {
+              "dma_beats": 32,
+              "dma_elems": 512,
               "fill_req_to_fill_done": 34,
               "fill_req_to_rd_desc": 1,
               "first_beat_to_last_beat": 31,
@@ -113,6 +115,8 @@
             },
             "accept_to_malloc_issue": 1,
             "b_fill": {
+              "dma_beats": 32,
+              "dma_elems": 512,
               "fill_req_to_fill_done": 34,
               "fill_req_to_rd_desc": 1,
               "first_beat_to_last_beat": 31,
@@ -122,8 +126,11 @@
             "export": {
               "ce_resp_to_wr_desc": 2,
               "ce_resp_to_wr_done": 36,
+              "dma_beats": 16,
               "first_beat_to_last_beat": 30,
               "last_beat_to_done": 1,
+              "row_chunk_count": 16,
+              "row_chunks_per_export_beat": 1.0,
               "wr_desc_to_first_beat": 3
             }
           },
@@ -155,6 +162,8 @@
           },
           "pt_md_v2": {
             "a_fill": {
+              "dma_beats": 32,
+              "dma_elems": 512,
               "fill_req_to_fill_done": 34,
               "fill_req_to_rd_desc": 1,
               "first_beat_to_last_beat": 31,
@@ -163,6 +172,8 @@
             },
             "accept_to_malloc_issue": 1,
             "b_fill": {
+              "dma_beats": 32,
+              "dma_elems": 512,
               "fill_req_to_fill_done": 34,
               "fill_req_to_rd_desc": 1,
               "first_beat_to_last_beat": 31,
@@ -172,8 +183,11 @@
             "export": {
               "ce_resp_to_wr_desc": 2,
               "ce_resp_to_wr_done": 132,
+              "dma_beats": 64,
               "first_beat_to_last_beat": 126,
               "last_beat_to_done": 1,
+              "row_chunk_count": 64,
+              "row_chunks_per_export_beat": 1.0,
               "wr_desc_to_first_beat": 3
             }
           },
@@ -194,6 +208,7 @@
   },
   "metadata": {
     "problem": {
+      "active_channel_mask": 0,
       "k_dim": 32,
       "k_tiles": 2,
       "m_dim": 16,

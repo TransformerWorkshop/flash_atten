@@ -62,8 +62,8 @@ For software-facing bring-up that prefers an AXI-Lite mailbox over native `ctrl_
 Wrapper validation note:
 
 - `PT_DMA_TOP` now has dedicated functional and performance regressions:
-  - `python3 sim/cocotb/run.py axil --sim icarus`
-  - `python3 sim/cocotb/run.py axil_perf --sim icarus`
+  - `python3 sim/cocotb/run.py axil --sim verilator`
+  - `python3 sim/cocotb/run.py axil_perf --sim verilator`
 - The main cocotb entrypoint now defaults to `PT_DMA_TOP` for:
   - `smoke`
   - `full`
@@ -72,8 +72,8 @@ Wrapper validation note:
   - `randomized`
   - `perf`
 - Native `PT` is still available explicitly through:
-  - `python3 sim/cocotb/run.py smoke --sim icarus --target pt`
-  - `python3 sim/cocotb/run.py perf --sim icarus --target pt`
+  - `python3 sim/cocotb/run.py smoke --sim verilator --target pt`
+  - `python3 sim/cocotb/run.py perf --sim verilator --target pt`
 - the wrapper-specific performance note lives in:
   - [`debug/20260417_pt_dma_top_perf_eval.md`](../../debug/20260417_pt_dma_top_perf_eval.md)
   - [`debug/20260418_pt_dma_top_mainline_rebase.md`](../../debug/20260418_pt_dma_top_mainline_rebase.md)

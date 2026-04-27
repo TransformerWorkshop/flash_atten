@@ -43,32 +43,32 @@ python3 app/pt_tiled_gemm/run.py recommend --m 16 --k 64 --n 16 --target pt
 运行验证：
 
 ```bash
-python3 app/pt_tiled_gemm/run.py verify --m 16 --k 32 --n 16 --sim icarus
-python3 app/pt_tiled_gemm/run.py verify --m 16 --k 64 --n 16 --sim icarus
-python3 app/pt_tiled_gemm/run.py verify --m 32 --k 16 --n 32 --sim icarus
-python3 app/pt_tiled_gemm/run.py verify --m 16 --k 16 --n 16 --sim icarus --target pt
-python3 app/pt_tiled_gemm/run.py verify --m 16 --k 32 --n 16 --target pt_dma_top --sim icarus --submission-mode shadow_delta
-python3 app/pt_tiled_gemm/run.py verify --m 16 --k 32 --n 16 --target pt_dma_top --sim icarus --submission-mode compact
+python3 app/pt_tiled_gemm/run.py verify --m 16 --k 32 --n 16 --sim verilator
+python3 app/pt_tiled_gemm/run.py verify --m 16 --k 64 --n 16 --sim verilator
+python3 app/pt_tiled_gemm/run.py verify --m 32 --k 16 --n 32 --sim verilator
+python3 app/pt_tiled_gemm/run.py verify --m 16 --k 16 --n 16 --sim verilator --target pt
+python3 app/pt_tiled_gemm/run.py verify --m 16 --k 32 --n 16 --target pt_dma_top --sim verilator --submission-mode shadow_delta
+python3 app/pt_tiled_gemm/run.py verify --m 16 --k 32 --n 16 --target pt_dma_top --sim verilator --submission-mode compact
 ```
 
 运行 multitile 吞吐统计：
 
 ```bash
-python3 app/pt_tiled_gemm/run.py multitile --target pt --sim icarus
-python3 app/pt_tiled_gemm/run.py multitile --target pt_dma_top --sim icarus
-python3 app/pt_tiled_gemm/run.py multitile --target pt --sim icarus --m-tiles 1,2 --n-tiles 1,2 --k-tiles 1,2 --json
-python3 app/pt_tiled_gemm/run.py multitile --target pt_dma_top --sim icarus --submission-mode legacy
-python3 app/pt_tiled_gemm/run.py multitile --target pt_dma_top --sim icarus --submission-mode shadow_delta
-python3 app/pt_tiled_gemm/run.py multitile --target pt_dma_top --sim icarus --submission-mode compact
+python3 app/pt_tiled_gemm/run.py multitile --target pt --sim verilator
+python3 app/pt_tiled_gemm/run.py multitile --target pt_dma_top --sim verilator
+python3 app/pt_tiled_gemm/run.py multitile --target pt --sim verilator --m-tiles 1,2 --n-tiles 1,2 --k-tiles 1,2 --json
+python3 app/pt_tiled_gemm/run.py multitile --target pt_dma_top --sim verilator --submission-mode legacy
+python3 app/pt_tiled_gemm/run.py multitile --target pt_dma_top --sim verilator --submission-mode shadow_delta
+python3 app/pt_tiled_gemm/run.py multitile --target pt_dma_top --sim verilator --submission-mode compact
 ```
 
 生成报告：
 
 ```bash
-python3 app/pt_tiled_gemm/run.py report --m 16 --k 32 --n 16 --sim icarus
-python3 app/pt_tiled_gemm/run.py report --m 16 --k 64 --n 16 --sim icarus
-python3 app/pt_tiled_gemm/run.py report --m 16 --k 16 --n 16 --sim icarus --target pt
-python3 app/pt_tiled_gemm/run.py report --m 16 --k 32 --n 16 --target pt_dma_top --sim icarus --submission-mode compact
+python3 app/pt_tiled_gemm/run.py report --m 16 --k 32 --n 16 --sim verilator
+python3 app/pt_tiled_gemm/run.py report --m 16 --k 64 --n 16 --sim verilator
+python3 app/pt_tiled_gemm/run.py report --m 16 --k 16 --n 16 --sim verilator --target pt
+python3 app/pt_tiled_gemm/run.py report --m 16 --k 32 --n 16 --target pt_dma_top --sim verilator --submission-mode compact
 ```
 
 target 说明：
@@ -154,6 +154,8 @@ submission mode 说明：
 
 ### 2026-04-18 App Verify
 
+以下结果表是迁移前的历史 Icarus 记录，仅保留作归档参考；当前默认验证流程已切到 Verilator。
+
 | Flow | Simulator | Result | Notes / Artifacts |
 | --- | --- | --- | --- |
 | `app verify m16_k32_n16` | `icarus` | `PASS` | 默认 `PT_DMA_TOP`，`5/5` 通过；见 `verify_metrics_pt_dma_top_m16_k32_n16.json` |
@@ -169,7 +171,7 @@ submission mode 说明：
 
 最近一次完整 native 基线仍是 `2026-04-15/2026-04-16`，覆盖了基础功能、压力、随机、扩展、性能、coverage 和 app 级 verify。
 
-在此基础上，`2026-04-16` 又补跑了：
+在此基础上，`2026-04-16` 又补跑了以下历史 Icarus 记录：
 
 - `sim/cocotb/run.py perf --sim icarus`
 - app 级 `verify`：

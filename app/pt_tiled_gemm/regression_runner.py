@@ -172,7 +172,7 @@ def render_regression_text(result: RegressionMatrixResult) -> str:
 
 def run_regression_matrix(
 	*,
-	sim_name: str = "icarus",
+	sim_name: str = "verilator",
 	waves: bool = False,
 	out_path: Optional[Path] = None,
 ) -> RegressionMatrixResult:

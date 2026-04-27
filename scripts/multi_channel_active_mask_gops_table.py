@@ -9,7 +9,7 @@ from app.pt_tiled_gemm.multitile_runner import run_multitile_sweep
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = REPO_ROOT / "app" / "pt_tiled_gemm" / "out"
 
-SIM = "icarus"
+SIM = "verilator"
 SUBMISSION_MODE = "compact"
 
 MASK_CLASSES = {
@@ -49,7 +49,7 @@ def render_table(summary_rows: list[dict[str, object]], detail_rows: list[dict[s
 	lines = [
 		"# Multi-Channel Active Mask GOPS Table",
 		"",
-		"- simulator: `icarus`",
+		"- simulator: `verilator`",
 		"- mode: `compact`",
 		"- formula: `GOPS@200MHz = ops_per_cycle * 0.2`",
 		"- note: masks with the same active-channel count are measured via a representative mask and expanded to equivalent masks",

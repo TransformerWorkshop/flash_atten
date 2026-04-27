@@ -67,7 +67,7 @@ Rules:
 
 ```bash
 PATH=/opt/homebrew/bin:/usr/local/bin:$PATH \
-iverilog -g2012 -I rtl -s PT_DMA_TOP_V3 -o /tmp/pt_dma_top_v3_check.out rtl/*.v
+verilator --lint-only -Wall -Wno-fatal -Irtl -DSYNTHESIS --top-module PT_DMA_TOP_V3 rtl/*.v
 ```
 
 3. sync touched RTL into remote Synopsys RTL tree:
@@ -84,16 +84,16 @@ Run these from `/Users/yucheng/Documents/GitHub/flash_atten`.
 
 ```bash
 PATH=/opt/homebrew/bin:/usr/local/bin:$PATH \
-/opt/anaconda3/bin/python3 sim/cocotb/run.py axil --target pt_dma_top_v3_ch2 --sim icarus
+/opt/anaconda3/bin/python3 sim/cocotb/run.py axil --target pt_dma_top_v3_ch2 --sim verilator
 
 PATH=/opt/homebrew/bin:/usr/local/bin:$PATH \
-/opt/anaconda3/bin/python3 sim/cocotb/run.py axil --target pt_dma_top_v3_ch4 --sim icarus
+/opt/anaconda3/bin/python3 sim/cocotb/run.py axil --target pt_dma_top_v3_ch4 --sim verilator
 
 PATH=/opt/homebrew/bin:/usr/local/bin:$PATH \
-/opt/anaconda3/bin/python3 sim/cocotb/run.py axil_perf --target pt_dma_top_v3_ch4 --sim icarus
+/opt/anaconda3/bin/python3 sim/cocotb/run.py axil_perf --target pt_dma_top_v3_ch4 --sim verilator
 
 PATH=/opt/homebrew/bin:/usr/local/bin:$PATH \
-/opt/anaconda3/bin/python3 app/pt_tiled_gemm/run.py regress --sim icarus
+/opt/anaconda3/bin/python3 app/pt_tiled_gemm/run.py regress --sim verilator
 ```
 
 Important:
@@ -114,18 +114,18 @@ Run compact sweeps for `ch1/ch2/ch4`:
 ```bash
 PATH=/opt/homebrew/bin:/usr/local/bin:$PATH \
 /opt/anaconda3/bin/python3 app/pt_tiled_gemm/run.py multitile \
-  --target pt_dma_top_v3_ch1 --sim icarus --submission-mode compact --json \
-  --out app/pt_tiled_gemm/out/multitile_sweep_pt_dma_top_v3_ch1_icarus_compact.json
+  --target pt_dma_top_v3_ch1 --sim verilator --submission-mode compact --json \
+  --out app/pt_tiled_gemm/out/multitile_sweep_pt_dma_top_v3_ch1_verilator_compact.json
 
 PATH=/opt/homebrew/bin:/usr/local/bin:$PATH \
 /opt/anaconda3/bin/python3 app/pt_tiled_gemm/run.py multitile \
-  --target pt_dma_top_v3_ch2 --sim icarus --submission-mode compact --json \
-  --out app/pt_tiled_gemm/out/multitile_sweep_pt_dma_top_v3_ch2_icarus_compact.json
+  --target pt_dma_top_v3_ch2 --sim verilator --submission-mode compact --json \
+  --out app/pt_tiled_gemm/out/multitile_sweep_pt_dma_top_v3_ch2_verilator_compact.json
 
 PATH=/opt/homebrew/bin:/usr/local/bin:$PATH \
 /opt/anaconda3/bin/python3 app/pt_tiled_gemm/run.py multitile \
-  --target pt_dma_top_v3_ch4 --sim icarus --submission-mode compact --json \
-  --out app/pt_tiled_gemm/out/multitile_sweep_pt_dma_top_v3_ch4_icarus_compact.json
+  --target pt_dma_top_v3_ch4 --sim verilator --submission-mode compact --json \
+  --out app/pt_tiled_gemm/out/multitile_sweep_pt_dma_top_v3_ch4_verilator_compact.json
 ```
 
 Update summary report:
@@ -273,4 +273,3 @@ Primary remaining files:
 - `pt_malloc_v3.v`: `28`
 - `pt_ce_v3.v`: `20`
 - `pt_dma_top_v3.v`: `19`
-

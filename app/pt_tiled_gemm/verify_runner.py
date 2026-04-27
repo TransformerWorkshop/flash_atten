@@ -56,8 +56,8 @@ class VerifyResult:
 
 def normalize_sim_name(sim_name: str) -> str:
 	name = sim_name.strip().lower()
-	if name in {"icarus", "iverilog"}:
-		return "icarus"
+	if name in {"icarus", "iverilog", "vvp"}:
+		return "verilator"
 	if name in {"questa", "questasim", "modelsim"}:
 		return "questa"
 	if name == "verilator":
@@ -120,7 +120,7 @@ def render_verify_text(result: VerifyResult) -> str:
 
 def run_verification(
 	problem: ProblemSpec,
-	sim_name: str = "icarus",
+	sim_name: str = "verilator",
 	waves: bool = False,
 	target: str = DEFAULT_APP_TARGET,
 	submission_mode: str = SUBMISSION_MODE_LEGACY,
@@ -212,12 +212,15 @@ def run_verification(
 
 	failure_message: Optional[str] = None
 	try:
+		build_args = ["-Wall"]
+		if normalized_sim == "verilator":
+			build_args.append("-Wno-fatal")
 		runner.build(
 			sources=_rtl_sources(),
 			includes=[RTL_DIR],
 			hdl_toplevel=hdl_toplevel,
 			parameters=rtl_params,
-			build_args=["-Wall"],
+			build_args=build_args,
 			build_dir=build_dir,
 			always=True,
 			timescale=("1ns", "1ps"),

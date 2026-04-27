@@ -206,7 +206,7 @@ def render_multitile_text(result: MultitileSweepResult) -> str:
 def run_multitile_sweep(
 	*,
 	target: str = DEFAULT_APP_TARGET,
-	sim_name: str = "icarus",
+	sim_name: str = "verilator",
 	m_tiles: tuple[int, ...],
 	n_tiles: tuple[int, ...],
 	k_tiles: tuple[int, ...],
@@ -246,12 +246,15 @@ def run_multitile_sweep(
 	if existing_pythonpath:
 		pythonpath_entries.append(existing_pythonpath)
 
+	build_args = ["-Wall"]
+	if normalized_sim == "verilator":
+		build_args.append("-Wno-fatal")
 	runner.build(
 		sources=_rtl_sources(),
 		includes=[RTL_DIR],
 		hdl_toplevel=hdl_toplevel_for_target(normalized_target),
 		parameters=rtl_params,
-		build_args=["-Wall"],
+		build_args=build_args,
 		build_dir=build_root,
 		always=True,
 		timescale=("1ns", "1ps"),
