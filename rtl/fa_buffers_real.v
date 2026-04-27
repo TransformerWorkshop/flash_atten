@@ -376,7 +376,7 @@ module FA_V_BUF_PV_REAL (
     assign layout_flat = {16384{unused_layout_zero_w}};
 `endif
 
-    FA_MASKED_ROWBUF_REAL #(
+    FA_MASKED_ROWBUF_REG_REAL #(
         .ROW_WIDTH(512),
         .DEPTH(32)
     ) u_bank (
@@ -808,7 +808,7 @@ module FA_OACC_BUF_REAL (
 `endif
 // synthesis translate_on
 
-    FA_MASKED_ROWBUF_REAL #(
+    FA_MASKED_ROWBUF_REG_REAL #(
         .ROW_WIDTH(1024),
         .DEPTH(16)
     ) u_mem (

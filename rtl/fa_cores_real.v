@@ -401,7 +401,7 @@ module FA_QK_PV_SHARED_CORE_REAL (
 
     assign result_row_idx_w = {row_blk_r, gemm_group_idx_w[2:0]};
 
-    FA_MASKED_ROWBUF_REAL #(
+    FA_MASKED_ROWBUF_REG_REAL #(
         .ROW_WIDTH(512),
         .DEPTH(16)
     ) u_qk_result_rows (
@@ -415,7 +415,7 @@ module FA_QK_PV_SHARED_CORE_REAL (
         .rd_data(qk_result_row_rd_data)
     );
 
-    FA_MASKED_ROWBUF_REAL #(
+    FA_MASKED_ROWBUF_REG_REAL #(
         .ROW_WIDTH(1024),
         .DEPTH(16)
     ) u_pv_result_rows (

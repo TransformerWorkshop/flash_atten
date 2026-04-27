@@ -96,6 +96,60 @@ module FA_SRAM64X64 #(
 
 endmodule
 
+module FA_MASKED_ROWBUF_REG_REAL #(
+    parameter integer ROW_WIDTH = 512,
+    parameter integer DEPTH = 16,
+    parameter integer ADDR_WIDTH = (DEPTH <= 1) ? 1 : $clog2(DEPTH)
+) (
+    input  wire                  clk,
+    input  wire                  wr_en,
+    input  wire [ADDR_WIDTH-1:0] wr_addr,
+    input  wire [ROW_WIDTH-1:0]  wr_data,
+    input  wire [ROW_WIDTH-1:0]  wr_mask,
+    input  wire                  rd_en,
+    input  wire [ADDR_WIDTH-1:0] rd_addr,
+    output wire [ROW_WIDTH-1:0]  rd_data
+);
+
+    reg [ROW_WIDTH-1:0] mem_r [0:DEPTH-1];
+    reg [ROW_WIDTH-1:0] rd_data_r;
+    integer bi;
+`ifndef SYNTHESIS
+    integer wi;
+
+    initial begin
+        rd_data_r = {ROW_WIDTH{1'b0}};
+        for (wi = 0; wi < DEPTH; wi = wi + 1) begin
+            mem_r[wi] = {ROW_WIDTH{1'b0}};
+        end
+    end
+
+    always @(posedge clk) begin
+        if (wr_en && rd_en) begin
+            $fatal(1, "FA_MASKED_ROWBUF_REG_REAL saw simultaneous read/write on single-port row buffer");
+        end
+    end
+`endif
+
+    assign rd_data = rd_data_r;
+
+    always @(posedge clk) begin
+        if (wr_en) begin
+            for (bi = 0; bi < ROW_WIDTH; bi = bi + 1) begin
+                if (wr_mask[bi]) begin
+                    mem_r[wr_addr][bi] <= wr_data[bi];
+                end
+            end
+            rd_data_r <= {ROW_WIDTH{1'b0}};
+        end else if (rd_en) begin
+            rd_data_r <= mem_r[rd_addr];
+        end else begin
+            rd_data_r <= {ROW_WIDTH{1'b0}};
+        end
+    end
+
+endmodule
+
 module FA_MASKED_ROWBUF_REAL #(
     parameter integer ROW_WIDTH = 512,
     parameter integer DEPTH = 8,
