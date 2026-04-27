@@ -303,7 +303,9 @@ module FA_OACC_UPDATE_REAL #(
             oacc_row_rd_addr <= 4'd0;
             oacc_row_wr_en <= 1'b0;
             oacc_row_wr_addr <= 4'd0;
+`ifndef SYNTHESIS
             oacc_row_wr_data <= 1024'd0;
+`endif
             partial_row_rd_en <= 1'b0;
             partial_row_rd_addr <= 4'd0;
             resp_valid <= 1'b0;
@@ -315,7 +317,9 @@ module FA_OACC_UPDATE_REAL #(
             oacc_row_rd_addr <= 4'd0;
             oacc_row_wr_en <= 1'b0;
             oacc_row_wr_addr <= 4'd0;
+`ifndef SYNTHESIS
             oacc_row_wr_data <= 1024'd0;
+`endif
             partial_row_rd_en <= 1'b0;
             partial_row_rd_addr <= 4'd0;
             resp_valid <= 1'b0;

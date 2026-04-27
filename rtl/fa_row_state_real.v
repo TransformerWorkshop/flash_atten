@@ -344,8 +344,10 @@ module FA_ROW_STATE_REAL (
             sum_beta_r <= Q16_ZERO;
             l_new_r <= Q16_ZERO;
             recip_l_new_r <= Q16_ZERO;
+`ifndef SYNTHESIS
             p_tile_flat <= 4096'd0;
             rescale_vec_flat <= 512'd0;
+`endif
             init_done_pulse <= 1'b0;
             resp_valid <= 1'b0;
             done_pulse <= 1'b0;
@@ -372,8 +374,10 @@ module FA_ROW_STATE_REAL (
             sum_beta_r <= Q16_ZERO;
             l_new_r <= Q16_ZERO;
             recip_l_new_r <= Q16_ZERO;
+`ifndef SYNTHESIS
             p_tile_flat <= 4096'd0;
             rescale_vec_flat <= 512'd0;
+`endif
             init_done_pulse <= 1'b0;
             resp_valid <= 1'b0;
             done_pulse <= 1'b0;
@@ -399,8 +403,10 @@ module FA_ROW_STATE_REAL (
                 ST_IDLE: begin
                     if (init_valid && init_ready) begin
                         neg_large_word_r <= neg_large_word;
+`ifndef SYNTHESIS
                         p_tile_flat <= 4096'd0;
                         rescale_vec_flat <= 512'd0;
+`endif
                         for (row_i = 0; row_i < 16; row_i = row_i + 1) begin
                             m_state_r[row_i] <= neg_large_word;
                             l_state_r[row_i] <= Q16_ZERO;
@@ -408,8 +414,10 @@ module FA_ROW_STATE_REAL (
                         end
                     end else if (update_valid && update_ready) begin
                         neg_large_word_r <= neg_large_word;
+`ifndef SYNTHESIS
                         p_tile_flat <= 4096'd0;
                         rescale_vec_flat <= 512'd0;
+`endif
                     end
                 end
                 ST_INIT: begin

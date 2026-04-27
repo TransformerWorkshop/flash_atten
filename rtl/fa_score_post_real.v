@@ -140,7 +140,9 @@ module FA_SCORE_POST_REAL #(
             score_row_rd_en <= 1'b0;
             score_row_rd_addr <= 4'd0;
             resp_valid <= 1'b0;
+`ifndef SYNTHESIS
             masked_score_tile_flat <= 8192'd0;
+`endif
             done_pulse <= 1'b0;
         end else if (clear) begin
             q_blk_r <= 4'd0;
@@ -151,7 +153,9 @@ module FA_SCORE_POST_REAL #(
             score_row_rd_en <= 1'b0;
             score_row_rd_addr <= 4'd0;
             resp_valid <= 1'b0;
+`ifndef SYNTHESIS
             masked_score_tile_flat <= 8192'd0;
+`endif
             done_pulse <= 1'b0;
         end else begin
             done_pulse <= 1'b0;
@@ -170,7 +174,9 @@ module FA_SCORE_POST_REAL #(
                         causal_r <= causal_en;
                         scale_word_r <= scale_word;
                         neg_large_word_r <= neg_large_word;
+`ifndef SYNTHESIS
                         masked_score_tile_flat <= 8192'd0;
+`endif
                     end
                 end
                 ST_RUN: begin
