@@ -703,8 +703,8 @@ async def test_fa_baseline_qk_core_real_tile(dut) -> None:
         q, k, v = make_single_tile_case(260)
         env.load_qkv(q, k, v)
         await env.start_run(causal=False)
-        await wait_signal_high(dut, core(dut).u_qk_core.resp_valid, timeout_cycles=6000)
-        actual_words = flat_words(int(core(dut).u_qk_core.result_tile_flat.value), 16 * 16)
+        await wait_signal_high(dut, core(dut).u_qk_pv_core.qk_resp_valid, timeout_cycles=6000)
+        actual_words = flat_words(int(core(dut).qk_result_tile_flat.value), 16 * 16)
         expected_words = expected_qk_tile_words(q[:16], k[:16])
         assert actual_words == expected_words
     finally:
@@ -719,9 +719,9 @@ async def test_fa_baseline_pv_core_real_tile(dut) -> None:
         q, k, v = make_single_tile_case(270)
         env.load_qkv(q, k, v)
         await env.start_run(causal=False)
-        await wait_signal_high(dut, core(dut).u_pv_core.resp_valid, timeout_cycles=12000)
+        await wait_signal_high(dut, core(dut).u_qk_pv_core.pv_resp_valid, timeout_cycles=12000)
         p_words = flat_words(int(core(dut).p_tile_flat.value), 16 * 8)
-        actual_words = flat_words(int(core(dut).u_pv_core.result_tile_flat.value), 16 * 32)
+        actual_words = flat_words(int(core(dut).pv_result_tile_flat.value), 16 * 32)
         expected_words = expected_pv_tile_words(p_words, v[:16])
         assert actual_words == expected_words
     finally:
@@ -737,7 +737,7 @@ async def test_fa_baseline_score_post_real_scale_mask(dut) -> None:
         env.load_qkv(q, k, v)
         await env.start_run(causal=True)
         await wait_signal_high(dut, core(dut).u_score_post.resp_valid, timeout_cycles=12000)
-        score_words = flat_words(int(core(dut).u_qk_core.result_tile_flat.value), 16 * 16)
+        score_words = flat_words(int(core(dut).qk_result_tile_flat.value), 16 * 16)
         actual_words = flat_words(int(core(dut).u_score_post.masked_score_tile_flat.value), 16 * 16)
         expected_words = expected_score_post_words(
             score_words,

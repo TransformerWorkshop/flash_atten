@@ -117,7 +117,7 @@ class SampleMonitor:
                 self._begin("row_init")
             if value_to_int(core.u_oacc_buf.clear_req_valid) and value_to_int(core.u_oacc_buf.clear_req_ready):
                 self._begin("oacc_clear")
-            if value_to_int(core.u_qk_core.req_valid) and value_to_int(core.u_qk_core.req_ready):
+            if value_to_int(core.u_qk_pv_core.qk_req_valid) and value_to_int(core.u_qk_pv_core.qk_req_ready):
                 self._begin("qk")
             if value_to_int(core.u_score_post.req_valid) and value_to_int(core.u_score_post.req_ready):
                 self._begin("score_post")
@@ -132,7 +132,7 @@ class SampleMonitor:
                 kv_blk = value_to_int(core.u_sched.kv_blk_idx)
                 relation = relation_for(q_blk, kv_blk)
                 self._begin("row_state", meta={"q_blk": q_blk, "kv_blk": kv_blk, "relation": relation})
-            if value_to_int(core.u_pv_core.req_valid) and value_to_int(core.u_pv_core.req_ready):
+            if value_to_int(core.u_qk_pv_core.pv_req_valid) and value_to_int(core.u_qk_pv_core.pv_req_ready):
                 self._begin("pv")
             if value_to_int(core.u_oacc_update.req_valid) and value_to_int(core.u_oacc_update.req_ready):
                 self._begin("oacc_update")
@@ -148,14 +148,14 @@ class SampleMonitor:
                 self._finish("row_init")
             if value_to_int(core.u_oacc_buf.clear_done_pulse):
                 self._finish("oacc_clear")
-            if value_to_int(core.u_qk_core.done_pulse):
+            if value_to_int(core.u_qk_pv_core.qk_done_pulse):
                 self._finish("qk")
             if value_to_int(core.u_score_post.done_pulse):
                 self._finish("score_post")
             if value_to_int(core.u_row_state.done_pulse):
                 self._finish("row_state")
                 self._finish("row_update")
-            if value_to_int(core.u_pv_core.done_pulse):
+            if value_to_int(core.u_qk_pv_core.pv_done_pulse):
                 self._finish("pv")
             if value_to_int(core.u_oacc_update.done_pulse):
                 self._finish("oacc_update")

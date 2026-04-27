@@ -389,12 +389,12 @@ module FA_CORE_BASELINE #(
         end
     end
 
-    FA_QK_CORE_REAL u_qk_core (
+    FA_QK_PV_SHARED_CORE_REAL u_qk_pv_core (
         .clk(clk),
         .rstn(rstn),
         .clear(runtime_clear),
-        .req_valid(qk_req_valid),
-        .req_ready(qk_core_req_ready_w),
+        .qk_req_valid(qk_req_valid),
+        .qk_req_ready(qk_core_req_ready_w),
         .q_rd_en(q_qk_rd_en),
         .q_rd_addr(q_qk_rd_addr),
         .q_rd_valid(q_qk_rd_valid),
@@ -403,10 +403,24 @@ module FA_CORE_BASELINE #(
         .k_rd_addr(k_qk_rd_addr),
         .k_rd_valid(k_qk_rd_valid),
         .k_rd_data(k_qk_rd_data),
-        .resp_valid(qk_resp_valid),
-        .resp_ready(1'b1),
-        .result_tile_flat(qk_result_tile_flat),
-        .done_pulse(qk_done_pulse)
+        .qk_resp_valid(qk_resp_valid),
+        .qk_resp_ready(1'b1),
+        .qk_result_tile_flat(qk_result_tile_flat),
+        .qk_done_pulse(qk_done_pulse),
+        .pv_req_valid(pv_req_valid),
+        .pv_req_ready(pv_req_ready),
+        .p_rd_en(p_pv_rd_en),
+        .p_rd_addr(p_pv_rd_addr),
+        .p_rd_valid(p_pv_rd_valid),
+        .p_rd_data(p_pv_rd_data),
+        .v_rd_en(v_pv_rd_en),
+        .v_rd_addr(v_pv_rd_addr),
+        .v_rd_valid(v_pv_rd_valid),
+        .v_rd_data(v_pv_rd_data),
+        .pv_resp_valid(pv_resp_valid),
+        .pv_resp_ready(1'b1),
+        .pv_result_tile_flat(pv_result_tile_flat),
+        .pv_done_pulse(pv_done_pulse)
     );
     assign qk_req_ready = qk_core_req_ready_w;
 
@@ -472,26 +486,6 @@ module FA_CORE_BASELINE #(
             end
         end
     end
-
-    FA_PV_CORE_REAL u_pv_core (
-        .clk(clk),
-        .rstn(rstn),
-        .clear(runtime_clear),
-        .req_valid(pv_req_valid),
-        .req_ready(pv_req_ready),
-        .p_rd_en(p_pv_rd_en),
-        .p_rd_addr(p_pv_rd_addr),
-        .p_rd_valid(p_pv_rd_valid),
-        .p_rd_data(p_pv_rd_data),
-        .v_rd_en(v_pv_rd_en),
-        .v_rd_addr(v_pv_rd_addr),
-        .v_rd_valid(v_pv_rd_valid),
-        .v_rd_data(v_pv_rd_data),
-        .resp_valid(pv_resp_valid),
-        .resp_ready(1'b1),
-        .result_tile_flat(pv_result_tile_flat),
-        .done_pulse(pv_done_pulse)
-    );
 
     FA_OACC_UPDATE_REAL u_oacc_update (
         .clk(clk),
