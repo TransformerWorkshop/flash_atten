@@ -53,7 +53,6 @@ module PT_DISPATCH_V2 #(
 	wire ctrl_load_need_b = ctrl_inst[`PT_LOAD_NEED_B_BIT];
 	wire [`PT_SIZE_W-1:0] ctrl_load_a_size = ctrl_inst[`PT_LOAD_A_SIZE_H:`PT_LOAD_A_SIZE_L];
 	wire [`PT_SIZE_W-1:0] ctrl_load_b_size = ctrl_inst[`PT_LOAD_B_SIZE_H:`PT_LOAD_B_SIZE_L];
-	wire [5:0] ctrl_load_reserved = ctrl_inst[`PT_LOAD_RSV_H:`PT_LOAD_RSV_L];
 	wire [1:0] ctrl_load_m_code = ctrl_inst[`PT_LOAD_M_CODE_H:`PT_LOAD_M_CODE_L];
 	wire [1:0] ctrl_load_n_code = ctrl_inst[`PT_LOAD_N_CODE_H:`PT_LOAD_N_CODE_L];
 	wire [1:0] ctrl_load_k_code = ctrl_inst[`PT_LOAD_K_CODE_H:`PT_LOAD_K_CODE_L];
@@ -225,7 +224,7 @@ module PT_DISPATCH_V2 #(
 	wire allow_md_issue = malloc_cmd_ready && !malloc_exec_busy;
 	wire allow_malloc_issue = (active_dst_r == ACTIVE_NONE) &&
 	                         malloc_cmd_ready &&
-	                         ((q_out_malloc_kind == `PT_MALLOC_KIND_LOAD)   ? !malloc_exec_busy :
+	                         ((q_out_malloc_kind == `PT_MALLOC_KIND_LOAD)   ? 1'b1 :
 	                          (q_out_malloc_kind == `PT_MALLOC_KIND_MATMUL) ? !malloc_serial_busy :
 	                                                                          !malloc_exec_busy);
 	wire issue_md = cmd_q_out_valid && q_out_is_md && allow_md_issue && md_cmd_ready;

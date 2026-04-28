@@ -33,8 +33,11 @@ from tests.pt_model import (
 	PT_QTYPE_SYMMETRIC,
 	build_cfg_inst,
 	build_qcfg_header,
+	pack_export_beats,
+	packed_word_count,
 	pack_resp,
 	qcfg_payload_count,
+	to_signed,
 	to_unsigned,
 )
 
@@ -150,6 +153,8 @@ class PTBlackBoxEnv:
 		self.x_dim = env_int("PT_X_DIM", 4)
 		self.y_dim = env_int("PT_Y_DIM", 4)
 		self.data_width = env_int("PT_DATA_WIDTH", 32)
+		self.elem_width = env_int("PT_ELEM_WIDTH", self.data_width)
+		self.pack_lanes = env_int("PT_PACK_LANES", 1)
 		self.a_base = env_int("PT_A_BASE", DEFAULT_A_BASE)
 		self.b_base = env_int("PT_B_BASE", DEFAULT_B_BASE)
 		self.a_bank_depth = env_int("PT_A_BANK_DEPTH", 16)
@@ -173,7 +178,16 @@ class PTBlackBoxEnv:
 		self.a_capacity_elems = self.a_bank_depth * self.x_dim * self.x_dim
 		self.b_capacity_elems = self.b_bank_depth * self.y_dim * self.y_dim
 		self.m_capacity_rows = self.m_bank_depth * self.x_dim
-		self.model = PTBlackBoxModel(self.x_dim, self.y_dim, self.a_bank_depth, self.b_bank_depth, self.data_width, self.lut_depth)
+		self.model = PTBlackBoxModel(
+			self.x_dim,
+			self.y_dim,
+			self.a_bank_depth,
+			self.b_bank_depth,
+			self.data_width,
+			self.lut_depth,
+			pack_lanes=self.pack_lanes,
+			elem_width=self.elem_width,
+		)
 		self.a_base_shadow = 0
 		self.b_base_shadow = 0
 		self.coverage = FunctionalCoverageRecorder(
@@ -225,20 +239,46 @@ class PTBlackBoxEnv:
 	def _pack_ab_beats(self, kind: str, matrix: Sequence[int], expectation: Optional[DmaLoadExpectation] = None) -> List[Tuple[int, int]]:
 		beats: List[Tuple[int, int]] = []
 		byte_mask = (1 << (self.data_width // 8)) - 1
+		def pack_word(values: Sequence[int]) -> int:
+			word = 0
+			for lane_idx, value in enumerate(values):
+				word |= to_unsigned(to_signed(int(value), self.data_width), self.elem_width) << (lane_idx * self.elem_width)
+			return word & 0xFFFF_FFFF
 		if kind == "A":
 			if expectation is not None:
 				k_dim = self.x_dim * expectation.k_tiles
 				m_dim = self.x_dim * expectation.m_tiles
 				assert len(matrix) == m_dim * k_dim
-				stream_words = [
-					int(matrix[((m_tile * self.x_dim) + row) * k_dim + col])
-					for m_tile in range(expectation.m_tiles)
-					for col in range(k_dim)
-					for row in range(self.x_dim)
-				]
+				if self.pack_lanes > 1:
+					stream_words = [
+						pack_word(
+							int(matrix[((m_tile * self.x_dim) + row) * k_dim + ((col_word * self.pack_lanes) + pack_idx)])
+							for pack_idx in range(self.pack_lanes)
+						)
+						for m_tile in range(expectation.m_tiles)
+						for col_word in range(packed_word_count(k_dim, self.pack_lanes))
+						for row in range(self.x_dim)
+					]
+				else:
+					stream_words = [
+						int(matrix[((m_tile * self.x_dim) + row) * k_dim + col])
+						for m_tile in range(expectation.m_tiles)
+						for col in range(k_dim)
+						for row in range(self.x_dim)
+					]
 			elif len(matrix) % self.x_dim == 0:
 				k_dim = len(matrix) // self.x_dim
-				stream_words = [int(matrix[row * k_dim + col]) for col in range(k_dim) for row in range(self.x_dim)]
+				if self.pack_lanes > 1:
+					stream_words = [
+						pack_word(
+							int(matrix[row * k_dim + ((col_word * self.pack_lanes) + pack_idx)])
+							for pack_idx in range(self.pack_lanes)
+						)
+						for col_word in range(packed_word_count(k_dim, self.pack_lanes))
+						for row in range(self.x_dim)
+					]
+				else:
+					stream_words = [int(matrix[row * k_dim + col]) for col in range(k_dim) for row in range(self.x_dim)]
 			else:
 				stream_words = [int(word) for word in matrix]
 			for start in range(0, len(stream_words), self.a_load_lanes):
@@ -255,12 +295,23 @@ class PTBlackBoxEnv:
 				k_dim = self.y_dim * expectation.k_tiles
 				n_dim = self.y_dim * expectation.n_tiles
 				assert len(matrix) == k_dim * n_dim
-				stream_words = [
-					int(matrix[row * n_dim + (n_tile * self.y_dim) + col])
-					for n_tile in range(expectation.n_tiles)
-					for row in range(k_dim)
-					for col in range(self.y_dim)
-				]
+				if self.pack_lanes > 1:
+					stream_words = [
+						pack_word(
+							int(matrix[((row_word * self.pack_lanes) + pack_idx) * n_dim + (n_tile * self.y_dim) + col])
+							for pack_idx in range(self.pack_lanes)
+						)
+						for n_tile in range(expectation.n_tiles)
+						for row_word in range(packed_word_count(k_dim, self.pack_lanes))
+						for col in range(self.y_dim)
+					]
+				else:
+					stream_words = [
+						int(matrix[row * n_dim + (n_tile * self.y_dim) + col])
+						for n_tile in range(expectation.n_tiles)
+						for row in range(k_dim)
+						for col in range(self.y_dim)
+					]
 			else:
 				stream_words = [int(word) for word in matrix]
 			for start in range(0, len(stream_words), self.b_load_lanes):
@@ -275,19 +326,14 @@ class PTBlackBoxEnv:
 		return beats
 
 	def _pack_export_beats(self, matrix: Sequence[int]) -> List[Tuple[int, int]]:
-		beats: List[Tuple[int, int]] = []
-		byte_mask = (1 << (self.data_width // 8)) - 1
-		for row_start in range(0, len(matrix), self.y_dim):
-			row = list(matrix[row_start : row_start + self.y_dim])
-			for start in range(0, len(row), self.m_export_lanes):
-				chunk = row[start : start + self.m_export_lanes]
-				beat_data = 0
-				beat_strb = 0
-				for lane_idx, word in enumerate(chunk):
-					beat_data |= to_unsigned(int(word), self.data_width) << (lane_idx * self.data_width)
-					beat_strb |= byte_mask << (lane_idx * (self.data_width // 8))
-				beats.append((beat_data, beat_strb))
-		return beats
+		return pack_export_beats(
+			matrix,
+			y_dim=self.y_dim,
+			data_width=self.data_width,
+			m_export_lanes=self.m_export_lanes,
+			pack_lanes=self.pack_lanes,
+			elem_width=self.elem_width,
+		)
 
 	def snapshot(self) -> CounterSnapshot:
 		return CounterSnapshot(self.dma_req_count, self.export_req_count, self.export_done_count, self.export_error_count, self.irq_count)
@@ -323,7 +369,7 @@ class PTBlackBoxEnv:
 		self.export_injections.append(injection)
 
 	def _pt_root_prefix(self) -> str:
-		return "u_pt_v2"
+		return "u_pt_v3" if os.getenv("PT_APP_TARGET", "").strip().lower() == "pt_v3" else "u_pt_v2"
 
 	def _resolve_path(self, path: str):
 		handle = self.dut
@@ -358,6 +404,8 @@ class PTBlackBoxEnv:
 		self.dut.m_axis_tready.value = 1
 		self.dut.clk.value = 0
 		self.dut.clear.value = 0
+		if hasattr(self.dut, "soft_clear"):
+			self.dut.soft_clear.value = 0
 		self.dut.rstn.value = 0
 		self._tasks = [
 			cocotb.start_soon(self._clock_driver()),
@@ -404,6 +452,8 @@ class PTBlackBoxEnv:
 	async def reset(self, cycles: int = 5) -> None:
 		self.dut.rstn.value = 0
 		self.dut.clear.value = 0
+		if hasattr(self.dut, "soft_clear"):
+			self.dut.soft_clear.value = 0
 		await ClockCycles(self.dut.clk, cycles)
 		self.dut.rstn.value = 1
 		await RisingEdge(self.dut.clk)
@@ -418,7 +468,16 @@ class PTBlackBoxEnv:
 		self.dma_stream_busy = False
 		self.export_busy = False
 		self._seen_long_backpressure = False
-		self.model = PTBlackBoxModel(self.x_dim, self.y_dim, self.a_bank_depth, self.b_bank_depth, self.data_width, self.lut_depth)
+		self.model = PTBlackBoxModel(
+			self.x_dim,
+			self.y_dim,
+			self.a_bank_depth,
+			self.b_bank_depth,
+			self.data_width,
+			self.lut_depth,
+			pack_lanes=self.pack_lanes,
+			elem_width=self.elem_width,
+		)
 		self.external_a_tiles.clear()
 		self.external_b_tiles.clear()
 		self.external_c_tiles.clear()
@@ -454,6 +513,8 @@ class PTBlackBoxEnv:
 		if phase:
 			self.coverage.hit(f"clear:{phase}")
 		self.dut.clear.value = 1
+		if hasattr(self.dut, "soft_clear"):
+			self.dut.soft_clear.value = 0
 		self.dut.ctrl_valid.value = 0
 		self.dut.s_axis_tvalid.value = 0
 		self.dut.s_axis_tlast.value = 0
@@ -463,6 +524,8 @@ class PTBlackBoxEnv:
 		self.dut.m_dma_error.value = 0
 		await ClockCycles(self.dut.clk, cycles)
 		self.dut.clear.value = 0
+		if hasattr(self.dut, "soft_clear"):
+			self.dut.soft_clear.value = 0
 		await RisingEdge(self.dut.clk)
 		self._apply_soft_clear_to_env()
 
@@ -769,15 +832,16 @@ class PTBlackBoxEnv:
 		raise AssertionError(f"{signal_name} timeout exp={expected_value} got={value_to_int(signal.value)}")
 
 	async def wait_malloc_slot_scan(self, ctrl_id: int, timeout_cycles: int = 4000) -> Dict[str, int]:
+		root = self._resolve_path(self._pt_root_prefix())
 		for cycle in range(timeout_cycles):
 			await ReadOnly()
-			if value_to_int(self.dut.u_pt_v2.malloc_cmd_valid.value) and value_to_int(self.dut.u_pt_v2.malloc_cmd_id.value) == (ctrl_id & 0xFFFF_FFFF):
+			if value_to_int(root.malloc_cmd_valid.value) and value_to_int(root.malloc_cmd_id.value) == (ctrl_id & 0xFFFF_FFFF):
 				snapshot = {
-					"slot_found": value_to_int(self.dut.u_pt_v2.u_malloc.slot_found.value),
-					"slot_idx": value_to_int(self.dut.u_pt_v2.u_malloc.slot_idx.value),
-					"free_found": value_to_int(self.dut.u_pt_v2.u_malloc.free_found.value),
-					"free_idx": value_to_int(self.dut.u_pt_v2.u_malloc.free_idx.value),
-					"cmd_slot_idx": value_to_int(self.dut.u_pt_v2.u_malloc.cmd_slot_idx.value),
+					"slot_found": value_to_int(root.u_malloc.slot_found.value),
+					"slot_idx": value_to_int(root.u_malloc.slot_idx.value),
+					"free_found": value_to_int(root.u_malloc.free_found.value),
+					"free_idx": value_to_int(root.u_malloc.free_idx.value),
+					"cmd_slot_idx": value_to_int(root.u_malloc.cmd_slot_idx.value),
 				}
 				if snapshot["slot_found"] and snapshot["slot_idx"] != 0:
 					self.coverage.hit("slot_scan:hit_nonzero")
@@ -806,9 +870,10 @@ class PTBlackBoxEnv:
 			self.model.set_base("B", self.b_base_shadow)
 
 	def read_csr_bases(self) -> Tuple[int, int]:
+		root = self._resolve_path(self._pt_root_prefix())
 		return (
-			value_to_int(self.dut.u_pt_v2.pcsr_a_base.value),
-			value_to_int(self.dut.u_pt_v2.pcsr_b_base.value),
+			value_to_int(root.pcsr_a_base.value),
+			value_to_int(root.pcsr_b_base.value),
 		)
 
 	async def cfg_selector16(self, selector: int, value16: int, ctrl_id: int) -> None:

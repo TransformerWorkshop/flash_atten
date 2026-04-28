@@ -1,18 +1,58 @@
 {
   "algorithms": {
-    "host_reduce_direct_tiled_matmul": {
+    "host_reduce_direct_pipelined": {
+      "axil_writes_per_command": 0.0,
+      "axil_writes_total": 0,
+      "command_count": 8,
+      "descriptor_push_count": 0,
       "dma_req_count": 16,
       "export_beats": 128,
       "export_req_count": 8,
       "matadd_count": 0,
+      "submission_mode": "legacy",
+      "total_cycles": 639
+    },
+    "host_reduce_direct_tiled_matmul": {
+      "axil_writes_per_command": 0.0,
+      "axil_writes_total": 0,
+      "command_count": 8,
+      "descriptor_push_count": 0,
+      "dma_req_count": 16,
+      "export_beats": 128,
+      "export_req_count": 8,
+      "matadd_count": 0,
+      "submission_mode": "legacy",
       "total_cycles": 943
     },
     "host_reduce_load_then_matmul": {
+      "axil_writes_per_command": 0.0,
+      "axil_writes_total": 0,
+      "command_count": 16,
+      "descriptor_push_count": 0,
       "dma_req_count": 16,
       "export_beats": 128,
       "export_req_count": 8,
       "matadd_count": 0,
-      "total_cycles": 983
+      "submission_mode": "legacy",
+      "total_cycles": 1000
+    },
+    "pt_matadd_reduce": {
+      "axil_writes_per_command": 0.0,
+      "axil_writes_total": 0,
+      "command_count": 12,
+      "descriptor_push_count": 0,
+      "dma_req_count": 20,
+      "export_beats": 192,
+      "export_req_count": 12,
+      "matadd_count": 4,
+      "submission_mode": "legacy",
+      "total_cycles": 1584
+    }
+  },
+  "diagnostics": {
+    "pt_ce_md_block_breakdown": {
+      "reason": "PT_DMA_TOP only",
+      "status": "skipped"
     }
   },
   "metadata": {
@@ -22,17 +62,43 @@
       "m_dim": 32,
       "m_tiles": 2,
       "n_dim": 32,
-      "n_tiles": 2
+      "n_tiles": 2,
+      "submission_mode": "legacy",
+      "target": "pt",
+      "target_label": "PT"
     }
   },
   "tests": {
-    "numeric_host_reduce_per_tensor": {
+    "algorithm_compare_reduction_strategies": {
       "status": "passed",
+      "winner": "host_reduce_direct_pipelined"
+    },
+    "numeric_host_reduce_per_tensor": {
+      "axil_writes_per_command": 0.0,
+      "axil_writes_total": 0,
+      "command_count": 8,
+      "descriptor_push_count": 0,
+      "status": "passed",
+      "submission_mode": "legacy",
       "total_cycles": 943
     },
     "numeric_host_reduce_pipelined": {
+      "axil_writes_per_command": 0.0,
+      "axil_writes_total": 0,
+      "command_count": 8,
+      "descriptor_push_count": 0,
       "status": "passed",
+      "submission_mode": "legacy",
       "total_cycles": 639
+    },
+    "numeric_pt_matadd_reduce_per_tensor": {
+      "axil_writes_per_command": 0.0,
+      "axil_writes_total": 0,
+      "command_count": 12,
+      "descriptor_push_count": 0,
+      "status": "passed",
+      "submission_mode": "legacy",
+      "total_cycles": 1584
     }
   },
   "unsupported_paths": {

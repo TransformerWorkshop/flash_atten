@@ -1,0 +1,380 @@
+{
+  "extrapolated_p_load_breakdown": {
+    "diagonal": {
+      "count": 16,
+      "observed_count": 1,
+      "observed_unique_cycles": [
+        9
+      ],
+      "per_invocation_cycles": 9,
+      "share_pct": 0.05158479967902791,
+      "total_cycles": 144
+    },
+    "future_masked": {
+      "count": 120,
+      "observed_count": 15,
+      "observed_unique_cycles": [
+        9
+      ],
+      "per_invocation_cycles": 9,
+      "share_pct": 0.38688599759270936,
+      "total_cycles": 1080
+    },
+    "history": {
+      "count": 120,
+      "observed_count": 1,
+      "observed_unique_cycles": [
+        9
+      ],
+      "per_invocation_cycles": 9,
+      "share_pct": 0.38688599759270936,
+      "total_cycles": 1080
+    }
+  },
+  "extrapolated_p_load_total_cycles": 2304,
+  "extrapolated_row_state_breakdown": {
+    "diagonal": {
+      "count": 16,
+      "observed_count": 1,
+      "observed_unique_cycles": [
+        577
+      ],
+      "per_invocation_cycles": 577,
+      "share_pct": 3.3071588238665672,
+      "total_cycles": 9232
+    },
+    "future_masked": {
+      "count": 120,
+      "observed_count": 15,
+      "observed_unique_cycles": [
+        33
+      ],
+      "per_invocation_cycles": 33,
+      "share_pct": 1.4185819911732676,
+      "total_cycles": 3960
+    },
+    "history": {
+      "count": 120,
+      "observed_count": 1,
+      "observed_unique_cycles": [
+        577
+      ],
+      "per_invocation_cycles": 577,
+      "share_pct": 24.803691178999255,
+      "total_cycles": 69240
+    }
+  },
+  "extrapolated_row_state_total_cycles": 82432,
+  "extrapolated_row_update_breakdown": {
+    "diagonal": {
+      "count": 16,
+      "observed_count": 1,
+      "observed_unique_cycles": [
+        586
+      ],
+      "per_invocation_cycles": 586,
+      "share_pct": 3.358743623545595,
+      "total_cycles": 9376
+    },
+    "future_masked": {
+      "count": 120,
+      "observed_count": 15,
+      "observed_unique_cycles": [
+        42
+      ],
+      "per_invocation_cycles": 42,
+      "share_pct": 1.805467988765977,
+      "total_cycles": 5040
+    },
+    "history": {
+      "count": 120,
+      "observed_count": 1,
+      "observed_unique_cycles": [
+        586
+      ],
+      "per_invocation_cycles": 586,
+      "share_pct": 25.190577176591965,
+      "total_cycles": 70320
+    }
+  },
+  "extrapolated_top_level": {
+    "k_load": {
+      "count": 256,
+      "observed_count": 17,
+      "observed_unique_cycles": [
+        130
+      ],
+      "per_invocation_cycles": 130,
+      "share_pct": 11.921820370264228,
+      "total_cycles": 33280
+    },
+    "oacc_clear": {
+      "count": 16,
+      "observed_count": 2,
+      "observed_unique_cycles": [
+        17
+      ],
+      "per_invocation_cycles": 17,
+      "share_pct": 0.09743795494927494,
+      "total_cycles": 272
+    },
+    "oacc_update": {
+      "count": 256,
+      "observed_count": 16,
+      "observed_unique_cycles": [
+        82
+      ],
+      "per_invocation_cycles": 82,
+      "share_pct": 7.519917464320513,
+      "total_cycles": 20992
+    },
+    "pv": {
+      "count": 256,
+      "observed_count": 16,
+      "observed_unique_cycles": [
+        206
+      ],
+      "per_invocation_cycles": 206,
+      "share_pct": 18.891499971341776,
+      "total_cycles": 52736
+    },
+    "q_load": {
+      "count": 16,
+      "observed_count": 2,
+      "observed_unique_cycles": [
+        130
+      ],
+      "per_invocation_cycles": 130,
+      "share_pct": 0.7451137731415143,
+      "total_cycles": 2080
+    },
+    "qk": {
+      "count": 256,
+      "observed_count": 17,
+      "observed_unique_cycles": [
+        149
+      ],
+      "per_invocation_cycles": 149,
+      "share_pct": 13.664240270533616,
+      "total_cycles": 38144
+    },
+    "row_init": {
+      "count": 16,
+      "observed_count": 2,
+      "observed_unique_cycles": [
+        2
+      ],
+      "per_invocation_cycles": 2,
+      "share_pct": 0.011463288817561758,
+      "total_cycles": 32
+    },
+    "row_update": {
+      "count": 256,
+      "observed_count": 17,
+      "observed_unique_cycles": [],
+      "per_invocation_cycles": null,
+      "share_pct": 30.354788788903537,
+      "total_cycles": 84736
+    },
+    "score_post": {
+      "count": 256,
+      "observed_count": 17,
+      "observed_unique_cycles": [
+        18
+      ],
+      "per_invocation_cycles": 18,
+      "share_pct": 1.6507135897288931,
+      "total_cycles": 4608
+    },
+    "store": {
+      "count": 16,
+      "observed_count": 1,
+      "observed_unique_cycles": [
+        562
+      ],
+      "per_invocation_cycles": 562,
+      "share_pct": 3.221184157734854,
+      "total_cycles": 8992
+    },
+    "v_load": {
+      "count": 256,
+      "observed_count": 17,
+      "observed_unique_cycles": [
+        130
+      ],
+      "per_invocation_cycles": 130,
+      "share_pct": 11.921820370264228,
+      "total_cycles": 33280
+    }
+  },
+  "extrapolated_total_cycles": 279152,
+  "full_run_counts": {
+    "k_load": 256,
+    "oacc_clear": 16,
+    "oacc_update": 256,
+    "pv": 256,
+    "q_load": 16,
+    "qk": 256,
+    "row_init": 16,
+    "score_post": 256,
+    "store": 16,
+    "v_load": 256
+  },
+  "method": "sampled_stage_latency_plus_scheduler_count_extrapolation",
+  "row_relation_counts": {
+    "diagonal": 16,
+    "future_masked": 120,
+    "history": 120
+  },
+  "rowstate_microbench": {
+    "masked_row_state_cycles": 33,
+    "masked_row_update_cycles": 42,
+    "valid_row_state_cycles": 577,
+    "valid_row_update_cycles": 586
+  },
+  "sampled_p_load": {
+    "diagonal": {
+      "observed_count": 1,
+      "observed_unique_cycles": [
+        9
+      ],
+      "selected_cycles": 9
+    },
+    "future_masked": {
+      "observed_count": 15,
+      "observed_unique_cycles": [
+        9
+      ],
+      "selected_cycles": 9
+    },
+    "history": {
+      "observed_count": 1,
+      "observed_unique_cycles": [
+        9
+      ],
+      "selected_cycles": 9
+    }
+  },
+  "sampled_row_state": {
+    "diagonal": {
+      "observed_count": 1,
+      "observed_unique_cycles": [
+        577
+      ],
+      "selected_cycles": 577
+    },
+    "future_masked": {
+      "observed_count": 15,
+      "observed_unique_cycles": [
+        33
+      ],
+      "selected_cycles": 33
+    },
+    "history": {
+      "observed_count": 1,
+      "observed_unique_cycles": [
+        577
+      ],
+      "selected_cycles": 577
+    }
+  },
+  "sampled_row_update": {
+    "diagonal": {
+      "observed_count": 1,
+      "observed_unique_cycles": [
+        586
+      ],
+      "selected_cycles": 586
+    },
+    "future_masked": {
+      "observed_count": 15,
+      "observed_unique_cycles": [
+        42
+      ],
+      "selected_cycles": 42
+    },
+    "history": {
+      "observed_count": 1,
+      "observed_unique_cycles": [
+        586
+      ],
+      "selected_cycles": 586
+    }
+  },
+  "sampled_stages": {
+    "k_load": {
+      "observed_count": 17,
+      "observed_unique_cycles": [
+        130
+      ],
+      "selected_cycles": 130
+    },
+    "oacc_clear": {
+      "observed_count": 2,
+      "observed_unique_cycles": [
+        17
+      ],
+      "selected_cycles": 17
+    },
+    "oacc_update": {
+      "observed_count": 16,
+      "observed_unique_cycles": [
+        82
+      ],
+      "selected_cycles": 82
+    },
+    "pv": {
+      "observed_count": 16,
+      "observed_unique_cycles": [
+        206
+      ],
+      "selected_cycles": 206
+    },
+    "q_load": {
+      "observed_count": 2,
+      "observed_unique_cycles": [
+        130
+      ],
+      "selected_cycles": 130
+    },
+    "qk": {
+      "observed_count": 17,
+      "observed_unique_cycles": [
+        149
+      ],
+      "selected_cycles": 149
+    },
+    "row_init": {
+      "observed_count": 2,
+      "observed_unique_cycles": [
+        2
+      ],
+      "selected_cycles": 2
+    },
+    "score_post": {
+      "observed_count": 17,
+      "observed_unique_cycles": [
+        18
+      ],
+      "selected_cycles": 18
+    },
+    "store": {
+      "observed_count": 1,
+      "observed_unique_cycles": [
+        562
+      ],
+      "selected_cycles": 562
+    },
+    "v_load": {
+      "observed_count": 17,
+      "observed_unique_cycles": [
+        130
+      ],
+      "selected_cycles": 130
+    }
+  },
+  "shape": {
+    "head_dim": 64,
+    "seq_len": 256
+  }
+}

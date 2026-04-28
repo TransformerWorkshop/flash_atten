@@ -24,6 +24,10 @@
   - 支持 `PT` 和 `PT_DMA_TOP` 两个 target；默认现在是 `PT_DMA_TOP`
 - `report`
   - 生成 Markdown 报告，并把 verify 的 measured 数据回灌到推荐结果
+- `multitile`
+  - 扫描软件侧直接发出的 `m/n/k tiles ∈ {1,2,4}` 组合
+  - 统计单条 multitile `MATMUL` 的 `accept->done cycles`、`ops/cycle`、`TOPS@1GHz`
+  - 超出 [`param.vh`](../../rtl/param.vh) `PT_SIZE_W` 编码上限的组合会标记为 `unsupported`
 
 ## CLI
 
@@ -39,18 +43,32 @@ python3 app/pt_tiled_gemm/run.py recommend --m 16 --k 64 --n 16 --target pt
 运行验证：
 
 ```bash
-python3 app/pt_tiled_gemm/run.py verify --m 16 --k 32 --n 16 --sim icarus
-python3 app/pt_tiled_gemm/run.py verify --m 16 --k 64 --n 16 --sim icarus
-python3 app/pt_tiled_gemm/run.py verify --m 32 --k 16 --n 32 --sim icarus
-python3 app/pt_tiled_gemm/run.py verify --m 16 --k 16 --n 16 --sim icarus --target pt
+python3 app/pt_tiled_gemm/run.py verify --m 16 --k 32 --n 16 --sim verilator
+python3 app/pt_tiled_gemm/run.py verify --m 16 --k 64 --n 16 --sim verilator
+python3 app/pt_tiled_gemm/run.py verify --m 32 --k 16 --n 32 --sim verilator
+python3 app/pt_tiled_gemm/run.py verify --m 16 --k 16 --n 16 --sim verilator --target pt
+python3 app/pt_tiled_gemm/run.py verify --m 16 --k 32 --n 16 --target pt_dma_top --sim verilator --submission-mode shadow_delta
+python3 app/pt_tiled_gemm/run.py verify --m 16 --k 32 --n 16 --target pt_dma_top --sim verilator --submission-mode compact
+```
+
+运行 multitile 吞吐统计：
+
+```bash
+python3 app/pt_tiled_gemm/run.py multitile --target pt --sim verilator
+python3 app/pt_tiled_gemm/run.py multitile --target pt_dma_top --sim verilator
+python3 app/pt_tiled_gemm/run.py multitile --target pt --sim verilator --m-tiles 1,2 --n-tiles 1,2 --k-tiles 1,2 --json
+python3 app/pt_tiled_gemm/run.py multitile --target pt_dma_top --sim verilator --submission-mode legacy
+python3 app/pt_tiled_gemm/run.py multitile --target pt_dma_top --sim verilator --submission-mode shadow_delta
+python3 app/pt_tiled_gemm/run.py multitile --target pt_dma_top --sim verilator --submission-mode compact
 ```
 
 生成报告：
 
 ```bash
-python3 app/pt_tiled_gemm/run.py report --m 16 --k 32 --n 16 --sim icarus
-python3 app/pt_tiled_gemm/run.py report --m 16 --k 64 --n 16 --sim icarus
-python3 app/pt_tiled_gemm/run.py report --m 16 --k 16 --n 16 --sim icarus --target pt
+python3 app/pt_tiled_gemm/run.py report --m 16 --k 32 --n 16 --sim verilator
+python3 app/pt_tiled_gemm/run.py report --m 16 --k 64 --n 16 --sim verilator
+python3 app/pt_tiled_gemm/run.py report --m 16 --k 16 --n 16 --sim verilator --target pt
+python3 app/pt_tiled_gemm/run.py report --m 16 --k 32 --n 16 --target pt_dma_top --sim verilator --submission-mode compact
 ```
 
 target 说明：
@@ -60,6 +78,17 @@ target 说明：
 - `--target pt_dma_top`
   - 对 AXI-Lite + DMA descriptor wrapper `PT_DMA_TOP` 跑同一套 app-level verify
 - 默认 target 是 `pt_dma_top`
+
+submission mode 说明：
+
+- `--submission-mode legacy`
+  - 保持原始 full descriptor writes + `CTRL_DESC_PUSH`
+- `--submission-mode shadow_delta`
+  - 维护软件 shadow，只写变化字段
+  - `EXT_ADDR_W=32` 时不会写 `*_ADDR_HI`
+- `--submission-mode compact`
+  - 使用 wrapper 新增的 compact streaming submit path
+  - 顺序写 `CMD_INST/CMD_ID/A_LO/B_LO/C_LO/M_LO` 共 `6` 个 word
 
 ## 默认输出
 
@@ -74,6 +103,11 @@ target 说明：
 - cocotb build/logs/results
   - 默认 `PT_DMA_TOP`: `app/pt_tiled_gemm/out/cocotb/pt_dma_top/m<M>_k<K>_n<N>/...`
   - 显式 `--target pt`: `app/pt_tiled_gemm/out/cocotb/m<M>_k<K>_n<N>/...`
+- multitile sweep 汇总
+  - `PT`: `app/pt_tiled_gemm/out/multitile_sweep_pt_<sim>_<submission_mode>.json`
+  - `PT_DMA_TOP`: `app/pt_tiled_gemm/out/multitile_sweep_pt_dma_top_<sim>_<submission_mode>.json`
+- multitile per-case cocotb artifacts
+  - `app/pt_tiled_gemm/out/cocotb_multitile/<target>/<sim>/<submission_mode>/m<M>_n<N>_k<K>/...`
 
 ## 候选算法
 
@@ -120,6 +154,8 @@ target 说明：
 
 ### 2026-04-18 App Verify
 
+以下结果表是迁移前的历史 Icarus 记录，仅保留作归档参考；当前默认验证流程已切到 Verilator。
+
 | Flow | Simulator | Result | Notes / Artifacts |
 | --- | --- | --- | --- |
 | `app verify m16_k32_n16` | `icarus` | `PASS` | 默认 `PT_DMA_TOP`，`5/5` 通过；见 `verify_metrics_pt_dma_top_m16_k32_n16.json` |
@@ -135,7 +171,7 @@ target 说明：
 
 最近一次完整 native 基线仍是 `2026-04-15/2026-04-16`，覆盖了基础功能、压力、随机、扩展、性能、coverage 和 app 级 verify。
 
-在此基础上，`2026-04-16` 又补跑了：
+在此基础上，`2026-04-16` 又补跑了以下历史 Icarus 记录：
 
 - `sim/cocotb/run.py perf --sim icarus`
 - app 级 `verify`：

@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import os
 import random
+import sys
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,25 @@ from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, ReadOnly, RisingEdge, Timer
 from cocotb.utils import get_sim_time
 from functional_coverage import FunctionalCoverageRecorder, classify_csr_pattern
+_SELF_PATH = Path(__file__).resolve()
+REPO_ROOT = next(
+	(
+		parent
+		for parent in [_SELF_PATH.parent, *_SELF_PATH.parents]
+		if (parent / "app" / "pt_tiled_gemm").exists() and (parent / "sim" / "cocotb").exists()
+	),
+	Path.cwd(),
+)
+COCOTB_ROOT = REPO_ROOT / "sim" / "cocotb"
+if str(REPO_ROOT) not in sys.path:
+	sys.path.insert(0, str(REPO_ROOT))
+if str(COCOTB_ROOT) not in sys.path:
+	sys.path.insert(0, str(COCOTB_ROOT))
+from app.pt_tiled_gemm import is_v3_wrapper_target, normalize_app_target
+from app.pt_tiled_gemm.submission import (
+	SUBMISSION_MODE_LEGACY,
+	normalize_submission_mode,
+)
 
 from tests.pt_model import (
 	DMA_KIND_A,
@@ -34,8 +54,11 @@ from tests.pt_model import (
 	PT_QTYPE_SYMMETRIC,
 	build_cfg_inst,
 	build_qcfg_header,
+	pack_export_beats,
+	packed_word_count,
 	pack_resp,
 	qcfg_payload_count,
+	to_signed,
 	to_unsigned,
 )
 
@@ -53,6 +76,7 @@ STATUS_CMD_OVERFLOW = 1 << 4
 STATUS_DESC_OVERFLOW = 1 << 5
 STATUS_RESP_OVERFLOW = 1 << 6
 STATUS_DESC_MISS = 1 << 7
+STATUS_STREAM_ALIGN_ERROR = 1 << 8
 
 ADDR_CTRL = 0x00
 ADDR_STATUS = 0x04
@@ -67,6 +91,18 @@ ADDR_C_ADDR_HI = 0x24
 ADDR_M_ADDR_LO = 0x28
 ADDR_M_ADDR_HI = 0x2C
 ADDR_RESP_HEAD = 0x30
+ADDR_INFO = 0x34
+ADDR_DESC_STREAM = 0x38
+ADDR_AXIL_WRITE_COUNT = 0x40
+ADDR_COMMAND_PUSH_COUNT = 0x44
+ADDR_PT_ACCEPT_COUNT = 0x48
+ADDR_RESP_ENQUEUE_COUNT = 0x4C
+ADDR_WR_DMA_DONE_COUNT = 0x50
+ADDR_COMPACT_COMMIT_COUNT = 0x54
+ADDR_PUSH_TO_ACCEPT_CYCLES = 0x58
+ADDR_ACCEPT_TO_RESP_CYCLES = 0x5C
+ADDR_RESP_TO_DONE_CYCLES = 0x60
+ADDR_ACTIVE_CHANNEL_MASK = 0x64
 
 DEFAULT_A_BASE = 0x0000_1000
 DEFAULT_B_BASE = 0x0000_2000
@@ -138,6 +174,45 @@ class AxilCounterSnapshot:
 
 
 @dataclass
+class PerfCounterSnapshot:
+	axil_write_count: int
+	command_push_count: int
+	pt_accept_count: int
+	resp_enqueue_count: int
+	wr_dma_done_count: int
+	compact_commit_count: int
+	push_to_accept_cycles: int
+	accept_to_resp_cycles: int
+	resp_to_done_cycles: int
+
+	def delta(self, base: "PerfCounterSnapshot") -> "PerfCounterSnapshot":
+		return PerfCounterSnapshot(
+			axil_write_count=self.axil_write_count - base.axil_write_count,
+			command_push_count=self.command_push_count - base.command_push_count,
+			pt_accept_count=self.pt_accept_count - base.pt_accept_count,
+			resp_enqueue_count=self.resp_enqueue_count - base.resp_enqueue_count,
+			wr_dma_done_count=self.wr_dma_done_count - base.wr_dma_done_count,
+			compact_commit_count=self.compact_commit_count - base.compact_commit_count,
+			push_to_accept_cycles=self.push_to_accept_cycles - base.push_to_accept_cycles,
+			accept_to_resp_cycles=self.accept_to_resp_cycles - base.accept_to_resp_cycles,
+			resp_to_done_cycles=self.resp_to_done_cycles - base.resp_to_done_cycles,
+		)
+
+	def add(self, other: "PerfCounterSnapshot") -> "PerfCounterSnapshot":
+		return PerfCounterSnapshot(
+			axil_write_count=self.axil_write_count + other.axil_write_count,
+			command_push_count=self.command_push_count + other.command_push_count,
+			pt_accept_count=self.pt_accept_count + other.pt_accept_count,
+			resp_enqueue_count=self.resp_enqueue_count + other.resp_enqueue_count,
+			wr_dma_done_count=self.wr_dma_done_count + other.wr_dma_done_count,
+			compact_commit_count=self.compact_commit_count + other.compact_commit_count,
+			push_to_accept_cycles=self.push_to_accept_cycles + other.push_to_accept_cycles,
+			accept_to_resp_cycles=self.accept_to_resp_cycles + other.accept_to_resp_cycles,
+			resp_to_done_cycles=self.resp_to_done_cycles + other.resp_to_done_cycles,
+		)
+
+
+@dataclass
 class DescCommandTrace:
 	ctrl_id: int
 	mode: str
@@ -163,6 +238,82 @@ class RespVisibleLog:
 
 
 @dataclass
+class MallocIssueLog:
+	ctrl_id: int
+	kind: int
+	cycle: int
+
+
+@dataclass
+class FillReqLog:
+	ctrl_id: int
+	kind: int
+	cycle: int
+
+
+@dataclass
+class FillDoneLog:
+	ctrl_id: int
+	kind: int
+	err: bool
+	cycle: int
+
+
+@dataclass
+class CeCmdLog:
+	ctrl_id: int
+	cycle: int
+
+
+@dataclass
+class CeExecReqLog:
+	ctrl_id: int
+	cycle: int
+
+
+@dataclass
+class CeExecRspLog:
+	ctrl_id: int
+	cycle: int
+
+
+@dataclass
+class CeExecCompleteLog:
+	ctrl_id: int
+	cycle: int
+
+
+@dataclass
+class CeDrainAcceptLog:
+	ctrl_id: int
+	cycle: int
+
+
+@dataclass
+class CeDrainCompleteLog:
+	ctrl_id: int
+	cycle: int
+
+
+@dataclass
+class CeRespLog:
+	word: int
+	cycle: int
+
+
+@dataclass
+class MdCmdRespLog:
+	word: int
+	cycle: int
+
+
+@dataclass
+class MallocRespLog:
+	word: int
+	cycle: int
+
+
+@dataclass
 class RdTransferTrace:
 	ctrl_id: int
 	kind: int
@@ -170,6 +321,7 @@ class RdTransferTrace:
 	elems: int
 	beats: int
 	desc_cycle: int
+	first_beat_cycle: int
 	last_beat_cycle: int
 
 
@@ -180,6 +332,7 @@ class WrTransferTrace:
 	addr: int
 	beats: int
 	desc_cycle: int
+	first_beat_cycle: int
 	last_beat_cycle: int
 	done_cycle: int
 
@@ -199,6 +352,13 @@ class AbInjection:
 	error_mode: Optional[str] = None
 	error_at_beat: int = 0
 	done_delay: int = 0
+	channel_group_delay_cycles: Tuple[int, ...] = ()
+	suppress_channel_mask: int = 0
+	tuser_mismatch_channel: int = -1
+	tlast_mismatch_channel: int = -1
+	tkeep_mismatch_channel: int = -1
+	tid_mismatch_channel: int = -1
+	tdest_mismatch_channel: int = -1
 
 
 @dataclass
@@ -211,6 +371,9 @@ class ExportInjection:
 class CtrlSendTrace:
 	wait_cycles: int
 	ready_low_cycles: int
+	axil_writes: int = 0
+	axil_reads: int = 0
+	mode: str = SUBMISSION_MODE_LEGACY
 
 
 class ConstantPattern:
@@ -255,6 +418,8 @@ class PTDmaTopEnv:
 		self.x_dim = env_int("PT_X_DIM", 4)
 		self.y_dim = env_int("PT_Y_DIM", 4)
 		self.data_width = env_int("PT_DATA_WIDTH", 32)
+		self.elem_width = env_int("PT_ELEM_WIDTH", self.data_width)
+		self.pack_lanes = env_int("PT_PACK_LANES", 1)
 		self.a_base = env_int("PT_A_BASE", DEFAULT_A_BASE)
 		self.b_base = env_int("PT_B_BASE", DEFAULT_B_BASE)
 		self.a_bank_depth = env_int("PT_A_BANK_DEPTH", 16)
@@ -269,8 +434,26 @@ class PTDmaTopEnv:
 		self.b_load_lanes = env_int("PT_B_LOAD_LANES", 1)
 		self.m_write_lanes = env_int("PT_M_WRITE_LANES", 1)
 		self.m_export_lanes = env_int("PT_M_EXPORT_LANES", 1)
+		self.stream_channels = env_int("PT_STREAM_CHANNELS", 1)
+		self.s_axis_chan_width = env_int("PT_S_AXIS_CHAN_WIDTH", max(self.a_load_lanes, self.b_load_lanes) * self.data_width)
+		self.m_axis_chan_width = env_int("PT_M_AXIS_CHAN_WIDTH", self.m_export_lanes * self.data_width)
+		self.s_axis_chan_words = self.s_axis_chan_width // self.data_width
+		self.m_axis_chan_words = self.m_axis_chan_width // self.data_width
+		self.s_axis_group_words = self.stream_channels * self.s_axis_chan_words
+		self.m_axis_group_words = self.stream_channels * self.m_axis_chan_words
 		self.m_physical_copies = env_int("PT_M_PHYSICAL_COPIES", 3)
-		self.model = PTBlackBoxModel(self.x_dim, self.y_dim, self.a_bank_depth, self.b_bank_depth, self.data_width, self.lut_depth)
+		self.ext_addr_w = env_int("PT_EXT_ADDR_W", 32)
+		self.submission_mode = normalize_submission_mode(os.getenv("PT_APP_SUBMISSION_MODE", SUBMISSION_MODE_LEGACY))
+		self.model = PTBlackBoxModel(
+			self.x_dim,
+			self.y_dim,
+			self.a_bank_depth,
+			self.b_bank_depth,
+			self.data_width,
+			self.lut_depth,
+			pack_lanes=self.pack_lanes,
+			elem_width=self.elem_width,
+		)
 		self.a_base_shadow = 0
 		self.b_base_shadow = 0
 		self.a_capacity_elems = self.a_bank_depth * self.x_dim * self.x_dim
@@ -328,6 +511,18 @@ class PTDmaTopEnv:
 		self.axil_reg_shadow: Dict[int, int] = {}
 		self.pt_accept_log: Deque[PtCtrlAcceptLog] = deque()
 		self.resp_visible_log: Deque[RespVisibleLog] = deque()
+		self.malloc_issue_log: Deque[MallocIssueLog] = deque()
+		self.fill_req_log: Deque[FillReqLog] = deque()
+		self.fill_done_log: Deque[FillDoneLog] = deque()
+		self.ce_cmd_log: Deque[CeCmdLog] = deque()
+		self.ce_exec_req_log: Deque[CeExecReqLog] = deque()
+		self.ce_exec_rsp_log: Deque[CeExecRspLog] = deque()
+		self.ce_exec_complete_log: Deque[CeExecCompleteLog] = deque()
+		self.ce_drain_accept_log: Deque[CeDrainAcceptLog] = deque()
+		self.ce_drain_complete_log: Deque[CeDrainCompleteLog] = deque()
+		self.ce_resp_log: Deque[CeRespLog] = deque()
+		self.md_cmd_resp_log: Deque[MdCmdRespLog] = deque()
+		self.malloc_resp_log: Deque[MallocRespLog] = deque()
 		self.rd_transfer_log: Deque[RdTransferTrace] = deque()
 		self.wr_transfer_log: Deque[WrTransferTrace] = deque()
 		self._started = False
@@ -358,6 +553,7 @@ class PTDmaTopEnv:
 			cocotb.start_soon(self._ready_driver()),
 			cocotb.start_soon(self._resp_fifo_monitor()),
 			cocotb.start_soon(self._pt_ctrl_accept_monitor()),
+			cocotb.start_soon(self._pt_internal_stage_monitor()),
 			cocotb.start_soon(self._irq_monitor()),
 			cocotb.start_soon(self._backpressure_monitor()),
 			cocotb.start_soon(self._rd_dma_agent()),
@@ -402,14 +598,14 @@ class PTDmaTopEnv:
 		self.dut.s_axis_tdata.value = 0
 		self.dut.s_axis_tstrb.value = 0
 		self.dut.s_axis_tlast.value = 0
-		self.dut.s_axis_tkeep.value = 1
+		self.dut.s_axis_tkeep.value = (1 << self.stream_channels) - 1
 		self.dut.s_axis_tid.value = 0
 		self.dut.s_axis_tdest.value = 0
 		self.dut.s_axis_tuser.value = 0
 		self.dut.wr_dma_desc_ready.value = 1
 		self.dut.wr_dma_done.value = 0
 		self.dut.wr_dma_error.value = 0
-		self.dut.m_axis_tready.value = 1
+		self.dut.m_axis_tready.value = (1 << self.stream_channels) - 1
 
 	def _apply_soft_clear_model(self) -> None:
 		dma_req_count = self.dma_req_count
@@ -417,13 +613,18 @@ class PTDmaTopEnv:
 		export_done_count = self.export_done_count
 		export_error_count = self.export_error_count
 		irq_count = self.irq_count
-		self.model.reset_runtime_state()
+		self.model.reset_runtime_state(preserve_cfg=True)
 		self.expected_rd_dma.clear()
 		self.pending_resp_plans.clear()
 		self.descriptors.clear()
 		self.rd_desc_log.clear()
 		self.wr_desc_log.clear()
 		self.ctrl_resp_queue.clear()
+		self.ce_exec_req_log.clear()
+		self.ce_exec_rsp_log.clear()
+		self.ce_exec_complete_log.clear()
+		self.ce_drain_accept_log.clear()
+		self.ce_drain_complete_log.clear()
 		self.ab_injections.clear()
 		self.export_injections.clear()
 		self.rd_desc_count = 0
@@ -441,13 +642,16 @@ class PTDmaTopEnv:
 		self.axil_read_count = 0
 		self.pt_accept_log.clear()
 		self.resp_visible_log.clear()
+		self.malloc_issue_log.clear()
+		self.fill_req_log.clear()
+		self.fill_done_log.clear()
+		self.ce_cmd_log.clear()
+		self.ce_resp_log.clear()
+		self.md_cmd_resp_log.clear()
+		self.malloc_resp_log.clear()
 		self.rd_transfer_log.clear()
 		self.wr_transfer_log.clear()
 		self._seen_long_backpressure = False
-		self.a_base_shadow = 0
-		self.b_base_shadow = 0
-		self.model.set_base("A", 0)
-		self.model.set_base("B", 0)
 		self._reset_axil_shadow()
 
 	def _reset_axil_shadow(self) -> None:
@@ -463,6 +667,7 @@ class PTDmaTopEnv:
 			ADDR_C_ADDR_HI: 0,
 			ADDR_M_ADDR_LO: 0,
 			ADDR_M_ADDR_HI: 0,
+			ADDR_ACTIVE_CHANNEL_MASK: 0xFFFF_FFFF,
 		}
 
 	def current_cycle(self) -> int:
@@ -470,6 +675,22 @@ class PTDmaTopEnv:
 
 	def snapshot_axil_counters(self) -> AxilCounterSnapshot:
 		return AxilCounterSnapshot(write_count=self.axil_write_count, read_count=self.axil_read_count)
+
+	async def read_perf_counters(self) -> PerfCounterSnapshot:
+		return PerfCounterSnapshot(
+			axil_write_count=await self.axil_read(ADDR_AXIL_WRITE_COUNT),
+			command_push_count=await self.axil_read(ADDR_COMMAND_PUSH_COUNT),
+			pt_accept_count=await self.axil_read(ADDR_PT_ACCEPT_COUNT),
+			resp_enqueue_count=await self.axil_read(ADDR_RESP_ENQUEUE_COUNT),
+			wr_dma_done_count=await self.axil_read(ADDR_WR_DMA_DONE_COUNT),
+			compact_commit_count=await self.axil_read(ADDR_COMPACT_COMMIT_COUNT),
+			push_to_accept_cycles=await self.axil_read(ADDR_PUSH_TO_ACCEPT_CYCLES),
+			accept_to_resp_cycles=await self.axil_read(ADDR_ACCEPT_TO_RESP_CYCLES),
+			resp_to_done_cycles=await self.axil_read(ADDR_RESP_TO_DONE_CYCLES),
+		)
+
+	async def set_active_channel_mask(self, mask: int) -> None:
+		await self.axil_write(ADDR_ACTIVE_CHANNEL_MASK, mask & 0xFFFF_FFFF)
 
 	def snapshot(self) -> CounterSnapshot:
 		return CounterSnapshot(self.dma_req_count, self.export_req_count, self.export_done_count, self.export_error_count, self.irq_count)
@@ -483,6 +704,103 @@ class PTDmaTopEnv:
 			self.m_axis_ready_pattern = m_axis_ready
 		if s_axis_valid is not None:
 			self.s_axis_valid_pattern = s_axis_valid
+
+	def _channel_ready_mask(self, ready_value: int) -> int:
+		return ((1 << self.stream_channels) - 1) if ready_value else 0
+
+	def _expand_tuser(self, value: int) -> int:
+		word = 0
+		for ch_idx in range(self.stream_channels):
+			word |= (value & 0x3) << (ch_idx * 2)
+		return word
+
+	def _active_channel_mask(self) -> int:
+		mask = self._shadow_word(ADDR_ACTIVE_CHANNEL_MASK) & ((1 << self.stream_channels) - 1)
+		return mask if mask != 0 else ((1 << self.stream_channels) - 1)
+
+	def _split_input_beat(self, beat_data: int, beat_strb: int, req_tuser: int, is_last_beat: bool) -> List[Dict[str, List[int]]]:
+		groups: List[Dict[str, List[int]]] = []
+		internal_words = max(self.a_load_lanes, self.b_load_lanes)
+		active_mask = self._active_channel_mask()
+		active_channels = [ch_idx for ch_idx in range(self.stream_channels) if (active_mask & (1 << ch_idx))]
+		group_words = len(active_channels) * self.s_axis_chan_words
+		assert group_words > 0
+		assert internal_words % group_words == 0
+		group_count = internal_words // group_words
+		for group_idx in range(group_count):
+			data_by_channel: List[int] = []
+			strb_by_channel: List[int] = []
+			last_by_channel: List[int] = []
+			keep_by_channel: List[int] = []
+			user_by_channel: List[int] = []
+			tid_by_channel: List[int] = []
+			tdest_by_channel: List[int] = []
+			for ch_idx in range(self.stream_channels):
+				data = 0
+				strb = 0
+				if ch_idx in active_channels:
+					active_slot = active_channels.index(ch_idx)
+					for lane_idx in range(self.s_axis_chan_words):
+						word_idx = (group_idx * group_words) + (active_slot * self.s_axis_chan_words) + lane_idx
+						word = (beat_data >> (word_idx * self.data_width)) & ((1 << self.data_width) - 1)
+						word_strb = (beat_strb >> (word_idx * (self.data_width // 8))) & ((1 << (self.data_width // 8)) - 1)
+						data |= word << (lane_idx * self.data_width)
+						strb |= word_strb << (lane_idx * (self.data_width // 8))
+				data_by_channel.append(data)
+				strb_by_channel.append(strb)
+				last_by_channel.append(1 if ((active_mask & (1 << ch_idx)) and is_last_beat and (group_idx == (group_count - 1))) else 0)
+				keep_by_channel.append(1 if (active_mask & (1 << ch_idx)) else 0)
+				user_by_channel.append((req_tuser & 0x3) if (active_mask & (1 << ch_idx)) else 0)
+				tid_by_channel.append(0)
+				tdest_by_channel.append(0)
+			groups.append(
+				{
+					"data": data_by_channel,
+					"strb": strb_by_channel,
+					"last": last_by_channel,
+					"keep": keep_by_channel,
+					"user": user_by_channel,
+					"tid": tid_by_channel,
+					"tdest": tdest_by_channel,
+				}
+			)
+		return groups
+
+	def _pack_input_group(self, group: Dict[str, List[int]]) -> Tuple[int, int, int, int, int, int, int]:
+		data = 0
+		strb = 0
+		tuser = 0
+		tlast = 0
+		tkeep = 0
+		tid = 0
+		tdest = 0
+		for ch_idx in range(self.stream_channels):
+			data |= int(group["data"][ch_idx]) << (ch_idx * self.s_axis_chan_width)
+			strb |= int(group["strb"][ch_idx]) << (ch_idx * (self.s_axis_chan_width // 8))
+			tuser |= (int(group["user"][ch_idx]) & 0x3) << (ch_idx * 2)
+			tlast |= (int(group["last"][ch_idx]) & 0x1) << ch_idx
+			tkeep |= (int(group["keep"][ch_idx]) & 0x1) << ch_idx
+			tid |= (int(group["tid"][ch_idx]) & 0x1) << ch_idx
+			tdest |= (int(group["tdest"][ch_idx]) & 0x1) << ch_idx
+		return data, strb, tuser, tlast, tkeep, tid, tdest
+
+	def _split_output_beat(self, beat_data: int, beat_strb: int, exp_buffer: int, is_last_beat: bool) -> List[Tuple[int, int, int, int]]:
+		groups: List[Tuple[int, int, int, int]] = []
+		assert self.m_export_lanes % self.m_axis_group_words == 0
+		group_count = self.m_export_lanes // self.m_axis_group_words
+		for group_idx in range(group_count):
+			data = 0
+			strb = 0
+			for ch_idx in range(self.stream_channels):
+				for lane_idx in range(self.m_axis_chan_words):
+					word_idx = (group_idx * self.m_axis_group_words) + (ch_idx * self.m_axis_chan_words) + lane_idx
+					word = (beat_data >> (word_idx * self.data_width)) & ((1 << self.data_width) - 1)
+					word_strb = (beat_strb >> (word_idx * (self.data_width // 8))) & ((1 << (self.data_width // 8)) - 1)
+					data |= word << ((ch_idx * self.m_axis_chan_width) + (lane_idx * self.data_width))
+					strb |= word_strb << ((ch_idx * (self.m_axis_chan_width // 8)) + (lane_idx * (self.data_width // 8)))
+			last_mask = ((1 << self.stream_channels) - 1) if (is_last_beat and (group_idx == (group_count - 1))) else 0
+			groups.append((data, strb, self._expand_tuser(exp_buffer), last_mask))
+		return groups
 
 	def queue_ab_injection(self, injection: AbInjection) -> None:
 		self.ab_injections.append(injection)
@@ -526,7 +844,8 @@ class PTDmaTopEnv:
 		raise AssertionError(f"{label} timeout")
 
 	def _pt_root_prefix(self) -> str:
-		return "u_pt.u_pt_v2"
+		target = normalize_app_target(os.getenv("PT_APP_TARGET", "pt_dma_top"))
+		return "u_pt.u_pt_v3" if is_v3_wrapper_target(target) else "u_pt.u_pt_v2"
 
 	def _auto_descriptor_addrs(self, ctrl_id: int) -> DescriptorAddrs:
 		base_id = ctrl_id & 0xFFFF_FFFF
@@ -540,20 +859,46 @@ class PTDmaTopEnv:
 	def _pack_ab_beats(self, kind: str, matrix: Sequence[int], expectation: Optional[ReadDmaExpectation] = None) -> List[Tuple[int, int]]:
 		beats: List[Tuple[int, int]] = []
 		byte_mask = (1 << (self.data_width // 8)) - 1
+		def pack_word(values: Sequence[int]) -> int:
+			word = 0
+			for lane_idx, value in enumerate(values):
+				word |= to_unsigned(to_signed(int(value), self.data_width), self.elem_width) << (lane_idx * self.elem_width)
+			return word & 0xFFFF_FFFF
 		if kind == "A":
 			if expectation is not None:
 				k_dim = self.x_dim * expectation.k_tiles
 				m_dim = self.x_dim * expectation.m_tiles
 				assert len(matrix) == m_dim * k_dim
-				stream_words = [
-					int(matrix[((m_tile * self.x_dim) + row) * k_dim + col])
-					for m_tile in range(expectation.m_tiles)
-					for col in range(k_dim)
-					for row in range(self.x_dim)
-				]
+				if self.pack_lanes > 1:
+					stream_words = [
+						pack_word(
+							int(matrix[((m_tile * self.x_dim) + row) * k_dim + ((col_word * self.pack_lanes) + pack_idx)])
+							for pack_idx in range(self.pack_lanes)
+						)
+						for m_tile in range(expectation.m_tiles)
+						for col_word in range(packed_word_count(k_dim, self.pack_lanes))
+						for row in range(self.x_dim)
+					]
+				else:
+					stream_words = [
+						int(matrix[((m_tile * self.x_dim) + row) * k_dim + col])
+						for m_tile in range(expectation.m_tiles)
+						for col in range(k_dim)
+						for row in range(self.x_dim)
+					]
 			elif len(matrix) % self.x_dim == 0:
 				k_dim = len(matrix) // self.x_dim
-				stream_words = [int(matrix[row * k_dim + col]) for col in range(k_dim) for row in range(self.x_dim)]
+				if self.pack_lanes > 1:
+					stream_words = [
+						pack_word(
+							int(matrix[row * k_dim + ((col_word * self.pack_lanes) + pack_idx)])
+							for pack_idx in range(self.pack_lanes)
+						)
+						for col_word in range(packed_word_count(k_dim, self.pack_lanes))
+						for row in range(self.x_dim)
+					]
+				else:
+					stream_words = [int(matrix[row * k_dim + col]) for col in range(k_dim) for row in range(self.x_dim)]
 			else:
 				stream_words = [int(word) for word in matrix]
 			for start in range(0, len(stream_words), self.a_load_lanes):
@@ -569,12 +914,23 @@ class PTDmaTopEnv:
 				k_dim = self.y_dim * expectation.k_tiles
 				n_dim = self.y_dim * expectation.n_tiles
 				assert len(matrix) == k_dim * n_dim
-				stream_words = [
-					int(matrix[row * n_dim + (n_tile * self.y_dim) + col])
-					for n_tile in range(expectation.n_tiles)
-					for row in range(k_dim)
-					for col in range(self.y_dim)
-				]
+				if self.pack_lanes > 1:
+					stream_words = [
+						pack_word(
+							int(matrix[((row_word * self.pack_lanes) + pack_idx) * n_dim + (n_tile * self.y_dim) + col])
+							for pack_idx in range(self.pack_lanes)
+						)
+						for n_tile in range(expectation.n_tiles)
+						for row_word in range(packed_word_count(k_dim, self.pack_lanes))
+						for col in range(self.y_dim)
+					]
+				else:
+					stream_words = [
+						int(matrix[row * n_dim + (n_tile * self.y_dim) + col])
+						for n_tile in range(expectation.n_tiles)
+						for row in range(k_dim)
+						for col in range(self.y_dim)
+					]
 			else:
 				stream_words = [int(word) for word in matrix]
 			for start in range(0, len(stream_words), self.b_load_lanes):
@@ -588,19 +944,14 @@ class PTDmaTopEnv:
 		return beats
 
 	def _pack_export_beats(self, matrix: Sequence[int]) -> List[Tuple[int, int]]:
-		beats: List[Tuple[int, int]] = []
-		byte_mask = (1 << (self.data_width // 8)) - 1
-		for row_start in range(0, len(matrix), self.y_dim):
-			row = list(matrix[row_start : row_start + self.y_dim])
-			for start in range(0, len(row), self.m_export_lanes):
-				chunk = row[start : start + self.m_export_lanes]
-				beat_data = 0
-				beat_strb = 0
-				for lane_idx, word in enumerate(chunk):
-					beat_data |= to_unsigned(int(word), self.data_width) << (lane_idx * self.data_width)
-					beat_strb |= byte_mask << (lane_idx * (self.data_width // 8))
-				beats.append((beat_data, beat_strb))
-		return beats
+		return pack_export_beats(
+			matrix,
+			y_dim=self.y_dim,
+			data_width=self.data_width,
+			m_export_lanes=self.m_export_lanes,
+			pack_lanes=self.pack_lanes,
+			elem_width=self.elem_width,
+		)
 
 	async def axil_write(self, addr: int, data: int, wstrb: int = 0xF, write_delay_cycles: int = 0) -> int:
 		self.axil_write_count += 1
@@ -638,7 +989,7 @@ class PTDmaTopEnv:
 				await RisingEdge(self.dut.clk)
 				self.dut.s_axil_bready.value = 0
 				addr8 = addr & 0xFF
-				if addr8 != ADDR_CTRL:
+				if addr8 not in {ADDR_CTRL, ADDR_DESC_STREAM}:
 					self.axil_reg_shadow[addr8] = self._apply_wstrb32(self._shadow_word(addr8), data, wstrb)
 				return resp
 		raise AssertionError(f"AXI-Lite write response timeout at 0x{addr:02x}")
@@ -689,8 +1040,9 @@ class PTDmaTopEnv:
 		c_addr: int = 0,
 		m_addr: int = 0,
 		ctrl_write_delay_cycles: int = 0,
-		mode: str = "full",
+		mode: str | None = None,
 	) -> DescCommandTrace:
+		mode = normalize_submission_mode(self.submission_mode if mode is None else mode)
 		self.descriptors[ctrl_id & 0xFFFF_FFFF] = DescriptorAddrs(
 			a_addr=a_addr & 0xFFFF_FFFF_FFFF_FFFF,
 			b_addr=b_addr & 0xFFFF_FFFF_FFFF_FFFF,
@@ -712,7 +1064,7 @@ class PTDmaTopEnv:
 			await self.axil_write(addr, data, wstrb=wstrb, write_delay_cycles=write_delay_cycles_local)
 			write_addrs.append(addr & 0xFF)
 
-		if mode == "full":
+		if mode == "legacy":
 			await traced_write(ADDR_CMD_INST, inst & 0xFFFF_FFFF)
 			await traced_write(ADDR_CMD_ID, ctrl_id & 0xFFFF_FFFF)
 			await traced_write(ADDR_A_ADDR_LO, a_addr & 0xFFFF_FFFF)
@@ -724,31 +1076,75 @@ class PTDmaTopEnv:
 			await traced_write(ADDR_M_ADDR_LO, m_addr & 0xFFFF_FFFF)
 			await traced_write(ADDR_M_ADDR_HI, (m_addr >> 32) & 0xFFFF_FFFF)
 			await traced_write(ADDR_CTRL, CTRL_DESC_PUSH, write_delay_cycles_local=ctrl_write_delay_cycles)
-		elif mode == "delta":
+			self.axil_reg_shadow[ADDR_CMD_INST] = inst & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_CMD_ID] = ctrl_id & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_A_ADDR_LO] = a_addr & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_A_ADDR_HI] = (a_addr >> 32) & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_B_ADDR_LO] = b_addr & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_B_ADDR_HI] = (b_addr >> 32) & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_C_ADDR_LO] = c_addr & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_C_ADDR_HI] = (c_addr >> 32) & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_M_ADDR_LO] = m_addr & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_M_ADDR_HI] = (m_addr >> 32) & 0xFFFF_FFFF
+		elif mode == "shadow_delta":
 			if self._shadow_word(ADDR_CMD_INST) != (inst & 0xFFFF_FFFF):
 				await traced_write(ADDR_CMD_INST, inst & 0xFFFF_FFFF)
 			if self._shadow_word(ADDR_CMD_ID) != (ctrl_id & 0xFFFF_FFFF):
 				await traced_write(ADDR_CMD_ID, ctrl_id & 0xFFFF_FFFF)
 			if first_write_start_cycle is None and (
 				self._shadow_word(ADDR_A_ADDR_LO) != (a_addr & 0xFFFF_FFFF)
-				or self._shadow_word(ADDR_A_ADDR_HI) != ((a_addr >> 32) & 0xFFFF_FFFF)
 				or self._shadow_word(ADDR_B_ADDR_LO) != (b_addr & 0xFFFF_FFFF)
-				or self._shadow_word(ADDR_B_ADDR_HI) != ((b_addr >> 32) & 0xFFFF_FFFF)
 				or self._shadow_word(ADDR_C_ADDR_LO) != (c_addr & 0xFFFF_FFFF)
-				or self._shadow_word(ADDR_C_ADDR_HI) != ((c_addr >> 32) & 0xFFFF_FFFF)
 				or self._shadow_word(ADDR_M_ADDR_LO) != (m_addr & 0xFFFF_FFFF)
-				or self._shadow_word(ADDR_M_ADDR_HI) != ((m_addr >> 32) & 0xFFFF_FFFF)
+				or ((self.ext_addr_w > 32) and (
+					self._shadow_word(ADDR_A_ADDR_HI) != ((a_addr >> 32) & 0xFFFF_FFFF)
+					or self._shadow_word(ADDR_B_ADDR_HI) != ((b_addr >> 32) & 0xFFFF_FFFF)
+					or self._shadow_word(ADDR_C_ADDR_HI) != ((c_addr >> 32) & 0xFFFF_FFFF)
+					or self._shadow_word(ADDR_M_ADDR_HI) != ((m_addr >> 32) & 0xFFFF_FFFF)
+				))
 			):
 				first_write_start_cycle = self.current_cycle()
-			await self._write_addr64_delta(ADDR_A_ADDR_LO, ADDR_A_ADDR_HI, a_addr, write_addrs)
-			await self._write_addr64_delta(ADDR_B_ADDR_LO, ADDR_B_ADDR_HI, b_addr, write_addrs)
-			await self._write_addr64_delta(ADDR_C_ADDR_LO, ADDR_C_ADDR_HI, c_addr, write_addrs)
-			await self._write_addr64_delta(ADDR_M_ADDR_LO, ADDR_M_ADDR_HI, m_addr, write_addrs)
+			if self._shadow_word(ADDR_A_ADDR_LO) != (a_addr & 0xFFFF_FFFF):
+				await traced_write(ADDR_A_ADDR_LO, a_addr & 0xFFFF_FFFF)
+			if self._shadow_word(ADDR_B_ADDR_LO) != (b_addr & 0xFFFF_FFFF):
+				await traced_write(ADDR_B_ADDR_LO, b_addr & 0xFFFF_FFFF)
+			if self._shadow_word(ADDR_C_ADDR_LO) != (c_addr & 0xFFFF_FFFF):
+				await traced_write(ADDR_C_ADDR_LO, c_addr & 0xFFFF_FFFF)
+			if self._shadow_word(ADDR_M_ADDR_LO) != (m_addr & 0xFFFF_FFFF):
+				await traced_write(ADDR_M_ADDR_LO, m_addr & 0xFFFF_FFFF)
+			if self.ext_addr_w > 32:
+				await self._write_addr64_delta(ADDR_A_ADDR_LO, ADDR_A_ADDR_HI, a_addr, write_addrs)
+				await self._write_addr64_delta(ADDR_B_ADDR_LO, ADDR_B_ADDR_HI, b_addr, write_addrs)
+				await self._write_addr64_delta(ADDR_C_ADDR_LO, ADDR_C_ADDR_HI, c_addr, write_addrs)
+				await self._write_addr64_delta(ADDR_M_ADDR_LO, ADDR_M_ADDR_HI, m_addr, write_addrs)
 			if first_write_start_cycle is None:
 				first_write_start_cycle = self.current_cycle()
 			ctrl_write_start_cycle = self.current_cycle()
 			await self.axil_write(ADDR_CTRL, CTRL_DESC_PUSH, write_delay_cycles=ctrl_write_delay_cycles)
 			write_addrs.append(ADDR_CTRL)
+		elif mode == "compact":
+			stream_words = [
+				inst & 0xFFFF_FFFF,
+				ctrl_id & 0xFFFF_FFFF,
+				a_addr & 0xFFFF_FFFF,
+				b_addr & 0xFFFF_FFFF,
+				c_addr & 0xFFFF_FFFF,
+				m_addr & 0xFFFF_FFFF,
+			]
+			for idx, word in enumerate(stream_words):
+				if idx == (len(stream_words) - 1):
+					ctrl_write_start_cycle = self.current_cycle()
+				await traced_write(ADDR_DESC_STREAM, word)
+			self.axil_reg_shadow[ADDR_CMD_INST] = inst & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_CMD_ID] = ctrl_id & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_A_ADDR_LO] = a_addr & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_A_ADDR_HI] = 0
+			self.axil_reg_shadow[ADDR_B_ADDR_LO] = b_addr & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_B_ADDR_HI] = 0
+			self.axil_reg_shadow[ADDR_C_ADDR_LO] = c_addr & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_C_ADDR_HI] = 0
+			self.axil_reg_shadow[ADDR_M_ADDR_LO] = m_addr & 0xFFFF_FFFF
+			self.axil_reg_shadow[ADDR_M_ADDR_HI] = 0
 		else:
 			raise ValueError(f"unknown desc command mode {mode!r}")
 
@@ -878,6 +1274,108 @@ class PTDmaTopEnv:
 			timeout_cycles,
 		)
 
+	async def wait_malloc_issue(self, ctrl_id: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> MallocIssueLog:
+		return await self._wait_for_logged_event(
+			self.malloc_issue_log,
+			f"malloc issue id=0x{ctrl_id & 0xFFFF_FFFF:08x}",
+			lambda item: isinstance(item, MallocIssueLog)
+			and item.ctrl_id == (ctrl_id & 0xFFFF_FFFF)
+			and item.cycle >= after_cycle,
+			timeout_cycles,
+		)
+
+	async def wait_fill_req(self, ctrl_id: int, kind: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> FillReqLog:
+		return await self._wait_for_logged_event(
+			self.fill_req_log,
+			f"fill req id=0x{ctrl_id & 0xFFFF_FFFF:08x} kind={kind}",
+			lambda item: isinstance(item, FillReqLog)
+			and item.ctrl_id == (ctrl_id & 0xFFFF_FFFF)
+			and item.kind == kind
+			and item.cycle >= after_cycle,
+			timeout_cycles,
+		)
+
+	async def wait_fill_done(self, ctrl_id: int, kind: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> FillDoneLog:
+		return await self._wait_for_logged_event(
+			self.fill_done_log,
+			f"fill done id=0x{ctrl_id & 0xFFFF_FFFF:08x} kind={kind}",
+			lambda item: isinstance(item, FillDoneLog)
+			and item.ctrl_id == (ctrl_id & 0xFFFF_FFFF)
+			and item.kind == kind
+			and item.cycle >= after_cycle,
+			timeout_cycles,
+		)
+
+	async def wait_ce_cmd(self, ctrl_id: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> CeCmdLog:
+		return await self._wait_for_logged_event(
+			self.ce_cmd_log,
+			f"ce cmd id=0x{ctrl_id & 0xFFFF_FFFF:08x}",
+			lambda item: isinstance(item, CeCmdLog)
+			and item.ctrl_id == (ctrl_id & 0xFFFF_FFFF)
+			and item.cycle >= after_cycle,
+			timeout_cycles,
+		)
+
+	async def wait_ce_exec_req(self, ctrl_id: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> CeExecReqLog:
+		return await self._wait_for_logged_event(
+			self.ce_exec_req_log,
+			f"ce exec req id=0x{ctrl_id & 0xFFFF_FFFF:08x}",
+			lambda item: isinstance(item, CeExecReqLog)
+			and item.ctrl_id == (ctrl_id & 0xFFFF_FFFF)
+			and item.cycle >= after_cycle,
+			timeout_cycles,
+		)
+
+	async def wait_ce_exec_rsp(self, ctrl_id: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> CeExecRspLog:
+		return await self._wait_for_logged_event(
+			self.ce_exec_rsp_log,
+			f"ce exec rsp id=0x{ctrl_id & 0xFFFF_FFFF:08x}",
+			lambda item: isinstance(item, CeExecRspLog)
+			and item.ctrl_id == (ctrl_id & 0xFFFF_FFFF)
+			and item.cycle >= after_cycle,
+			timeout_cycles,
+		)
+
+	async def wait_ce_exec_complete(self, ctrl_id: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> CeExecCompleteLog:
+		return await self._wait_for_logged_event(
+			self.ce_exec_complete_log,
+			f"ce exec complete id=0x{ctrl_id & 0xFFFF_FFFF:08x}",
+			lambda item: isinstance(item, CeExecCompleteLog)
+			and item.ctrl_id == (ctrl_id & 0xFFFF_FFFF)
+			and item.cycle >= after_cycle,
+			timeout_cycles,
+		)
+
+	async def wait_ce_drain_accept(self, ctrl_id: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> CeDrainAcceptLog:
+		return await self._wait_for_logged_event(
+			self.ce_drain_accept_log,
+			f"ce drain accept id=0x{ctrl_id & 0xFFFF_FFFF:08x}",
+			lambda item: isinstance(item, CeDrainAcceptLog)
+			and item.ctrl_id == (ctrl_id & 0xFFFF_FFFF)
+			and item.cycle >= after_cycle,
+			timeout_cycles,
+		)
+
+	async def wait_ce_drain_complete(self, ctrl_id: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> CeDrainCompleteLog:
+		return await self._wait_for_logged_event(
+			self.ce_drain_complete_log,
+			f"ce drain complete id=0x{ctrl_id & 0xFFFF_FFFF:08x}",
+			lambda item: isinstance(item, CeDrainCompleteLog)
+			and item.ctrl_id == (ctrl_id & 0xFFFF_FFFF)
+			and item.cycle >= after_cycle,
+			timeout_cycles,
+		)
+
+	async def wait_ce_resp(self, expected_word: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> CeRespLog:
+		return await self._wait_for_logged_event(
+			self.ce_resp_log,
+			f"ce resp 0x{expected_word:08x}",
+			lambda item: isinstance(item, CeRespLog)
+			and item.word == (expected_word & 0xFFFF_FFFF)
+			and item.cycle >= after_cycle,
+			timeout_cycles,
+		)
+
 	async def wait_resp_visible(self, expected_word: int, after_cycle: int = 0, timeout_cycles: int = 4000) -> RespVisibleLog:
 		return await self._wait_for_logged_event(
 			self.resp_visible_log,
@@ -909,15 +1407,19 @@ class PTDmaTopEnv:
 			timeout_cycles,
 		)
 
-	async def wait_ctrl_resp(self, expected_word: int, timeout_cycles: int = 4000) -> int:
+	async def wait_next_ctrl_resp(self, timeout_cycles: int = 4000) -> int:
 		for _ in range(timeout_cycles):
 			if self.ctrl_resp_queue:
 				actual = self.ctrl_resp_queue.popleft()
-				assert actual == expected_word, f"ctrl_resp mismatch exp=0x{expected_word:08x} got=0x{actual:08x}"
 				await self.pop_resp()
 				return actual
 			await RisingEdge(self.dut.clk)
-		raise AssertionError(f"ctrl_resp timeout waiting for 0x{expected_word:08x}")
+		raise AssertionError("ctrl_resp timeout waiting for next response")
+
+	async def wait_ctrl_resp(self, expected_word: int, timeout_cycles: int = 4000) -> int:
+		actual = await self.wait_next_ctrl_resp(timeout_cycles)
+		assert actual == expected_word, f"ctrl_resp mismatch exp=0x{expected_word:08x} got=0x{actual:08x}"
+		return actual
 
 	async def expect_no_ctrl_resp(self, wait_cycles: int) -> None:
 		for _ in range(wait_cycles):
@@ -1016,7 +1518,7 @@ class PTDmaTopEnv:
 			while True:
 				self.dut.rd_dma_desc_ready.value = 0 if self.dma_stream_busy else self.dma_req_ready_pattern.next()
 				self.dut.wr_dma_desc_ready.value = 0 if self.export_busy else self.m_dma_req_ready_pattern.next()
-				self.dut.m_axis_tready.value = self.m_axis_ready_pattern.next()
+				self.dut.m_axis_tready.value = self._channel_ready_mask(self.m_axis_ready_pattern.next())
 				await RisingEdge(self.dut.clk)
 		except Exception:
 			self.dut._log.exception("ready_driver crashed")
@@ -1061,7 +1563,106 @@ class PTDmaTopEnv:
 			self.dut._log.exception("pt_ctrl_accept_monitor crashed")
 			raise
 
-	async def send_ctrl_timed(self, inst: int, ctrl_id: int, timeout_cycles: int = 4000) -> CtrlSendTrace:
+	async def _pt_internal_stage_monitor(self) -> None:
+		root = self._pt_root_prefix()
+		try:
+			while True:
+				await RisingEdge(self.dut.clk)
+				await ReadOnly()
+				cycle = self.current_cycle()
+				if self._signal_value(f"{root}.malloc_cmd_valid") and self._signal_value(f"{root}.malloc_cmd_ready"):
+					self.malloc_issue_log.append(
+						MallocIssueLog(
+							ctrl_id=self._signal_value(f"{root}.malloc_cmd_id"),
+							kind=self._signal_value(f"{root}.malloc_cmd_kind"),
+							cycle=cycle,
+						)
+					)
+				if self._signal_value(f"{root}.fill_req_valid") and self._signal_value(f"{root}.fill_req_ready"):
+					self.fill_req_log.append(
+						FillReqLog(
+							ctrl_id=self._signal_value(f"{root}.fill_req_id"),
+							kind=self._signal_value(f"{root}.fill_req_kind"),
+							cycle=cycle,
+						)
+					)
+				if self._signal_value(f"{root}.fill_done_valid"):
+					self.fill_done_log.append(
+						FillDoneLog(
+							ctrl_id=self._signal_value(f"{root}.fill_done_id"),
+							kind=self._signal_value(f"{root}.fill_done_kind"),
+							err=bool(self._signal_value(f"{root}.fill_done_err")),
+							cycle=cycle,
+						)
+					)
+				if self._signal_value(f"{root}.ce_cmd_valid") and self._signal_value(f"{root}.ce_cmd_ready"):
+					self.ce_cmd_log.append(
+						CeCmdLog(
+							ctrl_id=self._signal_value(f"{root}.ce_cmd_id"),
+							cycle=cycle,
+						)
+					)
+				if self._signal_value(f"{root}.u_ce.mm_exec_req_fire"):
+					self.ce_exec_req_log.append(
+						CeExecReqLog(
+							ctrl_id=self._signal_value(f"{root}.u_ce.exec_id_r"),
+							cycle=cycle,
+						)
+					)
+				if self._signal_value(f"{root}.u_ce.mm_exec_rsp_fire"):
+					self.ce_exec_rsp_log.append(
+						CeExecRspLog(
+							ctrl_id=self._signal_value(f"{root}.u_ce.exec_id_r"),
+							cycle=cycle,
+						)
+					)
+				if self._signal_value(f"{root}.u_ce.exec_complete_fire"):
+					self.ce_exec_complete_log.append(
+						CeExecCompleteLog(
+							ctrl_id=self._signal_value(f"{root}.u_ce.exec_id_r"),
+							cycle=cycle,
+						)
+					)
+				if self._signal_value(f"{root}.u_ce.drain_accept_fire"):
+					self.ce_drain_accept_log.append(
+						CeDrainAcceptLog(
+							ctrl_id=self._signal_value(f"{root}.u_ce.drain_id_r"),
+							cycle=cycle,
+						)
+					)
+				if self._signal_value(f"{root}.u_ce.drain_complete_fire"):
+					self.ce_drain_complete_log.append(
+						CeDrainCompleteLog(
+							ctrl_id=self._signal_value(f"{root}.u_ce.drain_id_r"),
+							cycle=cycle,
+						)
+					)
+				if self._signal_value(f"{root}.ce_resp_valid"):
+					self.ce_resp_log.append(
+						CeRespLog(
+							word=self._signal_value(f"{root}.ce_resp"),
+							cycle=cycle,
+						)
+					)
+				if self._signal_value(f"{root}.md_cmd_resp_valid"):
+					self.md_cmd_resp_log.append(
+						MdCmdRespLog(
+							word=self._signal_value(f"{root}.md_cmd_resp"),
+							cycle=cycle,
+						)
+					)
+				if self._signal_value(f"{root}.malloc_resp_valid"):
+					self.malloc_resp_log.append(
+						MallocRespLog(
+							word=self._signal_value(f"{root}.malloc_resp"),
+							cycle=cycle,
+						)
+					)
+		except Exception:
+			self.dut._log.exception("pt_internal_stage_monitor crashed")
+			raise
+
+	async def send_ctrl_timed(self, inst: int, ctrl_id: int, timeout_cycles: int = 4000, mode: str | None = None) -> CtrlSendTrace:
 		desc = self.descriptors.get(ctrl_id & 0xFFFF_FFFF, self._auto_descriptor_addrs(ctrl_id))
 		trace = await self.send_desc_command_timed(
 			inst,
@@ -1070,15 +1671,21 @@ class PTDmaTopEnv:
 			b_addr=desc.b_addr,
 			c_addr=desc.c_addr,
 			m_addr=desc.m_addr,
-			mode="delta" if (ctrl_id & 0xFFFF_FFFF) in self.descriptors else "full",
+			mode=mode,
 		)
 		accept = await self.wait_pt_ctrl_accept(ctrl_id, after_cycle=trace.ctrl_write_start_cycle, timeout_cycles=timeout_cycles)
 		wait_cycles = max(1, accept.cycle - trace.ctrl_write_start_cycle)
 		ready_low_cycles = max(0, wait_cycles - 1)
-		return CtrlSendTrace(wait_cycles=wait_cycles, ready_low_cycles=ready_low_cycles)
+		return CtrlSendTrace(
+			wait_cycles=wait_cycles,
+			ready_low_cycles=ready_low_cycles,
+			axil_writes=trace.axil_writes,
+			axil_reads=trace.axil_reads,
+			mode=trace.mode,
+		)
 
-	async def send_ctrl(self, inst: int, ctrl_id: int) -> CtrlSendTrace:
-		return await self.send_ctrl_timed(inst, ctrl_id)
+	async def send_ctrl(self, inst: int, ctrl_id: int, mode: str | None = None) -> CtrlSendTrace:
+		return await self.send_ctrl_timed(inst, ctrl_id, mode=mode)
 
 	async def _irq_monitor(self) -> None:
 		try:
@@ -1259,7 +1866,7 @@ class PTDmaTopEnv:
 					injection = self.ab_injections.popleft() if self.ab_injections else AbInjection()
 					beats = self._pack_ab_beats(expected.kind, self.external_a_tiles[actual_id] if expected.kind == "A" else (self.external_b_tiles[actual_id] if expected.kind == "B" else self.external_c_tiles[actual_id]), expected)
 					self.dma_stream_busy = True
-					last_beat_cycle = await self._serve_rd_stream(expected, beats, injection)
+					first_beat_cycle, last_beat_cycle = await self._serve_rd_stream(expected, beats, injection)
 					self.dma_stream_busy = False
 					self.rd_transfer_log.append(
 						RdTransferTrace(
@@ -1269,6 +1876,7 @@ class PTDmaTopEnv:
 							elems=actual_elems,
 							beats=len(beats),
 							desc_cycle=desc_cycle,
+							first_beat_cycle=first_beat_cycle,
 							last_beat_cycle=last_beat_cycle,
 						)
 					)
@@ -1276,7 +1884,7 @@ class PTDmaTopEnv:
 			self.dut._log.exception("rd_dma_agent crashed")
 			raise
 
-	async def _serve_rd_stream(self, expectation: ReadDmaExpectation, beats: Sequence[Tuple[int, int]], injection: AbInjection) -> int:
+	async def _serve_rd_stream(self, expectation: ReadDmaExpectation, beats: Sequence[Tuple[int, int]], injection: AbInjection) -> Tuple[int, int]:
 		ctrl_id = expectation.ctrl_id
 		kind = expectation.kind
 		if kind == "A":
@@ -1293,49 +1901,130 @@ class PTDmaTopEnv:
 			self.dut.rd_dma_error.value = 1
 			await RisingEdge(self.dut.clk)
 			self.dut.rd_dma_error.value = 0
-			return self.current_cycle()
+			return self.current_cycle(), self.current_cycle()
 		await RisingEdge(self.dut.clk)
+		first_beat_cycle = self.current_cycle()
 		last_beat_cycle = self.current_cycle()
 		bad_tuser = MATRIX_B_TUSER if req_tuser == MATRIX_A_TUSER else MATRIX_A_TUSER
+		delay_by_channel = list(injection.channel_group_delay_cycles[: self.stream_channels]) if injection.channel_group_delay_cycles else []
+		if len(delay_by_channel) < self.stream_channels:
+			delay_by_channel.extend([0] * (self.stream_channels - len(delay_by_channel)))
+		sideband_mismatch_active = any(
+			value >= 0
+			for value in (
+				injection.tuser_mismatch_channel,
+				injection.tlast_mismatch_channel,
+				injection.tkeep_mismatch_channel,
+				injection.tid_mismatch_channel,
+				injection.tdest_mismatch_channel,
+			)
+		)
 		for beat_idx, (word, strb) in enumerate(beats):
-			while True:
-				offer = self.s_axis_valid_pattern.next()
-				if not offer:
+			groups = self._split_input_beat(word, strb, bad_tuser if injection.wrong_tuser else req_tuser, beat_idx == (len(beats) - 1))
+			for group in groups:
+				if injection.tuser_mismatch_channel >= 0 and injection.tuser_mismatch_channel < self.stream_channels:
+					group["user"][injection.tuser_mismatch_channel] = bad_tuser & 0x3
+				if injection.tlast_mismatch_channel >= 0 and injection.tlast_mismatch_channel < self.stream_channels:
+					group["last"][injection.tlast_mismatch_channel] ^= 0x1
+				if injection.tkeep_mismatch_channel >= 0 and injection.tkeep_mismatch_channel < self.stream_channels:
+					group["keep"][injection.tkeep_mismatch_channel] ^= 0x1
+				if injection.tid_mismatch_channel >= 0 and injection.tid_mismatch_channel < self.stream_channels:
+					group["tid"][injection.tid_mismatch_channel] ^= 0x1
+				if injection.tdest_mismatch_channel >= 0 and injection.tdest_mismatch_channel < self.stream_channels:
+					group["tdest"][injection.tdest_mismatch_channel] ^= 0x1
+				pending = [False] * self.stream_channels
+				accepted = [False] * self.stream_channels
+				delay_remaining = list(delay_by_channel)
+				required_mask = self._active_channel_mask() & ~injection.suppress_channel_mask
+				while True:
+					if ((sum((1 << idx) for idx, done in enumerate(accepted) if done)) & required_mask) == required_mask:
+						break
+					offer = self.s_axis_valid_pattern.next()
+					for ch_idx in range(self.stream_channels):
+						if injection.suppress_channel_mask & (1 << ch_idx):
+							pending[ch_idx] = False
+						elif accepted[ch_idx]:
+							pending[ch_idx] = False
+						elif delay_remaining[ch_idx] > 0:
+							delay_remaining[ch_idx] -= 1
+							pending[ch_idx] = False
+						else:
+							pending[ch_idx] = bool(offer)
+					group_data, group_strb, group_user, group_last, group_keep, group_tid, group_tdest = self._pack_input_group(group)
+					tvalid_mask = 0
+					for ch_idx in range(self.stream_channels):
+						if pending[ch_idx]:
+							tvalid_mask |= 1 << ch_idx
+					self.dut.s_axis_tvalid.value = tvalid_mask
+					self.dut.s_axis_tdata.value = group_data
+					self.dut.s_axis_tstrb.value = group_strb
+					self.dut.s_axis_tuser.value = group_user
+					self.dut.s_axis_tlast.value = group_last
+					self.dut.s_axis_tkeep.value = group_keep
+					self.dut.s_axis_tid.value = group_tid
+					self.dut.s_axis_tdest.value = group_tdest
+					await RisingEdge(self.dut.clk)
+					ready_mask = value_to_int(self.dut.s_axis_tready.value)
+					for ch_idx in range(self.stream_channels):
+						if pending[ch_idx] and (ready_mask & (1 << ch_idx)):
+							accepted[ch_idx] = True
+							if beat_idx == 0 and last_beat_cycle == first_beat_cycle:
+								first_beat_cycle = self.current_cycle()
+							last_beat_cycle = self.current_cycle()
+					if tvalid_mask == 0:
+						self.dut.s_axis_tvalid.value = 0
+						self.dut.s_axis_tlast.value = 0
+						self.dut.s_axis_tkeep.value = (1 << self.stream_channels) - 1
+						self.dut.s_axis_tid.value = 0
+						self.dut.s_axis_tdest.value = 0
+						self.dut.s_axis_tuser.value = 0
+				if (injection.suppress_channel_mask & self._active_channel_mask()) != 0:
 					self.dut.s_axis_tvalid.value = 0
 					self.dut.s_axis_tlast.value = 0
-					await RisingEdge(self.dut.clk)
-					continue
-				self.dut.s_axis_tvalid.value = 1
-				self.dut.s_axis_tdata.value = word
-				self.dut.s_axis_tstrb.value = strb
-				self.dut.s_axis_tuser.value = bad_tuser if injection.wrong_tuser else req_tuser
-				self.dut.s_axis_tlast.value = 1 if beat_idx == (len(beats) - 1) else 0
-				await RisingEdge(self.dut.clk)
-				if value_to_int(self.dut.s_axis_tready.value):
+					return first_beat_cycle, last_beat_cycle
+				if sideband_mismatch_active:
+					self.dut.s_axis_tvalid.value = 0
+					self.dut.s_axis_tlast.value = 0
+					self.dut.s_axis_tkeep.value = (1 << self.stream_channels) - 1
+					self.dut.s_axis_tid.value = 0
+					self.dut.s_axis_tdest.value = 0
+					self.dut.s_axis_tuser.value = 0
+					return first_beat_cycle, last_beat_cycle
+				if injection.wrong_tuser:
+					self.dut.s_axis_tvalid.value = 0
+					self.dut.s_axis_tlast.value = 0
+					self.dut.s_axis_tkeep.value = (1 << self.stream_channels) - 1
+					self.dut.s_axis_tid.value = 0
+					self.dut.s_axis_tdest.value = 0
+					self.dut.s_axis_tuser.value = 0
+					return first_beat_cycle, last_beat_cycle
+				if beat_idx == 0 and last_beat_cycle == first_beat_cycle:
+					first_beat_cycle = self.current_cycle()
+				if any(accepted):
 					last_beat_cycle = self.current_cycle()
-					break
 			if injection.error_mode == "mid_stream" and beat_idx == injection.error_at_beat:
 				self.dut.s_axis_tvalid.value = 0
 				self.dut.s_axis_tlast.value = 0
+				self.dut.s_axis_tkeep.value = (1 << self.stream_channels) - 1
 				self.dut.rd_dma_error.value = 1
 				for _ in range(injection.done_delay):
 					await RisingEdge(self.dut.clk)
 				await RisingEdge(self.dut.clk)
 				self.dut.rd_dma_error.value = 0
-				return self.current_cycle()
-			if injection.wrong_tuser:
-				self.dut.s_axis_tvalid.value = 0
-				self.dut.s_axis_tlast.value = 0
-				return last_beat_cycle
+				return first_beat_cycle, self.current_cycle()
 		self.dut.s_axis_tvalid.value = 0
 		self.dut.s_axis_tlast.value = 0
+		self.dut.s_axis_tkeep.value = (1 << self.stream_channels) - 1
+		self.dut.s_axis_tid.value = 0
+		self.dut.s_axis_tdest.value = 0
+		self.dut.s_axis_tuser.value = 0
 		if injection.error_mode == "after_stream":
 			self.dut.rd_dma_error.value = 1
 			for _ in range(injection.done_delay):
 				await RisingEdge(self.dut.clk)
 			await RisingEdge(self.dut.clk)
 			self.dut.rd_dma_error.value = 0
-		return last_beat_cycle
+		return first_beat_cycle, last_beat_cycle
 
 	async def _wr_dma_agent(self) -> None:
 		try:
@@ -1346,14 +2035,14 @@ class PTDmaTopEnv:
 					desc_cycle = self.current_cycle()
 					self.wr_desc_count += 1
 					self.export_req_count += 1
-					expected = await self._await_expected_export()
-					desc = self.descriptors[expected.ctrl_id]
-					expected_beats = self._pack_export_beats(expected.matrix)
-					injection = self.export_injections.popleft() if self.export_injections else ExportInjection()
 					actual_addr = value_to_int(self.dut.wr_dma_desc_addr.value)
 					actual_id = value_to_int(self.dut.wr_dma_desc_id.value)
 					actual_buf = value_to_int(self.dut.wr_dma_desc_buf.value)
 					actual_beats = value_to_int(self.dut.wr_dma_desc_beats.value)
+					expected = await self._await_expected_export()
+					desc = self.descriptors[expected.ctrl_id]
+					expected_beats = self._pack_export_beats(expected.matrix)
+					injection = self.export_injections.popleft() if self.export_injections else ExportInjection()
 					assert actual_addr == desc.m_addr
 					assert actual_id == (expected.ctrl_id & 0xFFFF_FFFF)
 					assert actual_buf == expected.buffer
@@ -1367,7 +2056,7 @@ class PTDmaTopEnv:
 						)
 					)
 					self.export_busy = True
-					last_beat_cycle, done_cycle = await self._consume_export(expected, expected_beats, injection)
+					first_beat_cycle, last_beat_cycle, done_cycle = await self._consume_export(expected, expected_beats, injection)
 					self.export_busy = False
 					self.wr_transfer_log.append(
 						WrTransferTrace(
@@ -1376,6 +2065,7 @@ class PTDmaTopEnv:
 							addr=actual_addr,
 							beats=actual_beats,
 							desc_cycle=desc_cycle,
+							first_beat_cycle=first_beat_cycle,
 							last_beat_cycle=last_beat_cycle,
 							done_cycle=done_cycle,
 						)
@@ -1397,24 +2087,34 @@ class PTDmaTopEnv:
 		assert last_error is not None
 		raise last_error
 
-	async def _consume_export(self, expected: ExportExpectation, expected_beats: Sequence[Tuple[int, int]], injection: ExportInjection) -> Tuple[int, int]:
+	async def _consume_export(self, expected: ExportExpectation, expected_beats: Sequence[Tuple[int, int]], injection: ExportInjection) -> Tuple[int, int, int]:
 		beat_idx = 0
+		first_beat_cycle = self.current_cycle()
 		last_beat_cycle = self.current_cycle()
 		while beat_idx < len(expected_beats):
 			await RisingEdge(self.dut.clk)
 			await ReadOnly()
 			if value_to_int(self.dut.clear.value):
-				return last_beat_cycle, self.current_cycle()
-			if value_to_int(self.dut.m_axis_tvalid.value) and value_to_int(self.dut.m_axis_tready.value):
-				actual_word = value_to_int(self.dut.m_axis_tdata.value)
+				return first_beat_cycle, last_beat_cycle, self.current_cycle()
+			full_mask = (1 << self.stream_channels) - 1
+			if value_to_int(self.dut.m_axis_tvalid.value) == full_mask and value_to_int(self.dut.m_axis_tready.value) == full_mask:
 				expected_word, expected_strb = expected_beats[beat_idx]
-				assert actual_word == expected_word
-				assert value_to_int(self.dut.m_axis_tstrb.value) == expected_strb
-				assert value_to_int(self.dut.m_axis_tkeep.value) == 1
-				assert value_to_int(self.dut.m_axis_tid.value) == 0
-				assert value_to_int(self.dut.m_axis_tdest.value) == 0
-				assert value_to_int(self.dut.m_axis_tuser.value) == expected.buffer
-				assert value_to_int(self.dut.m_axis_tlast.value) == int(beat_idx == (len(expected_beats) - 1))
+				groups = self._split_output_beat(expected_word, expected_strb, expected.buffer, beat_idx == (len(expected_beats) - 1))
+				group_idx = 0
+				for group_data, group_strb, group_user, group_last in groups:
+					if group_idx != 0:
+						await RisingEdge(self.dut.clk)
+						await ReadOnly()
+					assert value_to_int(self.dut.m_axis_tdata.value) == group_data
+					assert value_to_int(self.dut.m_axis_tstrb.value) == group_strb
+					assert value_to_int(self.dut.m_axis_tkeep.value) == full_mask
+					assert value_to_int(self.dut.m_axis_tid.value) == 0
+					assert value_to_int(self.dut.m_axis_tdest.value) == 0
+					assert value_to_int(self.dut.m_axis_tuser.value) == group_user
+					assert value_to_int(self.dut.m_axis_tlast.value) == group_last
+					group_idx += 1
+				if beat_idx == 0:
+					first_beat_cycle = self.current_cycle()
 				last_beat_cycle = self.current_cycle()
 				beat_idx += 1
 		await RisingEdge(self.dut.clk)
@@ -1437,7 +2137,7 @@ class PTDmaTopEnv:
 			self.export_done_count += 1
 			self.coverage.hit("export:success")
 		self.model.complete_export(expected.buffer)
-		return last_beat_cycle, done_cycle
+		return first_beat_cycle, last_beat_cycle, done_cycle
 
 
 async def create_env(dut) -> PTDmaTopEnv:

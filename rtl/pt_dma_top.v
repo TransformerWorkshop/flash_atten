@@ -75,6 +75,7 @@ module PT_DMA_TOP #(
 );
 
 	localparam integer DESC_AW = (LUT_DEPTH <= 1) ? 1 : $clog2(LUT_DEPTH);
+	localparam integer CMD_TRACK_AW = (CMD_FIFO_DEPTH <= 1) ? 1 : $clog2(CMD_FIFO_DEPTH);
 	localparam integer LOAD_STREAM_LANES = (A_LOAD_LANES >= B_LOAD_LANES) ? A_LOAD_LANES : B_LOAD_LANES;
 	localparam integer LOAD_STREAM_STRB_W = LOAD_STREAM_LANES * DATA_WIDTH / 8;
 	localparam integer A_TILE_LEN = GEMM_X_DIM * GEMM_X_DIM;
@@ -99,7 +100,6 @@ module PT_DMA_TOP #(
 	wire                       resp_fifo_valid_out;
 	wire                       resp_fifo_ready_in;
 
-	wire                       pt_clear;
 	wire                       pt_ctrl_valid;
 	wire                       pt_ctrl_ready;
 	wire [31:0]                pt_ctrl_inst;
@@ -138,14 +138,42 @@ module PT_DMA_TOP #(
 	reg  [DESC_AW-1:0]         rd_desc_idx;
 	reg                        wr_desc_found;
 	reg  [DESC_AW-1:0]         wr_desc_idx;
+	reg                        accept_desc_found;
+	reg  [DESC_AW-1:0]         accept_desc_idx;
+	reg                        resp_desc_found;
+	reg  [DESC_AW-1:0]         resp_desc_idx;
+	reg                        wr_slot_valid_r;
+	reg  [DESC_AW-1:0]         wr_slot_idx_r;
+	reg  [31:0]                perf_cycle_counter_r;
+	reg  [31:0]                perf_command_push_count_r;
+	reg  [31:0]                perf_pt_accept_count_r;
+	reg  [31:0]                perf_resp_enqueue_count_r;
+	reg  [31:0]                perf_wr_dma_done_count_r;
+	reg  [31:0]                perf_push_to_accept_cycles_r;
+	reg  [31:0]                perf_accept_to_resp_cycles_r;
+	reg  [31:0]                perf_resp_to_done_cycles_r;
+	reg  [31:0]                push_cycle_fifo_r [0:CMD_FIFO_DEPTH-1];
+	reg  [CMD_TRACK_AW-1:0]    push_cycle_head_r;
+	reg  [CMD_TRACK_AW-1:0]    push_cycle_tail_r;
+	reg  [CMD_TRACK_AW:0]      push_cycle_count_r;
+	reg                        accept_cycle_valid_r [0:LUT_DEPTH-1];
+	reg  [31:0]                accept_cycle_r [0:LUT_DEPTH-1];
+	reg                        resp_cycle_valid_r [0:LUT_DEPTH-1];
+	reg  [31:0]                resp_cycle_r [0:LUT_DEPTH-1];
 
 	wire desc_push_commit = csr_desc_push_pulse && (push_found || push_free_found);
 	wire cmd_push_fire = desc_push_commit && cmd_fifo_ready_in;
 	wire cmd_fifo_clear = clear || csr_soft_clear_pulse;
 	wire resp_fifo_clear = clear || csr_soft_clear_pulse;
 	wire runtime_clear = clear || csr_soft_clear_pulse;
+	wire resp_enqueue_fire = pt_ctrl_resp_valid && resp_fifo_ready_in;
+	wire wr_desc_fire = wr_dma_desc_valid && wr_dma_desc_ready;
+	wire pt_accept_fire = pt_ctrl_valid && pt_ctrl_ready;
+	wire resp_is_load = resp_desc_found &&
+		(desc_cmd_inst_r[resp_desc_idx][`PT_INST_OPCODE_H:`PT_INST_OPCODE_L] == `PT_OP_LOAD);
+	wire retire_resp_slot = resp_enqueue_fire && resp_desc_found && (pt_ctrl_resp[31] || resp_is_load);
+	wire retire_wr_slot = wr_slot_valid_r && (wr_dma_done || wr_dma_error);
 
-	assign pt_clear = runtime_clear;
 	assign pt_ctrl_valid = cmd_fifo_valid_out;
 	assign pt_ctrl_inst = cmd_fifo_data_out[63:32];
 	assign pt_ctrl_id = cmd_fifo_data_out[31:0];
@@ -245,11 +273,20 @@ module PT_DMA_TOP #(
 		.status_desc_overflow   (desc_overflow_r),
 		.status_resp_overflow   (resp_overflow_r),
 		.status_desc_miss       (desc_miss_r),
+		.status_stream_align_error(1'b0),
 		.resp_head              (resp_fifo_valid_out ? resp_fifo_data_out : 32'd0),
+		.perf_command_push_count(perf_command_push_count_r),
+		.perf_pt_accept_count   (perf_pt_accept_count_r),
+		.perf_resp_enqueue_count(perf_resp_enqueue_count_r),
+		.perf_wr_dma_done_count (perf_wr_dma_done_count_r),
+		.perf_push_to_accept_cycles(perf_push_to_accept_cycles_r),
+		.perf_accept_to_resp_cycles(perf_accept_to_resp_cycles_r),
+		.perf_resp_to_done_cycles(perf_resp_to_done_cycles_r),
 		.desc_push_pulse        (csr_desc_push_pulse),
 		.resp_pop_pulse         (csr_resp_pop_pulse),
 		.soft_clear_pulse       (csr_soft_clear_pulse),
 		.clear_flags_pulse      (csr_clear_flags_pulse),
+		.active_channel_mask_reg(),
 		.cmd_inst_reg           (csr_cmd_inst),
 		.cmd_id_reg             (csr_cmd_id),
 		.a_addr_reg             (csr_a_addr),
@@ -306,7 +343,8 @@ module PT_DMA_TOP #(
 	) u_pt (
 		.clk            (clk),
 		.rstn           (rstn),
-		.clear          (pt_clear),
+		.clear          (clear),
+		.soft_clear     (csr_soft_clear_pulse),
 		.s_axis_tvalid  (s_axis_tvalid),
 		.s_axis_tready  (s_axis_tready),
 		.s_axis_tdata   (s_axis_tdata),
@@ -357,6 +395,10 @@ module PT_DMA_TOP #(
 		rd_desc_idx = {DESC_AW{1'b0}};
 		wr_desc_found = 1'b0;
 		wr_desc_idx = {DESC_AW{1'b0}};
+		accept_desc_found = 1'b0;
+		accept_desc_idx = {DESC_AW{1'b0}};
+		resp_desc_found = 1'b0;
+		resp_desc_idx = {DESC_AW{1'b0}};
 		for (di = 0; di < LUT_DEPTH; di = di + 1) begin
 			if (!push_found && desc_valid_r[di] && (desc_id_r[di] == csr_cmd_id)) begin
 				push_found = 1'b1;
@@ -374,16 +416,38 @@ module PT_DMA_TOP #(
 				wr_desc_found = 1'b1;
 				wr_desc_idx = di[DESC_AW-1:0];
 			end
+			if (!accept_desc_found && desc_valid_r[di] && (desc_id_r[di] == pt_ctrl_id)) begin
+				accept_desc_found = 1'b1;
+				accept_desc_idx = di[DESC_AW-1:0];
+			end
+			if (!resp_desc_found && desc_valid_r[di] && (desc_id_r[di][29:0] == pt_ctrl_resp[29:0])) begin
+				resp_desc_found = 1'b1;
+				resp_desc_idx = di[DESC_AW-1:0];
+			end
 		end
 	end
 
 	integer li;
+	integer qi;
 	always @(posedge clk or negedge rstn) begin
 		if (!rstn) begin
 			cmd_overflow_r  <= 1'b0;
 			desc_overflow_r <= 1'b0;
 			resp_overflow_r <= 1'b0;
 			desc_miss_r     <= 1'b0;
+			wr_slot_valid_r <= 1'b0;
+			wr_slot_idx_r   <= {DESC_AW{1'b0}};
+			perf_cycle_counter_r <= 32'd0;
+			perf_command_push_count_r <= 32'd0;
+			perf_pt_accept_count_r <= 32'd0;
+			perf_resp_enqueue_count_r <= 32'd0;
+			perf_wr_dma_done_count_r <= 32'd0;
+			perf_push_to_accept_cycles_r <= 32'd0;
+			perf_accept_to_resp_cycles_r <= 32'd0;
+			perf_resp_to_done_cycles_r <= 32'd0;
+			push_cycle_head_r <= {CMD_TRACK_AW{1'b0}};
+			push_cycle_tail_r <= {CMD_TRACK_AW{1'b0}};
+			push_cycle_count_r <= {(CMD_TRACK_AW+1){1'b0}};
 			for (li = 0; li < LUT_DEPTH; li = li + 1) begin
 				desc_valid_r[li]    <= 1'b0;
 				desc_id_r[li]       <= 32'd0;
@@ -392,12 +456,32 @@ module PT_DMA_TOP #(
 				desc_b_addr_r[li]   <= {EXT_ADDR_W{1'b0}};
 				desc_c_addr_r[li]   <= {EXT_ADDR_W{1'b0}};
 				desc_m_addr_r[li]   <= {EXT_ADDR_W{1'b0}};
+				accept_cycle_valid_r[li] <= 1'b0;
+				accept_cycle_r[li] <= 32'd0;
+				resp_cycle_valid_r[li] <= 1'b0;
+				resp_cycle_r[li] <= 32'd0;
+			end
+			for (qi = 0; qi < CMD_FIFO_DEPTH; qi = qi + 1) begin
+				push_cycle_fifo_r[qi] <= 32'd0;
 			end
 		end else if (runtime_clear) begin
 			cmd_overflow_r  <= 1'b0;
 			desc_overflow_r <= 1'b0;
 			resp_overflow_r <= 1'b0;
 			desc_miss_r     <= 1'b0;
+			wr_slot_valid_r <= 1'b0;
+			wr_slot_idx_r   <= {DESC_AW{1'b0}};
+			perf_cycle_counter_r <= 32'd0;
+			perf_command_push_count_r <= 32'd0;
+			perf_pt_accept_count_r <= 32'd0;
+			perf_resp_enqueue_count_r <= 32'd0;
+			perf_wr_dma_done_count_r <= 32'd0;
+			perf_push_to_accept_cycles_r <= 32'd0;
+			perf_accept_to_resp_cycles_r <= 32'd0;
+			perf_resp_to_done_cycles_r <= 32'd0;
+			push_cycle_head_r <= {CMD_TRACK_AW{1'b0}};
+			push_cycle_tail_r <= {CMD_TRACK_AW{1'b0}};
+			push_cycle_count_r <= {(CMD_TRACK_AW+1){1'b0}};
 			for (li = 0; li < LUT_DEPTH; li = li + 1) begin
 				desc_valid_r[li]    <= 1'b0;
 				desc_id_r[li]       <= 32'd0;
@@ -406,12 +490,93 @@ module PT_DMA_TOP #(
 				desc_b_addr_r[li]   <= {EXT_ADDR_W{1'b0}};
 				desc_c_addr_r[li]   <= {EXT_ADDR_W{1'b0}};
 				desc_m_addr_r[li]   <= {EXT_ADDR_W{1'b0}};
+				accept_cycle_valid_r[li] <= 1'b0;
+				accept_cycle_r[li] <= 32'd0;
+				resp_cycle_valid_r[li] <= 1'b0;
+				resp_cycle_r[li] <= 32'd0;
+			end
+			for (qi = 0; qi < CMD_FIFO_DEPTH; qi = qi + 1) begin
+				push_cycle_fifo_r[qi] <= 32'd0;
 			end
 		end else begin
+			perf_cycle_counter_r <= perf_cycle_counter_r + 1'b1;
+
 			if (csr_clear_flags_pulse) begin
 				cmd_overflow_r  <= 1'b0;
 				desc_overflow_r <= 1'b0;
 				resp_overflow_r <= 1'b0;
+			end
+
+			if (cmd_push_fire) begin
+				perf_command_push_count_r <= perf_command_push_count_r + 1'b1;
+			end
+			if (pt_accept_fire) begin
+				perf_pt_accept_count_r <= perf_pt_accept_count_r + 1'b1;
+			end
+			if (resp_enqueue_fire) begin
+				perf_resp_enqueue_count_r <= perf_resp_enqueue_count_r + 1'b1;
+			end
+			if (wr_dma_done) begin
+				perf_wr_dma_done_count_r <= perf_wr_dma_done_count_r + 1'b1;
+			end
+
+			if (cmd_push_fire && pt_accept_fire) begin
+				if (push_cycle_count_r != 0) begin
+					perf_push_to_accept_cycles_r <= perf_push_to_accept_cycles_r + (perf_cycle_counter_r - push_cycle_fifo_r[push_cycle_head_r]);
+					push_cycle_fifo_r[push_cycle_tail_r] <= perf_cycle_counter_r;
+					push_cycle_head_r <= push_cycle_head_r + 1'b1;
+					push_cycle_tail_r <= push_cycle_tail_r + 1'b1;
+				end
+			end else if (cmd_push_fire) begin
+				push_cycle_fifo_r[push_cycle_tail_r] <= perf_cycle_counter_r;
+				push_cycle_tail_r <= push_cycle_tail_r + 1'b1;
+				push_cycle_count_r <= push_cycle_count_r + 1'b1;
+			end else if (pt_accept_fire) begin
+				if (push_cycle_count_r != 0) begin
+					perf_push_to_accept_cycles_r <= perf_push_to_accept_cycles_r + (perf_cycle_counter_r - push_cycle_fifo_r[push_cycle_head_r]);
+					push_cycle_head_r <= push_cycle_head_r + 1'b1;
+					push_cycle_count_r <= push_cycle_count_r - 1'b1;
+				end
+			end
+
+			if (pt_accept_fire && accept_desc_found) begin
+				accept_cycle_valid_r[accept_desc_idx] <= 1'b1;
+				accept_cycle_r[accept_desc_idx] <= perf_cycle_counter_r;
+			end
+
+			if (resp_enqueue_fire && resp_desc_found) begin
+				if (accept_cycle_valid_r[resp_desc_idx]) begin
+					perf_accept_to_resp_cycles_r <= perf_accept_to_resp_cycles_r + (perf_cycle_counter_r - accept_cycle_r[resp_desc_idx]);
+				end
+				accept_cycle_valid_r[resp_desc_idx] <= 1'b0;
+				if (!resp_is_load && !pt_ctrl_resp[31]) begin
+					resp_cycle_valid_r[resp_desc_idx] <= 1'b1;
+					resp_cycle_r[resp_desc_idx] <= perf_cycle_counter_r;
+				end else begin
+					resp_cycle_valid_r[resp_desc_idx] <= 1'b0;
+				end
+			end
+
+			if (wr_dma_done && wr_slot_valid_r && resp_cycle_valid_r[wr_slot_idx_r]) begin
+				perf_resp_to_done_cycles_r <= perf_resp_to_done_cycles_r + (perf_cycle_counter_r - resp_cycle_r[wr_slot_idx_r]);
+			end
+
+			if (wr_desc_fire) begin
+				wr_slot_valid_r <= wr_desc_found;
+				wr_slot_idx_r   <= wr_desc_idx;
+			end
+
+			if (retire_resp_slot) begin
+				desc_valid_r[resp_desc_idx] <= 1'b0;
+				accept_cycle_valid_r[resp_desc_idx] <= 1'b0;
+				resp_cycle_valid_r[resp_desc_idx] <= 1'b0;
+			end
+
+			if (retire_wr_slot) begin
+				desc_valid_r[wr_slot_idx_r] <= 1'b0;
+				accept_cycle_valid_r[wr_slot_idx_r] <= 1'b0;
+				resp_cycle_valid_r[wr_slot_idx_r] <= 1'b0;
+				wr_slot_valid_r <= 1'b0;
 			end
 
 			if (csr_desc_push_pulse) begin

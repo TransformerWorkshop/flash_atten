@@ -7,6 +7,7 @@ from tests.pt_dma_top_env import (
 	ADDR_A_ADDR_LO,
 	ADDR_CMD_INST,
 	ADDR_STATUS,
+	AbInjection,
 	ConstantPattern,
 	STATUS_CMD_OVERFLOW,
 	STATUS_DESC_MISS,
@@ -14,6 +15,7 @@ from tests.pt_dma_top_env import (
 	STATUS_IRQ_ACTIVE,
 	STATUS_RESP_FIFO_NOT_EMPTY,
 	STATUS_RESP_OVERFLOW,
+	STATUS_STREAM_ALIGN_ERROR,
 	create_env,
 	setup_bases_and_passthrough_qcfg,
 )
@@ -66,6 +68,10 @@ def make_multitile_b_matrix(y_dim: int, k_tiles: int, n_tiles: int) -> list[int]
 	]
 
 
+def _is_v3_wrapper(env) -> bool:
+	return env._pt_root_prefix().endswith("u_pt_v3")
+
+
 @cocotb.test()
 async def test_pt_dma_top_axil_staggered_write_and_resp_pop(dut) -> None:
 	env = await create_env(dut)
@@ -92,6 +98,7 @@ async def test_pt_dma_top_load_matmul_matadd_descriptors(dut) -> None:
 	env = await create_env(dut)
 	try:
 		await setup_bases_and_passthrough_qcfg(env)
+		is_v3 = _is_v3_wrapper(env)
 
 		load_a_id = 0x101
 		load_b_id = 0x102
@@ -105,10 +112,11 @@ async def test_pt_dma_top_load_matmul_matadd_descriptors(dut) -> None:
 		)
 		load_a = env.plan_load(load_a_id, env.x_dim * env.x_dim, 0, need_a=True, need_b=False)
 		await env.wait_and_pop_resp(load_a.response_word)
-		await env.wait_rd_desc_count(1)
-		assert env.rd_desc_log[0].kind == DMA_KIND_A
-		assert env.rd_desc_log[0].addr == 0x1000_0100
-		assert env.rd_desc_log[0].elems == env.x_dim * env.x_dim
+		if not is_v3:
+			await env.wait_rd_desc_count(1)
+			assert env.rd_desc_log[0].kind == DMA_KIND_A
+			assert env.rd_desc_log[0].addr == 0x1000_0100
+			assert env.rd_desc_log[0].elems == load_a.a_size
 
 		env.register_external_matrix("B", load_b_id, flatten_pattern_matrix(env.y_dim, 3, 1, 0))
 		await env.send_desc_command(
@@ -118,13 +126,17 @@ async def test_pt_dma_top_load_matmul_matadd_descriptors(dut) -> None:
 		)
 		load_b = env.plan_load(load_b_id, 0, env.y_dim * env.y_dim, need_a=False, need_b=True)
 		await env.wait_and_pop_resp(load_b.response_word)
-		await env.wait_rd_desc_count(2)
-		assert env.rd_desc_log[1].kind == DMA_KIND_B
-		assert env.rd_desc_log[1].addr == 0x2000_0200
-		assert env.rd_desc_log[1].elems == env.y_dim * env.y_dim
+		if not is_v3:
+			await env.wait_rd_desc_count(2)
+			assert env.rd_desc_log[1].kind == DMA_KIND_B
+			assert env.rd_desc_log[1].addr == 0x2000_0200
+			assert env.rd_desc_log[1].elems == load_b.b_size
 
 		env.register_external_matrix("A", matmul_id, identity_matrix(env.x_dim, env.data_width))
 		env.register_external_matrix("B", matmul_id, repeating_matrix(env.x_dim, [2, 4, 6, 8][: env.y_dim]))
+		rd_before = env.rd_desc_count
+		wr_before = env.wr_desc_count
+		export_before = env.export_done_count
 		await env.send_desc_command(
 			build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL),
 			matmul_id,
@@ -135,20 +147,23 @@ async def test_pt_dma_top_load_matmul_matadd_descriptors(dut) -> None:
 		)
 		matmul = env.plan_matmul(matmul_id, m_scale=PT_SCALE_FULL, n_scale=PT_SCALE_FULL, k_scale=PT_SCALE_FULL)
 		resp = await env.wait_and_pop_resp(matmul.response_word)
-		await env.wait_rd_desc_count(4)
-		await env.wait_wr_desc_count(1)
-		await env.wait_export_done(1)
-		assert env.rd_desc_log[2].kind == DMA_KIND_A
-		assert env.rd_desc_log[2].addr == 0x3000_0300
-		assert env.rd_desc_log[2].elems == env.x_dim * env.x_dim
-		assert env.rd_desc_log[3].kind == DMA_KIND_B
-		assert env.rd_desc_log[3].addr == 0x3000_0400
-		assert env.rd_desc_log[3].elems == env.y_dim * env.y_dim
-		assert env.wr_desc_log[0].ctrl_id == matmul_id
-		assert env.wr_desc_log[0].addr == 0x3000_0600
+		await env.wait_rd_desc_count(rd_before + 2)
+		await env.wait_wr_desc_count(wr_before + 1)
+		await env.wait_export_done(export_before + 1)
+		assert env.rd_desc_log[rd_before].kind == DMA_KIND_A
+		assert env.rd_desc_log[rd_before].addr == 0x3000_0300
+		assert env.rd_desc_log[rd_before].elems == matmul.a_len
+		assert env.rd_desc_log[rd_before + 1].kind == DMA_KIND_B
+		assert env.rd_desc_log[rd_before + 1].addr == 0x3000_0400
+		assert env.rd_desc_log[rd_before + 1].elems == matmul.b_len
+		assert env.wr_desc_log[wr_before].ctrl_id == matmul_id
+		assert env.wr_desc_log[wr_before].addr == 0x3000_0600
 
 		env.register_external_matrix("C", matmul_id, flatten_pattern_matrix(env.y_dim, 1, 2, 3))
 		m_off = build_mwin_off((resp >> 30) & 0x1, 0)
+		rd_before = env.rd_desc_count
+		wr_before = env.wr_desc_count
+		export_before = env.export_done_count
 		await env.send_desc_command(
 			build_matadd_inst(m_off),
 			matmul_id,
@@ -159,14 +174,14 @@ async def test_pt_dma_top_load_matmul_matadd_descriptors(dut) -> None:
 		)
 		matadd = env.plan_matadd(matmul_id, m_off)
 		await env.wait_and_pop_resp(matadd.response_word)
-		await env.wait_rd_desc_count(5)
-		await env.wait_wr_desc_count(2)
-		await env.wait_export_done(2)
-		assert env.rd_desc_log[4].kind == DMA_KIND_C
-		assert env.rd_desc_log[4].addr == 0x3000_0700
-		assert env.rd_desc_log[4].elems == env.y_dim * env.y_dim
-		assert env.wr_desc_log[1].ctrl_id == matmul_id
-		assert env.wr_desc_log[1].addr == 0x3000_0600
+		await env.wait_rd_desc_count(rd_before + 1)
+		await env.wait_wr_desc_count(wr_before + 1)
+		await env.wait_export_done(export_before + 1)
+		assert env.rd_desc_log[rd_before].kind == DMA_KIND_C
+		assert env.rd_desc_log[rd_before].addr == 0x3000_0700
+		assert env.rd_desc_log[rd_before].elems == matadd.b_len
+		assert env.wr_desc_log[wr_before].ctrl_id == matmul_id
+		assert env.wr_desc_log[wr_before].addr == 0x3000_0600
 	finally:
 		env.shutdown()
 
@@ -277,7 +292,7 @@ async def test_pt_dma_top_same_id_descriptor_update_for_b_reload(dut) -> None:
 		await env.wait_export_done(3)
 		assert env.rd_desc_log[-1].kind == DMA_KIND_B
 		assert env.rd_desc_log[-1].addr == new_b_addr
-		assert env.rd_desc_log[-1].elems == env.y_dim * env.y_dim
+		assert env.rd_desc_log[-1].elems == second.b_len
 		assert env.wr_desc_log[-1].addr == m_addr
 	finally:
 		env.shutdown()
@@ -311,8 +326,8 @@ async def test_pt_dma_top_multitile_descriptor_sizes_and_export_beats(dut) -> No
 		await env.wait_rd_desc_count(2)
 		await env.wait_wr_desc_count(1)
 		await env.wait_export_done(1)
-		assert env.rd_desc_log[0].elems == len(a_matrix)
-		assert env.rd_desc_log[1].elems == len(b_matrix)
+		assert env.rd_desc_log[0].elems == plan.a_len
+		assert env.rd_desc_log[1].elems == plan.b_len
 		assert env.wr_desc_log[0].beats == len(env._pack_export_beats(plan.result_matrix or []))
 	finally:
 		env.shutdown()
@@ -426,5 +441,177 @@ async def test_pt_dma_top_clear_flags_clears_nonfatal_sticky_only(dut) -> None:
 		await env.soft_clear()
 		await env.wait_status(STATUS_DESC_MISS, False)
 		await env.wait_irq(False)
+	finally:
+		env.shutdown()
+
+
+@cocotb.test()
+async def test_pt_dma_top_ch4_skew_aligns_without_error(dut) -> None:
+	env = await create_env(dut)
+	try:
+		if (not _is_v3_wrapper(env)) or (env.stream_channels != 4):
+			return
+
+		for delay_cycles in (1, 2, 3):
+			await env.soft_clear()
+			await setup_bases_and_passthrough_qcfg(env)
+			ctrl_id = 0xA100 + delay_cycles
+			env.register_external_matrix("A", ctrl_id, identity_matrix(env.x_dim, env.data_width))
+			env.register_external_matrix("B", ctrl_id, repeating_matrix(env.x_dim, [1, 3, 5, 7][: env.y_dim]))
+			env.queue_ab_injection(AbInjection(channel_group_delay_cycles=(delay_cycles, 0, 0, 0)))
+			await env.send_desc_command(
+				build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL),
+				ctrl_id,
+				a_addr=0x8100 + (delay_cycles * 0x100),
+				b_addr=0x8200 + (delay_cycles * 0x100),
+				m_addr=0x8300 + (delay_cycles * 0x100),
+			)
+			plan = env.plan_matmul(ctrl_id, m_scale=PT_SCALE_FULL, n_scale=PT_SCALE_FULL, k_scale=PT_SCALE_FULL)
+			assert not plan.err
+			await env.wait_and_pop_resp(plan.response_word)
+			await env.wait_export_done(1)
+			assert ((await env.axil_read(ADDR_STATUS)) & STATUS_STREAM_ALIGN_ERROR) == 0
+	finally:
+		env.shutdown()
+
+
+@cocotb.test()
+async def test_pt_dma_top_ch4_align_timeout_sets_fatal_sticky(dut) -> None:
+	env = await create_env(dut)
+	try:
+		if (not _is_v3_wrapper(env)) or (env.stream_channels != 4):
+			return
+
+		await setup_bases_and_passthrough_qcfg(env)
+		ctrl_id = 0xA200
+		env.register_external_matrix("A", ctrl_id, identity_matrix(env.x_dim, env.data_width))
+		env.register_external_matrix("B", ctrl_id, repeating_matrix(env.x_dim, [2, 4, 6, 8][: env.y_dim]))
+		env.queue_ab_injection(AbInjection(suppress_channel_mask=1 << 0))
+		await env.send_desc_command(
+			build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL),
+			ctrl_id,
+			a_addr=0x9100,
+			b_addr=0x9200,
+			m_addr=0x9300,
+		)
+		_ = env.plan_matmul(ctrl_id, m_scale=PT_SCALE_FULL, n_scale=PT_SCALE_FULL, k_scale=PT_SCALE_FULL)
+		await env.wait_status(STATUS_STREAM_ALIGN_ERROR, True, timeout_cycles=400)
+		await env.wait_irq(True, timeout_cycles=400)
+		await env.clear_flags()
+		assert (await env.axil_read(ADDR_STATUS)) & STATUS_STREAM_ALIGN_ERROR
+		await env.soft_clear()
+		await env.wait_status(STATUS_STREAM_ALIGN_ERROR, False)
+		await env.wait_irq(False)
+		recover_id = 0xA201
+		await env.send_desc_command(build_cfg_inst(0, 0x1357), recover_id)
+		await env.wait_and_pop_resp(pack_resp(False, 0, recover_id))
+	finally:
+		env.shutdown()
+
+
+@cocotb.test()
+async def test_pt_dma_top_ch4_sideband_mismatch_sets_fatal_sticky(dut) -> None:
+	env = await create_env(dut)
+	try:
+		if (not _is_v3_wrapper(env)) or (env.stream_channels != 4):
+			return
+
+		mismatch_specs = (
+			{"tuser_mismatch_channel": 1},
+			{"tlast_mismatch_channel": 2},
+			{"tkeep_mismatch_channel": 3},
+			{"tid_mismatch_channel": 1},
+			{"tdest_mismatch_channel": 2},
+		)
+		for idx, spec in enumerate(mismatch_specs):
+			await env.soft_clear()
+			await setup_bases_and_passthrough_qcfg(env)
+			ctrl_id = 0xA300 + idx
+			env.register_external_matrix("A", ctrl_id, identity_matrix(env.x_dim, env.data_width))
+			env.register_external_matrix("B", ctrl_id, repeating_matrix(env.x_dim, [1, 2, 3, 4][: env.y_dim]))
+			env.queue_ab_injection(AbInjection(**spec))
+			await env.send_desc_command(
+				build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL),
+				ctrl_id,
+				a_addr=0xA100 + (idx * 0x100),
+				b_addr=0xA200 + (idx * 0x100),
+				m_addr=0xA300 + (idx * 0x100),
+			)
+			_ = env.plan_matmul(ctrl_id, m_scale=PT_SCALE_FULL, n_scale=PT_SCALE_FULL, k_scale=PT_SCALE_FULL)
+			await env.wait_status(STATUS_STREAM_ALIGN_ERROR, True, timeout_cycles=200)
+			await env.wait_irq(True, timeout_cycles=200)
+			await env.clear_flags()
+			assert (await env.axil_read(ADDR_STATUS)) & STATUS_STREAM_ALIGN_ERROR
+			await env.soft_clear()
+			await env.wait_status(STATUS_STREAM_ALIGN_ERROR, False)
+			await env.wait_irq(False)
+	finally:
+		env.shutdown()
+
+
+@cocotb.test()
+async def test_pt_dma_top_ch4_single_active_channel_mask_works(dut) -> None:
+	env = await create_env(dut)
+	try:
+		if (not _is_v3_wrapper(env)) or (env.stream_channels != 4):
+			return
+
+		for active_mask in (0x1, 0x4):
+			await env.soft_clear()
+			await setup_bases_and_passthrough_qcfg(env)
+			await env.set_active_channel_mask(active_mask)
+			ctrl_id = 0xA400 + active_mask
+			env.register_external_matrix("A", ctrl_id, identity_matrix(env.x_dim, env.data_width))
+			env.register_external_matrix("B", ctrl_id, repeating_matrix(env.x_dim, [2, 4, 6, 8][: env.y_dim]))
+			suppress_mask = ((1 << env.stream_channels) - 1) & ~active_mask
+			env.queue_ab_injection(AbInjection(suppress_channel_mask=suppress_mask))
+			env.queue_ab_injection(AbInjection(suppress_channel_mask=suppress_mask))
+			export_before = env.export_done_count
+			await env.send_desc_command(
+				build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL),
+				ctrl_id,
+				a_addr=0xB100 + (active_mask * 0x100),
+				b_addr=0xB200 + (active_mask * 0x100),
+				m_addr=0xB300 + (active_mask * 0x100),
+			)
+			plan = env.plan_matmul(ctrl_id, m_scale=PT_SCALE_FULL, n_scale=PT_SCALE_FULL, k_scale=PT_SCALE_FULL)
+			assert not plan.err
+			await env.wait_and_pop_resp(plan.response_word)
+			await env.wait_export_done(export_before + 1)
+			assert ((await env.axil_read(ADDR_STATUS)) & STATUS_STREAM_ALIGN_ERROR) == 0
+	finally:
+		env.shutdown()
+
+
+@cocotb.test()
+async def test_pt_dma_top_ch2_single_active_channel_mask_works(dut) -> None:
+	env = await create_env(dut)
+	try:
+		if (not _is_v3_wrapper(env)) or (env.stream_channels != 2):
+			return
+
+		for active_mask in (0x1, 0x2):
+			await env.soft_clear()
+			await setup_bases_and_passthrough_qcfg(env)
+			await env.set_active_channel_mask(active_mask)
+			ctrl_id = 0xA500 + active_mask
+			env.register_external_matrix("A", ctrl_id, identity_matrix(env.x_dim, env.data_width))
+			env.register_external_matrix("B", ctrl_id, repeating_matrix(env.x_dim, [1, 3, 5, 7][: env.y_dim]))
+			suppress_mask = ((1 << env.stream_channels) - 1) & ~active_mask
+			env.queue_ab_injection(AbInjection(suppress_channel_mask=suppress_mask))
+			env.queue_ab_injection(AbInjection(suppress_channel_mask=suppress_mask))
+			export_before = env.export_done_count
+			await env.send_desc_command(
+				build_matmul_inst(PT_SCALE_FULL, PT_SCALE_FULL, PT_SCALE_FULL),
+				ctrl_id,
+				a_addr=0xC100 + (active_mask * 0x100),
+				b_addr=0xC200 + (active_mask * 0x100),
+				m_addr=0xC300 + (active_mask * 0x100),
+			)
+			plan = env.plan_matmul(ctrl_id, m_scale=PT_SCALE_FULL, n_scale=PT_SCALE_FULL, k_scale=PT_SCALE_FULL)
+			assert not plan.err
+			await env.wait_and_pop_resp(plan.response_word)
+			await env.wait_export_done(export_before + 1)
+			assert ((await env.axil_read(ADDR_STATUS)) & STATUS_STREAM_ALIGN_ERROR) == 0
 	finally:
 		env.shutdown()

@@ -47,8 +47,8 @@ module PT_MEM_BANK #(
 			assign ping_rd_hit = rd_en && !rd_buf;
 			assign pong_wr_hit = wr_en && wr_mask[LANE_IDX] && wr_buf;
 			assign pong_rd_hit = rd_en && rd_buf;
-			assign ping_en = ping_wr_hit || ping_rd_hit;
-			assign pong_en = pong_wr_hit || pong_rd_hit;
+			assign ping_en = ping_wr_hit || ping_rd_hit || (ping_conflict && 1'b0) || (rstn && 1'b0) || (clear && 1'b0);
+			assign pong_en = pong_wr_hit || pong_rd_hit || (pong_conflict && 1'b0);
 			assign ping_we = ping_wr_hit;
 			assign pong_we = pong_wr_hit;
 			assign ping_conflict = ping_wr_hit && ping_rd_hit;

@@ -1,0 +1,112 @@
+{
+  "algorithms": {
+    "host_reduce_direct_pipelined": {
+      "axil_writes_per_command": 0.0,
+      "axil_writes_total": 0,
+      "command_count": 2,
+      "descriptor_push_count": 0,
+      "dma_req_count": 4,
+      "export_beats": 8,
+      "export_req_count": 2,
+      "matadd_count": 0,
+      "submission_mode": "legacy",
+      "total_cycles": 99
+    },
+    "host_reduce_direct_tiled_matmul": {
+      "axil_writes_per_command": 0.0,
+      "axil_writes_total": 0,
+      "command_count": 2,
+      "descriptor_push_count": 0,
+      "dma_req_count": 4,
+      "export_beats": 8,
+      "export_req_count": 2,
+      "matadd_count": 0,
+      "submission_mode": "legacy",
+      "total_cycles": 145
+    },
+    "host_reduce_load_then_matmul": {
+      "axil_writes_per_command": 0.0,
+      "axil_writes_total": 0,
+      "command_count": 4,
+      "descriptor_push_count": 0,
+      "dma_req_count": 4,
+      "export_beats": 8,
+      "export_req_count": 2,
+      "matadd_count": 0,
+      "submission_mode": "legacy",
+      "total_cycles": 155
+    },
+    "pt_matadd_reduce": {
+      "axil_writes_per_command": 0.0,
+      "axil_writes_total": 0,
+      "command_count": 3,
+      "descriptor_push_count": 0,
+      "dma_req_count": 5,
+      "export_beats": 12,
+      "export_req_count": 3,
+      "matadd_count": 1,
+      "submission_mode": "legacy",
+      "total_cycles": 292
+    }
+  },
+  "diagnostics": {
+    "pt_ce_md_block_breakdown": {
+      "reason": "PT_DMA_TOP only",
+      "status": "skipped"
+    }
+  },
+  "metadata": {
+    "problem": {
+      "k_dim": 32,
+      "k_tiles": 2,
+      "m_dim": 16,
+      "m_tiles": 1,
+      "n_dim": 16,
+      "n_tiles": 1,
+      "submission_mode": "legacy",
+      "target": "pt_v3",
+      "target_label": "PT_V3"
+    }
+  },
+  "tests": {
+    "algorithm_compare_reduction_strategies": {
+      "status": "passed",
+      "winner": "host_reduce_direct_pipelined"
+    },
+    "numeric_host_reduce_per_tensor": {
+      "axil_writes_per_command": 0.0,
+      "axil_writes_total": 0,
+      "command_count": 2,
+      "descriptor_push_count": 0,
+      "status": "passed",
+      "submission_mode": "legacy",
+      "total_cycles": 145
+    },
+    "numeric_host_reduce_pipelined": {
+      "axil_writes_per_command": 0.0,
+      "axil_writes_total": 0,
+      "command_count": 2,
+      "descriptor_push_count": 0,
+      "status": "passed",
+      "submission_mode": "legacy",
+      "total_cycles": 99
+    },
+    "numeric_pt_matadd_reduce_per_tensor": {
+      "axil_writes_per_command": 0.0,
+      "axil_writes_total": 0,
+      "command_count": 3,
+      "descriptor_push_count": 0,
+      "status": "passed",
+      "submission_mode": "legacy",
+      "total_cycles": 292
+    }
+  },
+  "unsupported_paths": {
+    "same_id_k_slice_swap": {
+      "observed_dma_increment": 0,
+      "observed_result_changed": false,
+      "observed_same_result": true,
+      "status": "unsupported"
+    }
+  }
+}

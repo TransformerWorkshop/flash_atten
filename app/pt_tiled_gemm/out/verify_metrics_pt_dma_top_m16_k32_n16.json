@@ -1,42 +1,221 @@
 {
   "algorithms": {
     "host_reduce_direct_pipelined": {
+      "axil_writes_per_command": 11.0,
+      "axil_writes_total": 22,
+      "command_count": 2,
+      "descriptor_push_count": 2,
       "dma_req_count": 4,
       "export_beats": 32,
       "export_req_count": 2,
       "matadd_count": 0,
+      "perf_accept_to_resp_cycles": 158,
+      "perf_axil_write_count": 24,
+      "perf_command_push_count": 2,
+      "perf_compact_commit_count": 0,
+      "perf_pt_accept_count": 2,
+      "perf_push_to_accept_cycles": 2,
+      "perf_resp_enqueue_count": 2,
+      "perf_resp_to_done_cycles": 70,
+      "perf_wr_dma_done_count": 2,
+      "submission_mode": "legacy",
       "total_cycles": 159
     },
     "host_reduce_direct_tiled_matmul": {
+      "axil_writes_per_command": 11.0,
+      "axil_writes_total": 22,
+      "command_count": 2,
+      "descriptor_push_count": 2,
       "dma_req_count": 4,
       "export_beats": 32,
       "export_req_count": 2,
       "matadd_count": 0,
+      "perf_accept_to_resp_cycles": 158,
+      "perf_axil_write_count": 24,
+      "perf_command_push_count": 2,
+      "perf_compact_commit_count": 0,
+      "perf_pt_accept_count": 2,
+      "perf_push_to_accept_cycles": 2,
+      "perf_resp_enqueue_count": 2,
+      "perf_resp_to_done_cycles": 70,
+      "perf_wr_dma_done_count": 2,
+      "submission_mode": "legacy",
       "total_cycles": 274
     },
     "host_reduce_load_then_matmul": {
+      "axil_writes_per_command": 11.0,
+      "axil_writes_total": 44,
+      "command_count": 4,
+      "descriptor_push_count": 4,
       "dma_req_count": 4,
       "export_beats": 32,
       "export_req_count": 2,
       "matadd_count": 0,
-      "total_cycles": 312
+      "perf_accept_to_resp_cycles": 166,
+      "perf_axil_write_count": 48,
+      "perf_command_push_count": 4,
+      "perf_compact_commit_count": 0,
+      "perf_pt_accept_count": 4,
+      "perf_push_to_accept_cycles": 4,
+      "perf_resp_enqueue_count": 4,
+      "perf_resp_to_done_cycles": 70,
+      "perf_wr_dma_done_count": 2,
+      "submission_mode": "legacy",
+      "total_cycles": 384
     },
     "pt_matadd_reduce": {
+      "axil_writes_per_command": 11.0,
+      "axil_writes_total": 33,
+      "command_count": 3,
+      "descriptor_push_count": 3,
       "dma_req_count": 5,
       "export_beats": 48,
       "export_req_count": 3,
       "matadd_count": 1,
-      "total_cycles": 457
+      "perf_accept_to_resp_cycles": 276,
+      "perf_axil_write_count": 36,
+      "perf_command_push_count": 3,
+      "perf_compact_commit_count": 0,
+      "perf_pt_accept_count": 3,
+      "perf_push_to_accept_cycles": 3,
+      "perf_resp_enqueue_count": 3,
+      "perf_resp_to_done_cycles": 105,
+      "perf_wr_dma_done_count": 3,
+      "submission_mode": "legacy",
+      "total_cycles": 472
+    }
+  },
+  "diagnostics": {
+    "pt_ce_md_block_breakdown": {
+      "cases": {
+        "m1_n1_k2": {
+          "pt_ce_v2": {
+            "ce_cmd_to_ce_resp": 54,
+            "ce_cmd_to_first_exec_req": 1,
+            "drain_accept_count": 16,
+            "drain_complete_count": 1,
+            "exec_req_count": 32,
+            "exec_rsp_count": 32,
+            "first_drain_accept_to_last_drain_complete": 15,
+            "first_exec_req_to_first_exec_rsp": 1,
+            "first_exec_rsp_to_first_drain_accept": 36,
+            "first_exec_rsp_to_last_exec_complete": 31,
+            "last_drain_complete_to_ce_resp": 1,
+            "last_exec_complete_to_last_drain_complete_tail": 20
+          },
+          "pt_md_v2": {
+            "a_fill": {
+              "dma_beats": 32,
+              "dma_elems": 512,
+              "fill_req_to_fill_done": 34,
+              "fill_req_to_rd_desc": 1,
+              "first_beat_to_last_beat": 31,
+              "last_beat_to_fill_done": 0,
+              "rd_desc_to_first_beat": 2
+            },
+            "accept_to_malloc_issue": 1,
+            "b_fill": {
+              "dma_beats": 32,
+              "dma_elems": 512,
+              "fill_req_to_fill_done": 34,
+              "fill_req_to_rd_desc": 1,
+              "first_beat_to_last_beat": 31,
+              "last_beat_to_fill_done": 0,
+              "rd_desc_to_first_beat": 2
+            },
+            "export": {
+              "ce_resp_to_wr_desc": 2,
+              "ce_resp_to_wr_done": 36,
+              "dma_beats": 16,
+              "first_beat_to_last_beat": 30,
+              "last_beat_to_done": 1,
+              "row_chunk_count": 16,
+              "row_chunks_per_export_beat": 1.0,
+              "wr_desc_to_first_beat": 3
+            }
+          },
+          "shape_tiles": {
+            "k_tiles": 2,
+            "m_tiles": 1,
+            "n_tiles": 1
+          },
+          "top_level": {
+            "accept_to_ctrl_resp": 128,
+            "ce_resp_to_ctrl_resp": 2,
+            "ctrl_resp_to_wr_desc": 0
+          }
+        },
+        "m2_n2_k1": {
+          "pt_ce_v2": {
+            "ce_cmd_to_ce_resp": 98,
+            "ce_cmd_to_first_exec_req": 1,
+            "drain_accept_count": 64,
+            "drain_complete_count": 4,
+            "exec_req_count": 64,
+            "exec_rsp_count": 64,
+            "first_drain_accept_to_last_drain_complete": 75,
+            "first_exec_req_to_first_exec_rsp": 1,
+            "first_exec_rsp_to_first_drain_accept": 20,
+            "first_exec_rsp_to_last_exec_complete": 75,
+            "last_drain_complete_to_ce_resp": 1,
+            "last_exec_complete_to_last_drain_complete_tail": 20
+          },
+          "pt_md_v2": {
+            "a_fill": {
+              "dma_beats": 32,
+              "dma_elems": 512,
+              "fill_req_to_fill_done": 34,
+              "fill_req_to_rd_desc": 1,
+              "first_beat_to_last_beat": 31,
+              "last_beat_to_fill_done": 0,
+              "rd_desc_to_first_beat": 2
+            },
+            "accept_to_malloc_issue": 1,
+            "b_fill": {
+              "dma_beats": 32,
+              "dma_elems": 512,
+              "fill_req_to_fill_done": 34,
+              "fill_req_to_rd_desc": 1,
+              "first_beat_to_last_beat": 31,
+              "last_beat_to_fill_done": 0,
+              "rd_desc_to_first_beat": 2
+            },
+            "export": {
+              "ce_resp_to_wr_desc": 2,
+              "ce_resp_to_wr_done": 132,
+              "dma_beats": 64,
+              "first_beat_to_last_beat": 126,
+              "last_beat_to_done": 1,
+              "row_chunk_count": 64,
+              "row_chunks_per_export_beat": 1.0,
+              "wr_desc_to_first_beat": 3
+            }
+          },
+          "shape_tiles": {
+            "k_tiles": 1,
+            "m_tiles": 2,
+            "n_tiles": 2
+          },
+          "top_level": {
+            "accept_to_ctrl_resp": 172,
+            "ce_resp_to_ctrl_resp": 2,
+            "ctrl_resp_to_wr_desc": 0
+          }
+        }
+      },
+      "status": "passed"
     }
   },
   "metadata": {
     "problem": {
+      "active_channel_mask": 0,
       "k_dim": 32,
       "k_tiles": 2,
       "m_dim": 16,
       "m_tiles": 1,
       "n_dim": 16,
       "n_tiles": 1,
+      "submission_mode": "legacy",
       "target": "pt_dma_top",
       "target_label": "PT_DMA_TOP"
     }
@@ -47,16 +226,58 @@
       "winner": "host_reduce_direct_pipelined"
     },
     "numeric_host_reduce_per_tensor": {
+      "axil_writes_per_command": 11.0,
+      "axil_writes_total": 22,
+      "command_count": 2,
+      "descriptor_push_count": 2,
+      "perf_accept_to_resp_cycles": 158,
+      "perf_axil_write_count": 24,
+      "perf_command_push_count": 2,
+      "perf_compact_commit_count": 0,
+      "perf_pt_accept_count": 2,
+      "perf_push_to_accept_cycles": 2,
+      "perf_resp_enqueue_count": 2,
+      "perf_resp_to_done_cycles": 70,
+      "perf_wr_dma_done_count": 2,
       "status": "passed",
+      "submission_mode": "legacy",
       "total_cycles": 274
     },
     "numeric_host_reduce_pipelined": {
+      "axil_writes_per_command": 11.0,
+      "axil_writes_total": 22,
+      "command_count": 2,
+      "descriptor_push_count": 2,
+      "perf_accept_to_resp_cycles": 158,
+      "perf_axil_write_count": 24,
+      "perf_command_push_count": 2,
+      "perf_compact_commit_count": 0,
+      "perf_pt_accept_count": 2,
+      "perf_push_to_accept_cycles": 2,
+      "perf_resp_enqueue_count": 2,
+      "perf_resp_to_done_cycles": 70,
+      "perf_wr_dma_done_count": 2,
       "status": "passed",
+      "submission_mode": "legacy",
       "total_cycles": 159
     },
     "numeric_pt_matadd_reduce_per_tensor": {
+      "axil_writes_per_command": 11.0,
+      "axil_writes_total": 33,
+      "command_count": 3,
+      "descriptor_push_count": 3,
+      "perf_accept_to_resp_cycles": 276,
+      "perf_axil_write_count": 36,
+      "perf_command_push_count": 3,
+      "perf_compact_commit_count": 0,
+      "perf_pt_accept_count": 3,
+      "perf_push_to_accept_cycles": 3,
+      "perf_resp_enqueue_count": 3,
+      "perf_resp_to_done_cycles": 105,
+      "perf_wr_dma_done_count": 3,
       "status": "passed",
-      "total_cycles": 457
+      "submission_mode": "legacy",
+      "total_cycles": 472
     }
   },
   "unsupported_paths": {

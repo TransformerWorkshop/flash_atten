@@ -8,6 +8,9 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from . import (
 	APP_TARGET_PT_DMA_TOP,
+	APP_TARGET_PT_DMA_TOP_V3,
+	APP_TARGET_PT_DMA_TOP_V3_128B,
+	APP_TARGET_PT_DMA_TOP_V3_128B_STRICT,
 	DEFAULT_APP_TARGET,
 	INV_SCALE_WORD,
 	PT_PARAMS,
@@ -409,7 +412,7 @@ def build_recommendation(
 		f"因此完整问题会被分解成 M_tiles * K_tiles * N_tiles = {problem.partial_matmuls} 次 partial GEMM。",
 		f"默认 per_tensor inverse scale 固定为 0x{INV_SCALE_WORD:08x}。",
 	]
-	if normalized_target == APP_TARGET_PT_DMA_TOP:
+	if normalized_target in {APP_TARGET_PT_DMA_TOP, APP_TARGET_PT_DMA_TOP_V3, APP_TARGET_PT_DMA_TOP_V3_128B, APP_TARGET_PT_DMA_TOP_V3_128B_STRICT}:
 		notes.append("该 target 会经过 AXI-Lite CSR + DMA descriptor wrapper，再驱动内部 PT datapath。")
 	if ranking_source == "measured":
 		notes.append(f"当前 winner 基于 `{active_metrics_path}` 中的实测结果排序。")
@@ -417,7 +420,7 @@ def build_recommendation(
 		notes.append(f"当前 winner 基于 `{active_metrics_path}` 中的部分实测结果与 fallback estimate 混合排序。")
 	else:
 		notes.append("当前 winner 基于 app 内的 fallback estimate 排序。")
-	if normalized_target == APP_TARGET_PT_DMA_TOP and ranking_source != "measured":
+	if normalized_target in {APP_TARGET_PT_DMA_TOP, APP_TARGET_PT_DMA_TOP_V3, APP_TARGET_PT_DMA_TOP_V3_128B, APP_TARGET_PT_DMA_TOP_V3_128B_STRICT} and ranking_source != "measured":
 		notes.append("当前 fallback estimate 仍主要基于 native PT datapath，不显式计入 wrapper AXI-Lite / descriptor 开销。")
 
 	return Recommendation(
