@@ -273,8 +273,8 @@ module FA_QK_PV_SHARED_CORE_REAL (
     reg [5:0] issue_count_n;
     reg [5:0] feed_count_r;
     reg [5:0] feed_count_n;
-    reg       row_blk_r;
-    reg       row_blk_n;
+    reg [1:0] row_blk_r;
+    reg [1:0] row_blk_n;
     reg [1:0] col_blk_r;
     reg [1:0] col_blk_n;
 `ifndef SYNTHESIS
@@ -305,10 +305,12 @@ module FA_QK_PV_SHARED_CORE_REAL (
     wire [5:0]   feed_last_w;
     wire [4:0]   qk_issue_addr_w;
     wire [2:0]   pv_issue_addr_w;
-    wire [255:0] gemm_a_data_w;
+    wire [127:0] gemm_a_data_w;
     wire [511:0] gemm_b_data_w;
     wire [31:0]  gemm_num_acc_w;
     wire [3:0]   result_row_idx_w;
+    wire [511:0] gemm_a_full_data_w;
+    reg  [127:0] gemm_a_data_r;
 
     integer col_idx;
     integer global_col_idx;
@@ -399,7 +401,7 @@ module FA_QK_PV_SHARED_CORE_REAL (
         end
     end
 
-    assign result_row_idx_w = {row_blk_r, gemm_group_idx_w[2:0]};
+    assign result_row_idx_w = {row_blk_r, gemm_group_idx_w[1:0]};
 
     FA_MASKED_ROWBUF_REG_REAL #(
         .ROW_WIDTH(512),
@@ -456,10 +458,19 @@ module FA_QK_PV_SHARED_CORE_REAL (
     assign v_rd_en = read_issue_w && (mode_r == MODE_PV);
     assign v_rd_addr = {col_blk_r, pv_issue_addr_w};
 
-    assign gemm_a_data_w = row_blk_r ? ((mode_r == MODE_QK) ? q_rd_data[511:256] : p_rd_data[511:256]) :
-                                      ((mode_r == MODE_QK) ? q_rd_data[255:0]   : p_rd_data[255:0]);
+    assign gemm_a_full_data_w = (mode_r == MODE_QK) ? q_rd_data : p_rd_data;
+    assign gemm_a_data_w = gemm_a_data_r;
     assign gemm_b_data_w = (mode_r == MODE_QK) ? k_rd_data : v_rd_data;
     assign gemm_num_acc_w = (mode_r == MODE_QK) ? 32'd32 : 32'd8;
+
+    always @(*) begin
+        case (row_blk_r)
+            2'd0: gemm_a_data_r = gemm_a_full_data_w[127:0];
+            2'd1: gemm_a_data_r = gemm_a_full_data_w[255:128];
+            2'd2: gemm_a_data_r = gemm_a_full_data_w[383:256];
+            default: gemm_a_data_r = gemm_a_full_data_w[511:384];
+        endcase
+    end
 
     always @(*) begin
         state_n = state_r;
@@ -471,23 +482,23 @@ module FA_QK_PV_SHARED_CORE_REAL (
 
         if (gemm_stream_fire_w && gemm_last_w) begin
             if (mode_r == MODE_QK) begin
-                if (!row_blk_r) begin
-                    row_blk_n = 1'b1;
+                if (row_blk_r != 2'd3) begin
+                    row_blk_n = row_blk_r + 1'b1;
                     issue_count_n = 6'd0;
                     feed_count_n = 6'd0;
                     state_n = ST_STREAM;
                 end else begin
                     state_n = ST_IDLE;
                 end
-            end else if (!row_blk_r) begin
-                row_blk_n = 1'b1;
+            end else if (row_blk_r != 2'd3) begin
+                row_blk_n = row_blk_r + 1'b1;
                 issue_count_n = 6'd0;
                 feed_count_n = 6'd0;
                 state_n = ST_STREAM;
             end else if (col_blk_r == 2'd3) begin
                 state_n = ST_IDLE;
             end else begin
-                row_blk_n = 1'b0;
+                row_blk_n = 2'd0;
                 col_blk_n = col_blk_r + 1'b1;
                 issue_count_n = 6'd0;
                 feed_count_n = 6'd0;
@@ -501,14 +512,14 @@ module FA_QK_PV_SHARED_CORE_REAL (
                     mode_n = MODE_QK;
                     issue_count_n = 6'd0;
                     feed_count_n = 6'd0;
-                    row_blk_n = 1'b0;
+                    row_blk_n = 2'd0;
                     col_blk_n = 2'd0;
                     state_n = ST_STREAM;
                 end else if (pv_req_fire_w) begin
                     mode_n = MODE_PV;
                     issue_count_n = 6'd0;
                     feed_count_n = 6'd0;
-                    row_blk_n = 1'b0;
+                    row_blk_n = 2'd0;
                     col_blk_n = 2'd0;
                     state_n = ST_STREAM;
                 end
@@ -533,7 +544,7 @@ module FA_QK_PV_SHARED_CORE_REAL (
                 mode_n = MODE_QK;
                 issue_count_n = 6'd0;
                 feed_count_n = 6'd0;
-                row_blk_n = 1'b0;
+                row_blk_n = 2'd0;
                 col_blk_n = 2'd0;
             end
         endcase
@@ -545,14 +556,14 @@ module FA_QK_PV_SHARED_CORE_REAL (
             mode_r <= MODE_QK;
             issue_count_r <= 6'd0;
             feed_count_r <= 6'd0;
-            row_blk_r <= 1'b0;
+            row_blk_r <= 2'd0;
             col_blk_r <= 2'd0;
         end else if (clear) begin
             state_r <= ST_IDLE;
             mode_r <= MODE_QK;
             issue_count_r <= 6'd0;
             feed_count_r <= 6'd0;
-            row_blk_r <= 1'b0;
+            row_blk_r <= 2'd0;
             col_blk_r <= 2'd0;
         end else begin
             state_r <= state_n;
@@ -568,7 +579,7 @@ module FA_QK_PV_SHARED_CORE_REAL (
         .WIDTH(32),
         .ELEM_WIDTH(16),
         .PACK_LANES(2),
-        .X_DIM(8),
+        .X_DIM(4),
         .Y_DIM(16),
         .OUTPUT_BY_ROW(1)
     ) u_gemm (
@@ -659,7 +670,7 @@ module FA_QK_PV_SHARED_CORE_REAL (
                         qk_result_words_r[(result_row_idx_w * 16) + col_idx] <= qk_result_wr_data_r[(col_idx * 32) +: 32];
                     end
 `endif
-                    if (gemm_last_w && row_blk_r) begin
+                    if (gemm_last_w && (row_blk_r == 2'd3)) begin
                         qk_resp_valid <= 1'b1;
                     end
                 end else begin
@@ -669,7 +680,7 @@ module FA_QK_PV_SHARED_CORE_REAL (
                         pv_result_words_r[(result_row_idx_w * 32) + (global_col_idx >> 1)][((global_col_idx & 1) * 16) +: 16] <= pv_result_wr_data_r[(global_col_idx * 16) +: 16];
                     end
 `endif
-                    if (gemm_last_w && row_blk_r && (col_blk_r == 2'd3)) begin
+                    if (gemm_last_w && (row_blk_r == 2'd3) && (col_blk_r == 2'd3)) begin
                         pv_resp_valid <= 1'b1;
                     end
                 end
