@@ -227,6 +227,7 @@ module FA_CORE_BASELINE #(
         .clear(runtime_clear),
         .run_active(run_active),
         .run_start_pulse(start_pulse),
+        .causal_en(causal_en),
         .q_blk_idx(sched_q_blk_idx),
         .kv_blk_idx(sched_kv_blk_idx),
         .load_q_blk_idx(sched_load_q_blk_idx),

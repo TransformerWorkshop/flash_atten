@@ -4,6 +4,7 @@ module FA_TILE_SCHED (
     input  wire       clear,
     input  wire       run_active,
     input  wire       run_start_pulse,
+    input  wire       causal_en,
     output wire [3:0] q_blk_idx,
     output wire [3:0] kv_blk_idx,
     output reg  [3:0] load_q_blk_idx,
@@ -92,6 +93,7 @@ module FA_TILE_SCHED (
     assign q_blk_idx = q_blk_r;
     assign kv_blk_idx = kv_blk_r;
 
+    wire last_kv_for_q_w = causal_en ? (kv_blk_r >= q_blk_r) : (kv_blk_r == 4'd15);
     wire q_prefetch_start_w = (state_r == ST_STORE_WAIT) &&
                               (q_blk_r != 4'd15) &&
                               !q_prefetch_inflight_r &&
@@ -198,7 +200,7 @@ module FA_TILE_SCHED (
                 ST_QK_REQ: if (qk_req_ready) state_n = ST_QK_WAIT;
                 ST_QK_WAIT: begin
                     if (qk_done_pulse) begin
-                        if (kv_blk_r != 4'd15) begin
+                        if (!last_kv_for_q_w) begin
                             k_prefetch_wanted_n = 1'b1;
                             k_prefetch_inflight_n = 1'b0;
                             k_prefetch_done_n = 1'b0;
@@ -239,7 +241,7 @@ module FA_TILE_SCHED (
                         k_prefetch_inflight_n = 1'b1;
                     end
                     if (oacc_update_done_pulse) begin
-                        if (kv_blk_r == 4'd15) begin
+                        if (last_kv_for_q_w) begin
                             k_prefetch_wanted_n = 1'b0;
                             k_prefetch_inflight_n = 1'b0;
                             k_prefetch_done_n = 1'b0;

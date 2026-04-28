@@ -10,6 +10,8 @@ from tests.fa_baseline_env import ADDR_RD_BYTES, ADDR_STATUS, ADDR_WR_BYTES, RD_
 READ_DESC_PER_Q_BLK = 1 + 16 + 16
 TOTAL_Q_BLKS = 16
 TOTAL_RD_DESCS = TOTAL_Q_BLKS * READ_DESC_PER_Q_BLK
+TOTAL_CAUSAL_KV_BLKS = sum(range(1, TOTAL_Q_BLKS + 1))
+TOTAL_CAUSAL_RD_DESCS = TOTAL_Q_BLKS + (2 * TOTAL_CAUSAL_KV_BLKS)
 TOTAL_WR_DESCS = TOTAL_Q_BLKS
 BYTES_PER_TILE = 512 * 4
 
@@ -55,7 +57,7 @@ async def test_fa_protocol_byte_counters_exact(dut) -> None:
         env.load_qkv(q, k, v)
         await env.start_run(causal=True)
         await env.wait_done()
-        assert await env.axil_read(ADDR_RD_BYTES) == (TOTAL_RD_DESCS * BYTES_PER_TILE)
+        assert await env.axil_read(ADDR_RD_BYTES) == (TOTAL_CAUSAL_RD_DESCS * BYTES_PER_TILE)
         assert await env.axil_read(ADDR_WR_BYTES) == (TOTAL_WR_DESCS * BYTES_PER_TILE)
     finally:
         env.shutdown()

@@ -176,7 +176,7 @@ module FA_OACC_UPDATE_REAL #(
                     if (row_is_last_i) begin
                         next_state_fn = ST_DONE;
                     end else begin
-                        next_state_fn = ST_ROW_GAP;
+                        next_state_fn = ST_ROW_REQ;
                     end
                 end
                 ST_ROW_GAP: begin

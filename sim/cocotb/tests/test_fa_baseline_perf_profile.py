@@ -13,18 +13,18 @@ from tests.fa_baseline_env import HEAD_DIM, SEQ_LEN, create_env, random_q88_matr
 
 FULL_RUN_COUNTS = {
     "q_load": 16,
-    "k_load": 256,
-    "v_load": 256,
+    "k_load": 136,
+    "v_load": 136,
     "row_init": 16,
     "oacc_clear": 16,
-    "qk": 256,
-    "score_post": 256,
-    "pv": 256,
-    "oacc_update": 256,
+    "qk": 136,
+    "score_post": 136,
+    "pv": 136,
+    "oacc_update": 136,
     "store": 16,
 }
 ROW_RELATION_COUNTS = {
-    "future_masked": 120,
+    "future_masked": 0,
     "diagonal": 16,
     "history": 120,
 }
@@ -96,8 +96,9 @@ class SampleMonitor:
             if not self.samples.get(stage):
                 return False
         for stage in REQUIRED_ROW_STAGES:
+            required_relations = {name for name, count in ROW_RELATION_COUNTS.items() if count > 0}
             relations = {sample["relation"] for sample in self.samples.get(stage, [])}
-            if relations != set(ROW_RELATION_COUNTS):
+            if relations != required_relations:
                 return False
         return True
 
@@ -184,6 +185,13 @@ def select_relation_stage(samples: dict[str, list[dict[str, Any]]], stage: str) 
     out: dict[str, dict[str, Any]] = {}
     for relation in ROW_RELATION_COUNTS:
         durations = [int(sample["duration"]) for sample in samples[stage] if sample["relation"] == relation]
+        if not durations:
+            out[relation] = {
+                "selected_cycles": 0,
+                "observed_unique_cycles": [0],
+                "observed_count": 0,
+            }
+            continue
         unique = sorted(set(durations))
         selected = unique[0] if len(unique) == 1 else int(round(sum(durations) / len(durations)))
         out[relation] = {
@@ -275,6 +283,7 @@ def build_report(samples: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
     for entry in p_load_breakdown.values():
         entry["share_pct"] = (entry["total_cycles"] * 100.0 / serial_total_cycles) if serial_total_cycles else 0.0
 
+    q_load_cycles = int(const_stage_cycles["q_load"]["selected_cycles"])
     k_load_cycles = int(const_stage_cycles["k_load"]["selected_cycles"])
     v_load_cycles = int(const_stage_cycles["v_load"]["selected_cycles"])
     qk_cycles = int(const_stage_cycles["qk"]["selected_cycles"])
@@ -282,7 +291,7 @@ def build_report(samples: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
     pv_cycles = int(const_stage_cycles["pv"]["selected_cycles"])
     oacc_update_cycles = int(const_stage_cycles["oacc_update"]["selected_cycles"])
     scheduler_overlap_total_cycles = (
-        int(top_stage_totals["q_load"]["total_cycles"])
+        q_load_cycles
         + int(top_stage_totals["row_init"]["total_cycles"])
         + int(top_stage_totals["oacc_clear"]["total_cycles"])
         + int(top_stage_totals["store"]["total_cycles"])
@@ -321,7 +330,7 @@ def build_report(samples: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
         "extrapolated_row_state_breakdown": row_state_breakdown,
         "extrapolated_p_load_breakdown": p_load_breakdown,
         "extrapolated_total_cycles": serial_total_cycles,
-        "scheduler_overlap_model": "v_load_overlapped_with_qk_score_row_update_and_next_k_prefetched_after_qk",
+        "scheduler_overlap_model": "causal_future_tiles_skipped_v_load_overlapped_next_k_prefetched_next_q_prefetched_during_store",
         "scheduler_overlap_breakdown": scheduler_overlap_breakdown,
         "scheduler_overlap_total_cycles": scheduler_overlap_total_cycles,
         "scheduler_overlap_savings_cycles": serial_total_cycles - scheduler_overlap_total_cycles,

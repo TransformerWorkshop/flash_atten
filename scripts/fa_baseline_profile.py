@@ -46,6 +46,8 @@ def substage_rows(report: dict[str, Any], key: str) -> list[tuple[str, dict[str,
 
 
 def render_report(report: dict[str, Any]) -> str:
+    scheduled_cycles = int(report.get("scheduler_overlap_total_cycles", report["extrapolated_total_cycles"]))
+    serial_cycles = int(report["extrapolated_total_cycles"])
     lines: list[str] = []
     lines.append("# FA Baseline RTL Profiling")
     lines.append("")
@@ -54,10 +56,13 @@ def render_report(report: dict[str, Any]) -> str:
     lines.append("- Method: sample per-stage RTL latency on early tiles, then extrapolate with deterministic scheduler invocation counts")
     lines.append("- Row-update correction: override scheduler sampling with direct `FA_ROW_STATE_REAL` microbench for `masked` vs `valid` tiles")
     lines.append("- P-load: bypassed in the main path, modeled as `0` cycles")
+    lines.append("- Causal optimization: whole future-masked KV tiles are skipped, and the next Q tile is prefetched during store")
     lines.append("")
     lines.append("## Summary")
     lines.append("")
-    lines.append(f"- Estimated full-run cycles: `{report['extrapolated_total_cycles']}`")
+    lines.append(f"- Estimated scheduled full-run cycles: `{scheduled_cycles}`")
+    if serial_cycles != scheduled_cycles:
+        lines.append(f"- Serial stage-sum cycles before modeled overlap: `{serial_cycles}`")
     lines.append(f"- Row-state sub-total inside row-update: `{report['extrapolated_row_state_total_cycles']}`")
     lines.append(f"- P-load sub-total inside row-update: `{report['extrapolated_p_load_total_cycles']}`")
     lines.append("")
@@ -237,7 +242,9 @@ def main() -> None:
     md_path.write_text(render_report(report), encoding="utf-8")
 
     print(f"wrote {md_path}")
-    print(f"estimated_cycles={report['extrapolated_total_cycles']}")
+    print(f"estimated_cycles={report.get('scheduler_overlap_total_cycles', report['extrapolated_total_cycles'])}")
+    if "scheduler_overlap_total_cycles" in report:
+        print(f"serial_stage_sum_cycles={report['extrapolated_total_cycles']}")
 
 
 if __name__ == "__main__":
