@@ -84,9 +84,21 @@ module FA_TILE_SCHED (
     reg       k_prefetch_inflight_n;
     reg       k_prefetch_done_r;
     reg       k_prefetch_done_n;
+    reg       q_prefetch_inflight_r;
+    reg       q_prefetch_inflight_n;
+    reg       q_prefetch_done_r;
+    reg       q_prefetch_done_n;
 
     assign q_blk_idx = q_blk_r;
     assign kv_blk_idx = kv_blk_r;
+
+    wire q_prefetch_start_w = (state_r == ST_STORE_WAIT) &&
+                              (q_blk_r != 4'd15) &&
+                              !q_prefetch_inflight_r &&
+                              !q_prefetch_done_r &&
+                              load_req_ready;
+    wire q_prefetch_done_now_w = q_prefetch_done_r ||
+                                 (q_prefetch_inflight_r && load_done_pulse);
 
     always @(*) begin
         state_n = state_r;
@@ -97,6 +109,8 @@ module FA_TILE_SCHED (
         k_prefetch_wanted_n = k_prefetch_wanted_r;
         k_prefetch_inflight_n = k_prefetch_inflight_r;
         k_prefetch_done_n = k_prefetch_done_r;
+        q_prefetch_inflight_n = q_prefetch_inflight_r;
+        q_prefetch_done_n = q_prefetch_done_r;
 
         if (clear || !run_active) begin
             if (run_start_pulse) begin
@@ -108,6 +122,8 @@ module FA_TILE_SCHED (
                 k_prefetch_wanted_n = 1'b0;
                 k_prefetch_inflight_n = 1'b0;
                 k_prefetch_done_n = 1'b0;
+                q_prefetch_inflight_n = 1'b0;
+                q_prefetch_done_n = 1'b0;
             end else begin
                 state_n = ST_IDLE;
                 q_blk_n = 4'd0;
@@ -117,6 +133,8 @@ module FA_TILE_SCHED (
                 k_prefetch_wanted_n = 1'b0;
                 k_prefetch_inflight_n = 1'b0;
                 k_prefetch_done_n = 1'b0;
+                q_prefetch_inflight_n = 1'b0;
+                q_prefetch_done_n = 1'b0;
             end
         end else begin
             if (v_load_pending_r && load_done_pulse) begin
@@ -126,6 +144,10 @@ module FA_TILE_SCHED (
             if (k_prefetch_inflight_r && load_done_pulse) begin
                 k_prefetch_inflight_n = 1'b0;
                 k_prefetch_done_n = 1'b1;
+            end
+            if (q_prefetch_inflight_r && load_done_pulse) begin
+                q_prefetch_inflight_n = 1'b0;
+                q_prefetch_done_n = 1'b1;
             end
 
             case (state_r)
@@ -139,10 +161,16 @@ module FA_TILE_SCHED (
                         k_prefetch_wanted_n = 1'b0;
                         k_prefetch_inflight_n = 1'b0;
                         k_prefetch_done_n = 1'b0;
+                        q_prefetch_inflight_n = 1'b0;
+                        q_prefetch_done_n = 1'b0;
                     end
                 end
                 ST_Q_LOAD_REQ: if (load_req_ready) state_n = ST_Q_LOAD_WAIT;
-                ST_Q_LOAD_WAIT: if (load_done_pulse) state_n = ST_ROW_INIT_REQ;
+                ST_Q_LOAD_WAIT: if (load_done_pulse) begin
+                    q_prefetch_inflight_n = 1'b0;
+                    q_prefetch_done_n = 1'b0;
+                    state_n = ST_ROW_INIT_REQ;
+                end
                 ST_ROW_INIT_REQ: if (row_init_ready) state_n = ST_ROW_INIT_WAIT;
                 ST_ROW_INIT_WAIT: if (row_init_done_pulse) state_n = ST_OACC_CLEAR_REQ;
                 ST_OACC_CLEAR_REQ: if (oacc_clear_ready) state_n = ST_OACC_CLEAR_WAIT;
@@ -249,11 +277,14 @@ module FA_TILE_SCHED (
                     end
                 end
                 ST_STORE_WAIT: begin
+                    if (q_prefetch_start_w) begin
+                        q_prefetch_inflight_n = 1'b1;
+                        q_prefetch_done_n = 1'b0;
+                    end
                     if (store_done_pulse) begin
                         if (q_blk_r == 4'd15) begin
                             state_n = ST_IDLE;
                         end else begin
-                            state_n = ST_Q_LOAD_REQ;
                             q_blk_n = q_blk_r + 1'b1;
                             kv_blk_n = 4'd0;
                             v_load_pending_n = 1'b0;
@@ -261,6 +292,17 @@ module FA_TILE_SCHED (
                             k_prefetch_wanted_n = 1'b0;
                             k_prefetch_inflight_n = 1'b0;
                             k_prefetch_done_n = 1'b0;
+                            if (q_prefetch_done_now_w) begin
+                                q_prefetch_inflight_n = 1'b0;
+                                q_prefetch_done_n = 1'b0;
+                                state_n = ST_ROW_INIT_REQ;
+                            end else if (q_prefetch_inflight_r || q_prefetch_start_w) begin
+                                state_n = ST_Q_LOAD_WAIT;
+                            end else begin
+                                q_prefetch_inflight_n = 1'b0;
+                                q_prefetch_done_n = 1'b0;
+                                state_n = ST_Q_LOAD_REQ;
+                            end
                         end
                     end
                 end
@@ -281,6 +323,8 @@ module FA_TILE_SCHED (
             k_prefetch_wanted_r <= 1'b0;
             k_prefetch_inflight_r <= 1'b0;
             k_prefetch_done_r <= 1'b0;
+            q_prefetch_inflight_r <= 1'b0;
+            q_prefetch_done_r <= 1'b0;
         end else if (clear || !run_active) begin
             if (run_start_pulse) begin
                 state_r <= ST_Q_LOAD_REQ;
@@ -291,6 +335,8 @@ module FA_TILE_SCHED (
                 k_prefetch_wanted_r <= 1'b0;
                 k_prefetch_inflight_r <= 1'b0;
                 k_prefetch_done_r <= 1'b0;
+                q_prefetch_inflight_r <= 1'b0;
+                q_prefetch_done_r <= 1'b0;
             end else begin
                 state_r <= ST_IDLE;
                 q_blk_r <= 4'd0;
@@ -300,6 +346,8 @@ module FA_TILE_SCHED (
                 k_prefetch_wanted_r <= 1'b0;
                 k_prefetch_inflight_r <= 1'b0;
                 k_prefetch_done_r <= 1'b0;
+                q_prefetch_inflight_r <= 1'b0;
+                q_prefetch_done_r <= 1'b0;
             end
         end else begin
             state_r <= state_n;
@@ -310,6 +358,8 @@ module FA_TILE_SCHED (
             k_prefetch_wanted_r <= k_prefetch_wanted_n;
             k_prefetch_inflight_r <= k_prefetch_inflight_n;
             k_prefetch_done_r <= k_prefetch_done_n;
+            q_prefetch_inflight_r <= q_prefetch_inflight_n;
+            q_prefetch_done_r <= q_prefetch_done_n;
         end
     end
 
@@ -377,6 +427,11 @@ module FA_TILE_SCHED (
                 store_req_valid = 1'b1;
             end
             ST_STORE_WAIT: begin
+                if ((q_blk_r != 4'd15) && !q_prefetch_inflight_r && !q_prefetch_done_r) begin
+                    load_req_valid = 1'b1;
+                    load_req_kind = LOAD_KIND_Q;
+                    load_q_blk_idx = q_blk_r + 1'b1;
+                end
                 if (store_done_pulse && (q_blk_r == 4'd15)) begin
                     run_complete_pulse = 1'b1;
                 end
