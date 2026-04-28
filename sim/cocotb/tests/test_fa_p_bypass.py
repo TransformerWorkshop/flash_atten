@@ -4,6 +4,8 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, Timer
 
+from tests.fa_functional_coverage import record_module_hits
+
 
 def pack_words_to_int(words: list[int]) -> int:
     value = 0
@@ -62,3 +64,4 @@ async def test_fa_p_bypass_reads_each_pv_slice(dut) -> None:
     await Timer(1, unit="ps")
     assert int(dut.rd_valid.value) == 0
     assert int(dut.rd_data.value) == 0
+    record_module_hits(("module.p_bypass",), reads=8)

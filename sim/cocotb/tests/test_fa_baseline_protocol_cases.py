@@ -44,6 +44,8 @@ async def test_fa_protocol_descriptor_order_and_exact_counts(dut) -> None:
         for q_blk, wr_desc in enumerate(env.wr_desc_log):
             assert wr_desc.words == 512
             assert wr_desc.addr == env.o_base + (q_blk * 16 * env.stride_bytes)
+        env.coverage.hit("dma.descriptor_counts_exact", rd_descs=len(env.rd_desc_log), wr_descs=len(env.wr_desc_log))
+        env.coverage.hit("dma.descriptor_order_qkv")
     finally:
         env.shutdown()
 
@@ -59,6 +61,7 @@ async def test_fa_protocol_byte_counters_exact(dut) -> None:
         await env.wait_done()
         assert await env.axil_read(ADDR_RD_BYTES) == (TOTAL_CAUSAL_RD_DESCS * BYTES_PER_TILE)
         assert await env.axil_read(ADDR_WR_BYTES) == (TOTAL_WR_DESCS * BYTES_PER_TILE)
+        env.coverage.hit("csr.byte_counters_exact")
     finally:
         env.shutdown()
 
@@ -83,5 +86,6 @@ async def test_fa_protocol_no_extra_dma_after_done(dut) -> None:
         assert len(env.wr_desc_log) == wr_count
         assert await env.axil_read(ADDR_RD_BYTES) == rd_bytes
         assert await env.axil_read(ADDR_WR_BYTES) == wr_bytes
+        env.coverage.hit("protocol.no_extra_dma_after_done")
     finally:
         env.shutdown()

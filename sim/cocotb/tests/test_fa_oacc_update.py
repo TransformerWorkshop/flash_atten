@@ -4,6 +4,8 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, Timer
 
+from tests.fa_functional_coverage import record_module_hits
+
 
 def s32(raw: int) -> int:
     raw &= 0xFFFF_FFFF
@@ -127,6 +129,14 @@ async def wait_done_pulse(dut, timeout_cycles: int = 512) -> None:
     raise AssertionError("OACC update did not finish")
 
 
+async def wait_signal_high(dut, signal, timeout_cycles: int = 512) -> None:
+    for _ in range(timeout_cycles):
+        await RisingEdge(dut.clk)
+        if int(signal.value):
+            return
+    raise AssertionError("signal did not assert before timeout")
+
+
 @cocotb.test()
 async def test_fa_oacc_update_q412_rounding_saturation_boundaries(dut) -> None:
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
@@ -188,7 +198,6 @@ async def test_fa_oacc_update_q412_rounding_saturation_boundaries(dut) -> None:
     rescale_words = [rescale_patterns[row % len(rescale_patterns)] for row in range(16)]
     expected_words = expected_oacc_update_q412_words(old_q412_words, rescale_words, partial_words)
     expected_rows = [expected_words[row * 64 : (row + 1) * 64] for row in range(16)]
-
     writes: dict[int, list[int]] = {}
     memory_task = cocotb.start_soon(row_memory_agent(dut, old_rows, writes))
     try:
@@ -203,5 +212,61 @@ async def test_fa_oacc_update_q412_rounding_saturation_boundaries(dut) -> None:
         assert sorted(writes) == list(range(16))
         for row in range(16):
             assert writes[row] == expected_rows[row]
+        record_module_hits(
+            ("module.oacc_update", "module.oacc_rounding", "module.oacc_saturation"),
+            rows_written=len(writes),
+        )
+    finally:
+        memory_task.cancel()
+
+
+@cocotb.test()
+async def test_fa_oacc_update_clear_resp_stall_and_extreme_saturation(dut) -> None:
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+    await reset_dut(dut)
+
+    dut.clear.value = 1
+    await RisingEdge(dut.clk)
+    dut.clear.value = 0
+    await RisingEdge(dut.clk)
+
+    old_q412_words = [
+        0x7FFF if idx % 4 in (0, 1) else 0x8000
+        for idx in range(16 * 64)
+    ]
+    old_rows = [old_q412_words[row * 64 : (row + 1) * 64] for row in range(16)]
+    partial_words = []
+    for word_idx in range(16 * 32):
+        lo = 0x7FFF if word_idx & 1 else 0x8000
+        hi = 0x7FFF if word_idx & 2 else 0x8000
+        partial_words.append((lo & 0xFFFF) | ((hi & 0xFFFF) << 16))
+    rescale_words = [0x7FFF_FFFF for _ in range(16)]
+    writes: dict[int, list[int]] = {}
+    memory_task = cocotb.start_soon(row_memory_agent(dut, old_rows, writes))
+    try:
+        dut.resp_ready.value = 0
+        dut.rescale_vec_flat.value = pack_words_to_int(rescale_words)
+        dut.partial_o_tile_flat.value = pack_words_to_int(partial_words)
+        dut.req_valid.value = 1
+        await RisingEdge(dut.clk)
+        dut.req_valid.value = 0
+
+        await wait_signal_high(dut, dut.resp_valid, timeout_cycles=1024)
+        await RisingEdge(dut.clk)
+        assert int(dut.done_pulse.value) == 0
+        dut.resp_ready.value = 1
+        await wait_done_pulse(dut, timeout_cycles=16)
+        await Timer(1, unit="ps")
+
+        assert sorted(writes) == list(range(16))
+        flat_writes = [word for row in range(16) for word in writes[row]]
+        assert 0x7FFF in flat_writes
+        assert 0x8000 in flat_writes
+        record_module_hits(
+            ("module.oacc_update", "module.oacc_rounding", "module.oacc_saturation"),
+            rows_written=len(writes),
+            resp_stall=True,
+            extreme_saturation=True,
+        )
     finally:
         memory_task.cancel()

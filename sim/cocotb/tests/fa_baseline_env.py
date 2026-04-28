@@ -11,6 +11,8 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge
 
+from tests.fa_functional_coverage import FunctionalCoverageRecorder
+
 
 ADDR_CTRL = 0x00
 ADDR_STATUS = 0x04
@@ -270,10 +272,60 @@ class SequencePattern:
         return self.values[-1] if self.hold_last else self.values[(self.index - len(self.values)) % len(self.values)]
 
 
+def pattern_values(pattern: ConstantPattern | SequencePattern) -> List[int]:
+    if isinstance(pattern, ConstantPattern):
+        return [pattern.value]
+    return list(pattern.values)
+
+
+def pattern_has_stall(pattern: ConstantPattern | SequencePattern) -> bool:
+    return any(value == 0 for value in pattern_values(pattern))
+
+
+def patterns_are_constant_ready(*patterns: ConstantPattern | SequencePattern) -> bool:
+    return all(isinstance(pattern, ConstantPattern) and pattern.value == 1 for pattern in patterns)
+
+
+def nonzero_row_indices(matrix: Sequence[Sequence[float]]) -> List[int]:
+    rows: List[int] = []
+    for row_idx, row in enumerate(matrix):
+        if any(abs(float(value)) > 0.0 for value in row):
+            rows.append(row_idx)
+    return rows
+
+
+def record_shape_coverage(
+    coverage: FunctionalCoverageRecorder,
+    q_matrix: Sequence[Sequence[float]],
+    k_matrix: Sequence[Sequence[float]],
+    v_matrix: Sequence[Sequence[float]],
+) -> None:
+    q_rows = nonzero_row_indices(q_matrix)
+    k_rows = nonzero_row_indices(k_matrix)
+    v_rows = nonzero_row_indices(v_matrix)
+    evidence = {
+        "q_nonzero_rows": len(q_rows),
+        "k_nonzero_rows": len(k_rows),
+        "v_nonzero_rows": len(v_rows),
+    }
+    if q_rows and k_rows and v_rows and max(len(q_rows), len(k_rows), len(v_rows)) <= TILE_ROWS:
+        coverage.hit("shape.single_tile", evidence=evidence)
+    if len(q_rows) >= SEQ_LEN and len(k_rows) >= SEQ_LEN and len(v_rows) >= SEQ_LEN:
+        coverage.hit("shape.full_sequence", evidence=evidence)
+    if q_rows:
+        if min(q_rows) == 0:
+            coverage.hit("shape.q_row.first", q_row_min=min(q_rows), q_row_max=max(q_rows))
+        if any(TILE_ROWS <= row < SEQ_LEN - TILE_ROWS for row in q_rows):
+            coverage.hit("shape.q_row.middle", q_row_min=min(q_rows), q_row_max=max(q_rows))
+        if max(q_rows) >= SEQ_LEN - TILE_ROWS:
+            coverage.hit("shape.q_row.last", q_row_min=min(q_rows), q_row_max=max(q_rows))
+
+
 class FABaselineEnv:
     def __init__(self, dut):
         self.dut = dut
         self.case_name = discover_case_name()
+        self.coverage = FunctionalCoverageRecorder(case_name=self.case_name)
         self.ctrl_shadow = CTRL_IRQ_EN
         self.rd_desc_log: List[ReadDescLog] = []
         self.wr_desc_log: List[WriteDescLog] = []
@@ -325,6 +377,7 @@ class FABaselineEnv:
                 pass
         self._tasks = []
         self._started = False
+        self.coverage.dump()
 
     def _drive_defaults(self) -> None:
         self.dut.rstn.value = 0
@@ -370,8 +423,14 @@ class FABaselineEnv:
     ) -> None:
         if desc_ready is not None:
             self._rd_desc_ready_pattern = desc_ready
+            if pattern_has_stall(desc_ready):
+                self.coverage.hit("stream.read_desc_backpressure", pattern=pattern_values(desc_ready))
+                self.coverage.hit("stream.valid_hold", source="read_desc_ready")
         if data_valid is not None:
             self._rd_data_valid_pattern = data_valid
+            if pattern_has_stall(data_valid):
+                self.coverage.hit("stream.read_data_backpressure", pattern=pattern_values(data_valid))
+                self.coverage.hit("stream.valid_hold", source="read_data_valid")
 
     def set_write_patterns(
         self,
@@ -381,8 +440,14 @@ class FABaselineEnv:
     ) -> None:
         if desc_ready is not None:
             self._wr_desc_ready_pattern = desc_ready
+            if pattern_has_stall(desc_ready):
+                self.coverage.hit("stream.write_desc_backpressure", pattern=pattern_values(desc_ready))
+                self.coverage.hit("stream.valid_hold", source="write_desc_ready")
         if data_ready is not None:
             self._wr_data_ready_pattern = data_ready
+            if pattern_has_stall(data_ready):
+                self.coverage.hit("stream.write_data_backpressure", pattern=pattern_values(data_ready))
+                self.coverage.hit("stream.valid_hold", source="write_data_ready")
 
     def set_read_faults(
         self,
@@ -392,6 +457,10 @@ class FABaselineEnv:
     ) -> None:
         self._rd_fault_early_last_beat = early_last_beat
         self._rd_fault_suppress_final_last = suppress_final_last
+        if early_last_beat is not None:
+            self.coverage.hit("protocol.read_fault_early_last", early_last_beat=early_last_beat)
+        if suppress_final_last:
+            self.coverage.hit("protocol.read_fault_missing_final_last")
 
     def clear_read_faults(self) -> None:
         self._rd_fault_early_last_beat = None
@@ -407,8 +476,11 @@ class FABaselineEnv:
         self.k_words = make_full_memory_words(k_matrix)
         self.v_words = make_full_memory_words(v_matrix)
         self.o_words = [0 for _ in range(SEQ_LEN * WORDS_PER_ROW)]
+        record_shape_coverage(self.coverage, q_matrix, k_matrix, v_matrix)
 
     async def axil_write(self, addr: int, data: int, wstrb: int = 0xF) -> int:
+        if addr == ADDR_STRIDE_BYTES and data % 16:
+            self.coverage.hit("csr.alignment_error", stride_bytes=data)
         self.dut.s_axil_awaddr.value = addr & 0x7F
         self.dut.s_axil_awvalid.value = 1
         self.dut.s_axil_wdata.value = data & 0xFFFF_FFFF
@@ -453,6 +525,8 @@ class FABaselineEnv:
         raise AssertionError(f"AXI-Lite read data timeout at 0x{addr:02x}")
 
     async def program_common_regs(self, *, causal: bool) -> None:
+        self.coverage.hit("csr.programming.basic", causal=causal)
+        self.coverage.hit("mode.causal" if causal else "mode.noncausal")
         await self.axil_write(ADDR_Q_BASE_L, self.q_base & 0xFFFF_FFFF)
         await self.axil_write(ADDR_Q_BASE_H, (self.q_base >> 32) & 0xFFFF_FFFF)
         await self.axil_write(ADDR_K_BASE_L, self.k_base & 0xFFFF_FFFF)
@@ -468,12 +542,22 @@ class FABaselineEnv:
 
     async def start_run(self, *, causal: bool) -> None:
         await self.program_common_regs(causal=causal)
+        if causal:
+            self.coverage.hit("mask.causal_boundary")
+        if patterns_are_constant_ready(
+            self._rd_desc_ready_pattern,
+            self._rd_data_valid_pattern,
+            self._wr_desc_ready_pattern,
+            self._wr_data_ready_pattern,
+        ):
+            self.coverage.hit("stream.constant_ready")
         self.ctrl_shadow = CTRL_IRQ_EN
         await self.axil_write(ADDR_CTRL, self.ctrl_shadow)
         await self.axil_write(ADDR_CTRL, self.ctrl_shadow | CTRL_START)
         await self.axil_write(ADDR_CTRL, self.ctrl_shadow)
 
     async def soft_reset(self) -> None:
+        self.coverage.hit("csr.soft_reset")
         self.ctrl_shadow = CTRL_IRQ_EN
         await self.axil_write(ADDR_CTRL, self.ctrl_shadow | CTRL_SOFT_RESET)
         await self.axil_write(ADDR_CTRL, self.ctrl_shadow)
@@ -539,6 +623,7 @@ class FABaselineEnv:
             for _ in range(timeout_cycles):
                 status = self._internal_status_word()
                 if status & STATUS_DONE:
+                    self.coverage.hit("csr.start_done", status=status)
                     return status
                 if status & STATUS_ERROR:
                     raise AssertionError(f"run hit error status=0x{status:08x}")
@@ -547,6 +632,7 @@ class FABaselineEnv:
         for _ in range(timeout_cycles):
             status = await self.axil_read(ADDR_STATUS)
             if status & STATUS_DONE:
+                self.coverage.hit("csr.start_done", status=status)
                 return status
             if status & STATUS_ERROR:
                 raise AssertionError(f"run hit error status=0x{status:08x}")

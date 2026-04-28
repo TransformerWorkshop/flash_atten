@@ -38,11 +38,14 @@ from tests.fa_baseline_env import (
     attention_golden,
     make_full_memory_words,
     matrix_error,
+    nonzero_row_indices,
     q16_16_from_float,
     random_q88_matrix,
+    record_shape_coverage,
     unpack_q88_row_major_words,
     zero_matrix,
 )
+from tests.fa_functional_coverage import FunctionalCoverageRecorder
 
 AXI_DATA_BYTES = 16
 AXI_WORDS_PER_BEAT = AXI_DATA_BYTES // 4
@@ -98,10 +101,21 @@ class SequencePattern:
         return self.values[-1] if self.hold_last else self.values[(self.index - len(self.values)) % len(self.values)]
 
 
+def pattern_values(pattern) -> list[int]:
+    if isinstance(pattern, ConstantPattern):
+        return [pattern.value]
+    return list(getattr(pattern, "values", []))
+
+
+def pattern_has_stall(pattern) -> bool:
+    return any(value == 0 for value in pattern_values(pattern))
+
+
 class FABaselineAxiEnv:
     def __init__(self, dut):
         self.dut = dut
         self.case_name = discover_case_name()
+        self.coverage = FunctionalCoverageRecorder(case_name=self.case_name)
         self.seed = 10
         self.rng = random.Random(self.seed)
         self.q_base = 0x0000_1000
@@ -146,6 +160,7 @@ class FABaselineAxiEnv:
                 pass
         self._tasks = []
         self._started = False
+        self.coverage.dump()
 
     def _drive_defaults(self) -> None:
         self.dut.rstn.value = 0
@@ -187,23 +202,42 @@ class FABaselineAxiEnv:
     ) -> None:
         if arready is not None:
             self._arready_pattern = arready
+            if pattern_has_stall(arready):
+                self.coverage.hit("axi.read_backpressure", channel="arready", pattern=pattern_values(arready))
         if rvalid is not None:
             self._rvalid_pattern = rvalid
+            if pattern_has_stall(rvalid):
+                self.coverage.hit("axi.read_backpressure", channel="rvalid", pattern=pattern_values(rvalid))
         if awready is not None:
             self._awready_pattern = awready
+            if pattern_has_stall(awready):
+                self.coverage.hit("axi.write_backpressure", channel="awready", pattern=pattern_values(awready))
         if wready is not None:
             self._wready_pattern = wready
+            if pattern_has_stall(wready):
+                self.coverage.hit("axi.write_backpressure", channel="wready", pattern=pattern_values(wready))
         if bvalid is not None:
             self._bvalid_pattern = bvalid
+            if pattern_has_stall(bvalid):
+                self.coverage.hit("axi.response_backpressure", channel="bvalid", pattern=pattern_values(bvalid))
 
     def load_qkv(self, q_matrix, k_matrix, v_matrix) -> None:
         self.q_words = make_full_memory_words(q_matrix)
         self.k_words = make_full_memory_words(k_matrix)
         self.v_words = make_full_memory_words(v_matrix)
         self.o_words = [0 for _ in range(MATRIX_WORDS)]
+        record_shape_coverage(self.coverage, q_matrix, k_matrix, v_matrix)
+        if (
+            len(nonzero_row_indices(q_matrix)) >= SEQ_LEN
+            and len(nonzero_row_indices(k_matrix)) >= SEQ_LEN
+            and len(nonzero_row_indices(v_matrix)) >= SEQ_LEN
+        ):
+            self.coverage.hit("axi.full_sequence")
 
     async def axil_write(self, addr: int, data: int, wstrb: int = 0xF) -> int:
         self._raise_agent_error_if_any()
+        if addr == ADDR_STRIDE_BYTES and data % AXI_DATA_BYTES:
+            self.coverage.hit("axi.alignment_error", stride_bytes=data)
         self.dut.s_axil_awaddr.value = addr & 0x7F
         self.dut.s_axil_awvalid.value = 1
         self.dut.s_axil_wdata.value = data & 0xFFFF_FFFF
@@ -245,6 +279,8 @@ class FABaselineAxiEnv:
         raise AssertionError("AXI-Lite read timeout")
 
     async def program_common_regs(self, *, causal: bool) -> None:
+        self.coverage.hit("csr.programming.basic", causal=causal)
+        self.coverage.hit("mode.causal" if causal else "mode.noncausal")
         await self.axil_write(ADDR_Q_BASE_L, self.q_base & 0xFFFF_FFFF)
         await self.axil_write(ADDR_Q_BASE_H, (self.q_base >> 32) & 0xFFFF_FFFF)
         await self.axil_write(ADDR_K_BASE_L, self.k_base & 0xFFFF_FFFF)
@@ -260,11 +296,15 @@ class FABaselineAxiEnv:
 
     async def start_run(self, *, causal: bool) -> None:
         await self.program_common_regs(causal=causal)
+        if causal:
+            self.coverage.hit("mask.causal_boundary")
         await self.axil_write(ADDR_CTRL, CTRL_IRQ_EN)
         await self.axil_write(ADDR_CTRL, CTRL_IRQ_EN | CTRL_START)
         await self.axil_write(ADDR_CTRL, CTRL_IRQ_EN)
 
     async def soft_reset(self) -> None:
+        self.coverage.hit("csr.soft_reset")
+        self.coverage.hit("axi.soft_reset_mid_transfer")
         await self.axil_write(ADDR_CTRL, CTRL_IRQ_EN | CTRL_SOFT_RESET)
         await self.axil_write(ADDR_CTRL, CTRL_IRQ_EN)
 
@@ -273,6 +313,8 @@ class FABaselineAxiEnv:
             self._raise_agent_error_if_any()
             status = await self.axil_read(ADDR_STATUS)
             if status & STATUS_DONE:
+                self.coverage.hit("csr.start_done", status=status)
+                self._record_axi_burst_coverage()
                 return status
             if status & STATUS_ERROR:
                 return status
@@ -281,6 +323,16 @@ class FABaselineAxiEnv:
 
     def read_output_matrix(self):
         return unpack_q88_row_major_words(self.o_words, SEQ_LEN, HEAD_DIM)
+
+    def _record_axi_burst_coverage(self) -> None:
+        if self.rd_bursts:
+            self.coverage.hit("axi.read_burst", bursts=len(self.rd_bursts))
+        if self.wr_bursts:
+            self.coverage.hit("axi.write_burst", bursts=len(self.wr_bursts))
+        if any(burst.beats == 16 for burst in self.rd_bursts):
+            self.coverage.hit("axi.max_read_burst")
+        if any(burst.beats == 16 for burst in self.wr_bursts):
+            self.coverage.hit("axi.max_write_burst")
 
     def _agent_assert(self, condition: bool, message: str) -> None:
         if condition:

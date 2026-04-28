@@ -8,12 +8,21 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge
 
+from tests.fa_functional_coverage import record_module_hits
+
 
 def pack_words_to_int(words: list[int]) -> int:
     value = 0
     for idx, word in enumerate(words):
         value |= (int(word) & 0xFFFF_FFFF) << (idx * 32)
     return value
+
+
+def q16_16_from_float(value: float) -> int:
+    scaled = int(round(value * 65536.0))
+    if scaled < 0:
+        scaled += 1 << 32
+    return scaled & 0xFFFF_FFFF
 
 
 async def wait_signal_high(dut, signal, timeout_cycles: int) -> None:
@@ -62,6 +71,34 @@ def dump_report(report: dict[str, int]) -> None:
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def history_score_words() -> list[int]:
+    words: list[int] = []
+    for row in range(16):
+        if row < 8:
+            row_max = q16_16_from_float(-1.0)
+        else:
+            row_max = q16_16_from_float(16.0)
+        for col in range(16):
+            words.append(row_max if col == 0 else q16_16_from_float(-2.0 - (col / 16.0)))
+    return words
+
+
+def exp_lut_sweep_words(start_idx: int) -> list[int]:
+    words: list[int] = []
+    for row in range(16):
+        words.append(q16_16_from_float(0.0))
+        for col in range(1, 16):
+            idx = min(start_idx + row * 15 + (col - 1), 256)
+            words.append((-idx * 2048) & 0xFFFF_FFFF)
+    return words
+
+
+async def run_update_and_wait_done(dut, timeout_cycles: int = 4096) -> None:
+    await pulse_for_one_cycle(dut, dut.update_valid)
+    await wait_signal_high(dut, dut.done_pulse, timeout_cycles=timeout_cycles)
+    await RisingEdge(dut.clk)
+
+
 @cocotb.test()
 async def test_fa_baseline_rowstate_latency_samples(dut) -> None:
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
@@ -88,4 +125,75 @@ async def test_fa_baseline_rowstate_latency_samples(dut) -> None:
     report["valid_row_state_cycles"] = await measure_cycles_to_pulse(dut, dut.done_pulse, timeout_cycles=2048)
     report["valid_row_update_cycles"] = report["valid_row_state_cycles"] + extra_cycles
 
+    record_module_hits(
+        ("row_state.init", "row_state.masked_row", "row_state.valid_row", "row_state.accumulate"),
+        evidence=report,
+    )
     dump_report(report)
+
+
+@cocotb.test()
+async def test_fa_baseline_rowstate_history_clear_and_resp_stall(dut) -> None:
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+    await reset_row_state(dut)
+
+    dut.clear.value = 1
+    await RisingEdge(dut.clk)
+    dut.clear.value = 0
+    await RisingEdge(dut.clk)
+
+    initial_tile_words = [q16_16_from_float(0.0) for _ in range(16 * 16)]
+    dut.masked_score_tile_flat.value = pack_words_to_int(initial_tile_words)
+    await pulse_for_one_cycle(dut, dut.init_valid)
+    await wait_signal_high(dut, dut.init_done_pulse, timeout_cycles=32)
+
+    await pulse_for_one_cycle(dut, dut.update_valid)
+    await wait_signal_high(dut, dut.done_pulse, timeout_cycles=2048)
+    await RisingEdge(dut.clk)
+    assert int(dut.debug_row_seen.value) == 0xFFFF
+
+    dut.resp_ready.value = 0
+    dut.masked_score_tile_flat.value = pack_words_to_int(history_score_words())
+    await pulse_for_one_cycle(dut, dut.update_valid)
+    await wait_signal_high(dut, dut.resp_valid, timeout_cycles=2048)
+    await RisingEdge(dut.clk)
+    assert int(dut.done_pulse.value) == 0
+
+    dut.resp_ready.value = 1
+    await wait_signal_high(dut, dut.done_pulse, timeout_cycles=16)
+    await RisingEdge(dut.clk)
+    assert int(dut.debug_row_seen.value) == 0xFFFF
+    assert int(dut.rescale_vec_flat.value) != 0
+
+    dut.masked_score_tile_flat.value = pack_words_to_int([int(dut.neg_large_word.value) for _ in range(16 * 16)])
+    await run_update_and_wait_done(dut)
+    assert int(dut.debug_row_seen.value) == 0xFFFF
+    assert int(dut.rescale_vec_flat.value) != 0
+
+    record_module_hits(
+        ("row_state.init", "row_state.valid_row", "row_state.accumulate"),
+        history_update=True,
+        resp_stall=True,
+        masked_history=True,
+    )
+
+
+@cocotb.test()
+async def test_fa_baseline_rowstate_exp_lut_index_sweep(dut) -> None:
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+    await reset_row_state(dut)
+
+    await pulse_for_one_cycle(dut, dut.init_valid)
+    await wait_signal_high(dut, dut.init_done_pulse, timeout_cycles=32)
+
+    dut.masked_score_tile_flat.value = pack_words_to_int(exp_lut_sweep_words(1))
+    await run_update_and_wait_done(dut)
+
+    dut.masked_score_tile_flat.value = pack_words_to_int(exp_lut_sweep_words(241))
+    await run_update_and_wait_done(dut)
+
+    assert int(dut.debug_row_seen.value) == 0xFFFF
+    record_module_hits(
+        ("row_state.init", "row_state.valid_row", "row_state.accumulate"),
+        exp_lut_sweep=True,
+    )

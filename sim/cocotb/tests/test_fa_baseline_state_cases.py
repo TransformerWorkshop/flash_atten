@@ -96,6 +96,7 @@ async def test_fa_state_start_while_busy_is_ignored(dut) -> None:
         assert status_mid & STATUS_BUSY
         assert (status_mid & STATUS_ERROR) == 0
         assert cycles_after > cycles_before
+        env.coverage.hit("csr.start_while_busy")
         await env.wait_done()
     finally:
         env.shutdown()

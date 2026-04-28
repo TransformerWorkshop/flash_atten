@@ -28,7 +28,6 @@ module FA_OACC_UPDATE_REAL #(
     localparam [2:0] ST_ROW_REQ   = 3'd1;
     localparam [2:0] ST_ROW_WAIT  = 3'd2;
     localparam [2:0] ST_ROW_WRITE = 3'd3;
-    localparam [2:0] ST_ROW_GAP   = 3'd4;
     localparam [2:0] ST_DONE      = 3'd5;
 
     reg [2:0]   state_r;
@@ -179,9 +178,6 @@ module FA_OACC_UPDATE_REAL #(
                         next_state_fn = ST_ROW_REQ;
                     end
                 end
-                ST_ROW_GAP: begin
-                    next_state_fn = ST_ROW_REQ;
-                end
                 ST_DONE: begin
                     if (resp_valid_i && resp_ready_i) begin
                         next_state_fn = ST_IDLE;
@@ -268,8 +264,6 @@ module FA_OACC_UPDATE_REAL #(
                 if (row_idx_r != 4'd15) begin
                     row_idx_n = row_idx_r + 1'b1;
                 end
-            end
-            ST_ROW_GAP: begin
             end
             ST_DONE: begin
             end
