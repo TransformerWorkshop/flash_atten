@@ -378,7 +378,8 @@ module FA_V_BUF_PV_REAL (
 
     FA_MASKED_ROWBUF_REG_REAL #(
         .ROW_WIDTH(512),
-        .DEPTH(32)
+        .DEPTH(32),
+        .WRITE_GRANULARITY(16)
     ) u_bank (
         .clk(clk),
         .wr_en(src_wr_valid),
@@ -810,7 +811,8 @@ module FA_OACC_BUF_REAL (
 
     FA_MASKED_ROWBUF_REG_REAL #(
         .ROW_WIDTH(1024),
-        .DEPTH(16)
+        .DEPTH(16),
+        .WRITE_GRANULARITY(16)
     ) u_mem (
         .clk(clk),
         .wr_en(mem_wr_en_r),

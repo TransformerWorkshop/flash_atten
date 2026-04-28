@@ -99,7 +99,8 @@ endmodule
 module FA_MASKED_ROWBUF_REG_REAL #(
     parameter integer ROW_WIDTH = 512,
     parameter integer DEPTH = 16,
-    parameter integer ADDR_WIDTH = (DEPTH <= 1) ? 1 : $clog2(DEPTH)
+    parameter integer ADDR_WIDTH = (DEPTH <= 1) ? 1 : $clog2(DEPTH),
+    parameter integer WRITE_GRANULARITY = 1
 ) (
     input  wire                  clk,
     input  wire                  wr_en,
@@ -114,10 +115,15 @@ module FA_MASKED_ROWBUF_REG_REAL #(
     reg [ROW_WIDTH-1:0] mem_r [0:DEPTH-1];
     reg [ROW_WIDTH-1:0] rd_data_r;
     integer bi;
+    integer wi_chunk;
 `ifndef SYNTHESIS
     integer wi;
 
     initial begin
+        if ((WRITE_GRANULARITY < 1) || ((ROW_WIDTH % WRITE_GRANULARITY) != 0)) begin
+            $fatal(1, "FA_MASKED_ROWBUF_REG_REAL ROW_WIDTH=%0d must be divisible by WRITE_GRANULARITY=%0d",
+                   ROW_WIDTH, WRITE_GRANULARITY);
+        end
         rd_data_r = {ROW_WIDTH{1'b0}};
         for (wi = 0; wi < DEPTH; wi = wi + 1) begin
             mem_r[wi] = {ROW_WIDTH{1'b0}};
@@ -128,6 +134,15 @@ module FA_MASKED_ROWBUF_REG_REAL #(
         if (wr_en && rd_en) begin
             $fatal(1, "FA_MASKED_ROWBUF_REG_REAL saw simultaneous read/write on single-port row buffer");
         end
+        if (wr_en && (WRITE_GRANULARITY > 1)) begin
+            for (wi = 0; wi < ROW_WIDTH; wi = wi + WRITE_GRANULARITY) begin
+                if ((|wr_mask[wi +: WRITE_GRANULARITY]) &&
+                    (wr_mask[wi +: WRITE_GRANULARITY] != {WRITE_GRANULARITY{1'b1}})) begin
+                    $fatal(1, "FA_MASKED_ROWBUF_REG_REAL saw partial write mask inside a %0d-bit chunk at bit %0d",
+                           WRITE_GRANULARITY, wi);
+                end
+            end
+        end
     end
 `endif
 
@@ -135,9 +150,17 @@ module FA_MASKED_ROWBUF_REG_REAL #(
 
     always @(posedge clk) begin
         if (wr_en) begin
-            for (bi = 0; bi < ROW_WIDTH; bi = bi + 1) begin
-                if (wr_mask[bi]) begin
-                    mem_r[wr_addr][bi] <= wr_data[bi];
+            if (WRITE_GRANULARITY == 1) begin
+                for (bi = 0; bi < ROW_WIDTH; bi = bi + 1) begin
+                    if (wr_mask[bi]) begin
+                        mem_r[wr_addr][bi] <= wr_data[bi];
+                    end
+                end
+            end else begin
+                for (wi_chunk = 0; wi_chunk < ROW_WIDTH; wi_chunk = wi_chunk + WRITE_GRANULARITY) begin
+                    if (|wr_mask[wi_chunk +: WRITE_GRANULARITY]) begin
+                        mem_r[wr_addr][wi_chunk +: WRITE_GRANULARITY] <= wr_data[wi_chunk +: WRITE_GRANULARITY];
+                    end
                 end
             end
             rd_data_r <= {ROW_WIDTH{1'b0}};

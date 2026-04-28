@@ -405,7 +405,8 @@ module FA_QK_PV_SHARED_CORE_REAL (
 
     FA_MASKED_ROWBUF_REG_REAL #(
         .ROW_WIDTH(512),
-        .DEPTH(16)
+        .DEPTH(16),
+        .WRITE_GRANULARITY(32)
     ) u_qk_result_rows (
         .clk(clk),
         .wr_en(gemm_stream_fire_w && (mode_r == MODE_QK)),
@@ -419,7 +420,8 @@ module FA_QK_PV_SHARED_CORE_REAL (
 
     FA_MASKED_ROWBUF_REG_REAL #(
         .ROW_WIDTH(1024),
-        .DEPTH(16)
+        .DEPTH(16),
+        .WRITE_GRANULARITY(16)
     ) u_pv_result_rows (
         .clk(clk),
         .wr_en(gemm_stream_fire_w && (mode_r == MODE_PV)),
