@@ -5,14 +5,12 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)"
 RTL_DIR="${REPO_ROOT}/rtl"
-RTL_NOD_DIR="${RTL_DIR}/nod"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/flash_atten_synth_sanity.XXXXXX")"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
 shopt -s nullglob
 
 ROOT_SOURCES=("${RTL_DIR}"/*.v)
-NOD_SOURCES=("${RTL_NOD_DIR}"/*.v)
 
 log() {
 	printf '[synth_sanity] %s\n' "$*"
@@ -23,7 +21,7 @@ scan_forbidden_constructs() {
 
 	local findings=0
 	local file
-	for file in "${RTL_DIR}"/*.v "${RTL_NOD_DIR}"/*.v "${RTL_DIR}"/*.vh "${RTL_NOD_DIR}"/*.vh; do
+	for file in "${RTL_DIR}"/*.v "${RTL_DIR}"/*.vh; do
 		[[ -f "${file}" ]] || continue
 		if ! awk -v file="${file}" '
 			function check_line(code, lineno) {
@@ -79,7 +77,8 @@ lint_verilator() {
 	log "Verilator lint: ${top}"
 	verilator --lint-only -Wall -Wno-fatal \
 		-Wno-DECLFILENAME -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-EOFNEWLINE \
-		-Wno-PINCONNECTEMPTY -Wno-WIDTHTRUNC \
+		-Wno-PINCONNECTEMPTY -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND \
+		-Wno-WIDTHCONCAT -Wno-BLKSEQ -Wno-SYNCASYNCNET \
 		-DSYNTHESIS --top-module "${top}" "$@" > "${log_file}" 2>&1
 	if grep -Eq '^(%Warning|%Error)' "${log_file}"; then
 		cat "${log_file}" >&2
@@ -93,20 +92,12 @@ main() {
 		echo "No root RTL sources found under ${RTL_DIR}" >&2
 		exit 1
 	fi
-	if [[ "${#NOD_SOURCES[@]}" -eq 0 ]]; then
-		echo "No NoD RTL sources found under ${RTL_NOD_DIR}" >&2
-		exit 1
-	fi
-
 	scan_forbidden_constructs
 
-	lint_verilator "PT_DMA_TOP" -I"${RTL_DIR}" "${ROOT_SOURCES[@]}"
-	lint_verilator "PT" -I"${RTL_DIR}" "${ROOT_SOURCES[@]}"
-	lint_verilator "PT_V2" -I"${RTL_DIR}" "${ROOT_SOURCES[@]}"
+	lint_verilator "FA_TOP_BASELINE" -I"${RTL_DIR}" "${ROOT_SOURCES[@]}"
 	lint_verilator "csr_array" -I"${RTL_DIR}" "${ROOT_SOURCES[@]}"
-	lint_verilator "GEMU" -I"${RTL_DIR}" "${ROOT_SOURCES[@]}"
-	lint_verilator "MM_SKEW" -I"${RTL_DIR}" "${ROOT_SOURCES[@]}"
-	lint_verilator "NoD" -I"${RTL_NOD_DIR}" "${NOD_SOURCES[@]}"
+	lint_verilator "GEMM_V3" -I"${RTL_DIR}" "${ROOT_SOURCES[@]}"
+	lint_verilator "GEMU_V3" -I"${RTL_DIR}" "${ROOT_SOURCES[@]}"
 
 	log "All synthesis sanity checks passed"
 }

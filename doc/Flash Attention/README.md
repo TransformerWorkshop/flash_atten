@@ -18,7 +18,7 @@ The top is named `FA_TOP_BASELINE` because it is the currently signed-off compar
 ## 2. Documentation Map
 
 - Flash Attention architecture: this file
-- PT architecture used elsewhere in the repo: [Processing Tile README](<../Processing Tile/README.md>)
+- Processing Tile operator split-out repo: [`../process_tile`](../../../process_tile)
 - FA area/timing checkpoint after 4x16 GEMM: [`debug/20260428_fa_top_dc_gemm4x16_8core.md`](../../debug/20260428_fa_top_dc_gemm4x16_8core.md)
 - FA row-buffer DRC cleanup checkpoint: [`debug/20260428_fa_rowbuf_write_granularity_drc.md`](../../debug/20260428_fa_rowbuf_write_granularity_drc.md)
 
@@ -251,4 +251,4 @@ For every FA RTL change:
 4. Run top-level SpyGlass on `FA_TOP_BASELINE`.
 5. For area-sensitive changes, run or estimate against the latest top-level DC baseline.
 6. Archive results under `debug/YYYYMMDD_fa_*.md`.
-7. Keep unrelated PT/app/debug experiments out of FA commits unless they are required by the change.
+7. Keep PT work in the sibling `process_tile` repository unless a shared primitive is explicitly needed by FA.

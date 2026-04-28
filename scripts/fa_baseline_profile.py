@@ -138,7 +138,7 @@ def run_profile(sim_name: str, waves: bool, verbose: bool, output_dir: Path) -> 
         rtl_params={},
     )
     cocotb_run.ensure_dirs()
-    cocotb_run.run_case(sim_name, "fa_baseline_profile", waves, verbose, config, cocotb_run.APP_TARGET_PT_DMA_TOP, options)
+    cocotb_run.run_case(sim_name, "fa_baseline_profile", waves, verbose, config, cocotb_run.APP_TARGET_FA, options)
     return json.loads(json_path.read_text(encoding="utf-8"))
 
 
@@ -159,7 +159,7 @@ def run_rowstate_profile(sim_name: str, waves: bool, verbose: bool, output_dir: 
         rtl_params={},
     )
     cocotb_run.ensure_dirs()
-    cocotb_run.run_case(sim_name, "fa_baseline_profile", waves, verbose, config, cocotb_run.APP_TARGET_PT_DMA_TOP, options)
+    cocotb_run.run_case(sim_name, "fa_baseline_profile", waves, verbose, config, cocotb_run.APP_TARGET_FA, options)
     return json.loads(json_path.read_text(encoding="utf-8"))
 
 
