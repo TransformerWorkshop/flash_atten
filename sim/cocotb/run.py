@@ -44,6 +44,7 @@ FA_SUITES = (
     "fa_shared_gemm",
     "fa_oacc_update",
     "fa_rowstate_profile",
+    "fa_extreme_precision",
 )
 
 
@@ -544,6 +545,18 @@ def suite_configs(suite: str, seed_override: Optional[int], _target: str = APP_T
                 y_dim=16,
                 test_modules=["tests.test_fa_baseline_perf_rowstate"],
                 hdl_toplevel="FA_ROW_STATE_PROFILE_SIM",
+                seeds=[default_seed],
+            )
+        ]
+    if suite == "fa_extreme_precision":
+        return [
+            RunConfig(
+                name="fa_extreme_precision",
+                build_name="fa_baseline_sim",
+                x_dim=16,
+                y_dim=16,
+                test_modules=["tests.test_fa_extreme_precision"],
+                hdl_toplevel="FA_TOP_BASELINE_SIM",
                 seeds=[default_seed],
             )
         ]
