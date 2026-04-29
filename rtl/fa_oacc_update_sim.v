@@ -59,6 +59,8 @@ module FA_OACC_UPDATE_SIM #(
         .req_ready(req_ready),
         .rescale_vec_flat(rescale_vec_flat),
         .partial_o_tile_flat(partial_o_tile_flat),
+        .req_row_base(4'd0),
+        .partial_o_block_flat(4096'd0),
         .partial_row_rd_en(unused_partial_row_rd_en_w),
         .partial_row_rd_addr(unused_partial_row_rd_addr_w),
         .partial_row_rd_valid(1'b0),

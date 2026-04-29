@@ -120,9 +120,9 @@ class SampleMonitor:
                 self._begin("oacc_clear")
             if value_to_int(core.u_qk_pv_core.qk_req_valid) and value_to_int(core.u_qk_pv_core.qk_req_ready):
                 self._begin("qk")
-            if value_to_int(core.u_score_post.req_valid) and value_to_int(core.u_score_post.req_ready):
+            if value_to_int(core.u_sched.score_req_valid) and "score_post" not in self._active:
                 self._begin("score_post")
-            if value_to_int(core.u_sched.row_update_valid) and value_to_int(core.u_sched.row_update_ready):
+            if value_to_int(core.u_sched.row_update_valid) and "row_update" not in self._active:
                 q_blk = value_to_int(core.u_sched.q_blk_idx)
                 kv_blk = value_to_int(core.u_sched.kv_blk_idx)
                 relation = relation_for(q_blk, kv_blk)
@@ -135,7 +135,7 @@ class SampleMonitor:
                 self._begin("row_state", meta={"q_blk": q_blk, "kv_blk": kv_blk, "relation": relation})
             if value_to_int(core.u_qk_pv_core.pv_req_valid) and value_to_int(core.u_qk_pv_core.pv_req_ready):
                 self._begin("pv")
-            if value_to_int(core.u_oacc_update.req_valid) and value_to_int(core.u_oacc_update.req_ready):
+            if value_to_int(core.u_sched.oacc_update_valid) and "oacc_update" not in self._active:
                 self._begin("oacc_update")
             if value_to_int(core.u_wr_dma.req_valid) and value_to_int(core.u_wr_dma.req_ready):
                 self._active_store = True
@@ -151,14 +151,15 @@ class SampleMonitor:
                 self._finish("oacc_clear")
             if value_to_int(core.u_qk_pv_core.qk_done_pulse):
                 self._finish("qk")
-            if value_to_int(core.u_score_post.done_pulse):
+            if value_to_int(core.score_done_pulse):
                 self._finish("score_post")
             if value_to_int(core.u_row_state.done_pulse):
                 self._finish("row_state")
+            if value_to_int(core.row_update_done_pulse):
                 self._finish("row_update")
             if value_to_int(core.u_qk_pv_core.pv_done_pulse):
                 self._finish("pv")
-            if value_to_int(core.u_oacc_update.done_pulse):
+            if value_to_int(core.oacc_update_done_pulse):
                 self._finish("oacc_update")
             if value_to_int(core.u_wr_dma.done_pulse):
                 if not self._active_store:

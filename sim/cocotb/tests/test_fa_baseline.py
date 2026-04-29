@@ -320,6 +320,16 @@ def expected_score_post_words(score_words: list[int], q_blk: int, kv_blk: int, *
     return out
 
 
+def expected_score_post_valid_bits(q_blk: int, kv_blk: int, *, causal: bool) -> list[int]:
+    bits = [0 for _ in range(16 * 16)]
+    for row in range(16):
+        global_q = (q_blk * 16) + row
+        for col in range(16):
+            global_k = (kv_blk * 16) + col
+            bits[(row * 16) + col] = 0 if causal and (global_k > global_q) else 1
+    return bits
+
+
 def expected_row_state_update(
     masked_words: list[int],
     *,
@@ -327,6 +337,7 @@ def expected_row_state_update(
     m_state: list[int],
     l_state: list[int],
     row_seen: list[int],
+    valid_bits: list[int] | None = None,
 ) -> tuple[list[int], list[int], list[int], list[int], list[int]]:
     p_words = [0 for _ in range(16 * 8)]
     rescale_words = [0 for _ in range(16)]
@@ -336,7 +347,10 @@ def expected_row_state_update(
 
     for row in range(16):
         row_scores = [masked_words[(row * 16) + col] for col in range(16)]
-        valid_cols = [col for col in range(16) if (row_scores[col] & 0xFFFF_FFFF) != (neg_large_word & 0xFFFF_FFFF)]
+        if valid_bits is None:
+            valid_cols = [col for col in range(16) if (row_scores[col] & 0xFFFF_FFFF) != (neg_large_word & 0xFFFF_FFFF)]
+        else:
+            valid_cols = [col for col in range(16) if valid_bits[(row * 16) + col]]
         has_history = bool(row_seen[row])
         if not valid_cols:
             rescale_words[row] = 0x0001_0000 if has_history else 0
@@ -720,7 +734,7 @@ async def test_fa_baseline_score_post_real_scale_mask(dut) -> None:
         q, k, v = make_single_tile_case(280)
         env.load_qkv(q, k, v)
         await env.start_run(causal=True)
-        await wait_signal_high(dut, core(dut).u_score_post.resp_valid, timeout_cycles=12000)
+        await wait_signal_high(dut, core(dut).score_req_ready, timeout_cycles=12000)
         score_words = flat_words(int(core(dut).qk_result_tile_flat.value), 16 * 16)
         actual_words = flat_words(int(core(dut).u_score_post.masked_score_tile_flat.value), 16 * 16)
         expected_words = expected_score_post_words(
@@ -763,7 +777,7 @@ async def test_fa_baseline_row_state_real_update_single_tile(dut) -> None:
         q, k, v = make_single_tile_case(290)
         env.load_qkv(q, k, v)
         await env.start_run(causal=False)
-        await wait_signal_high(dut, core(dut).u_row_state.resp_valid, timeout_cycles=12000)
+        await wait_signal_high(dut, core(dut).row_update_ready, timeout_cycles=12000)
         masked_words = flat_words(int(core(dut).u_score_post.masked_score_tile_flat.value), 16 * 16)
         actual_p_words = flat_words(int(core(dut).u_row_state.p_tile_flat.value), 16 * 8)
         actual_rescale_words = flat_words(int(core(dut).u_row_state.rescale_vec_flat.value), 16)

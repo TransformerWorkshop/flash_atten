@@ -1,4 +1,7 @@
-module FA_ROW_STATE_REAL (
+module FA_ROW_STATE_REAL #(
+    parameter USE_MASKED_BLOCK_INPUT = 0,
+    parameter USE_VALID_MASK_INPUT = 0
+) (
     input  wire          clk,
     input  wire          rstn,
     input  wire          clear,
@@ -9,6 +12,9 @@ module FA_ROW_STATE_REAL (
     output wire          update_ready,
     input  wire [31:0]   neg_large_word,
     input  wire [8191:0] masked_score_tile_flat,
+    input  wire [3:0]    update_row_base,
+    input  wire [63:0]   masked_score_block_valid,
+    input  wire [2047:0] masked_score_block_flat,
     output reg           resp_valid,
     input  wire          resp_ready,
     output reg  [4095:0] p_tile_flat,
@@ -36,6 +42,9 @@ module FA_ROW_STATE_REAL (
     reg [3:0] row_idx_r;
     reg [3:0] row_idx_n;
     reg [31:0] neg_large_word_r;
+    reg [3:0] update_row_base_r;
+    reg [63:0] masked_score_block_valid_r;
+    reg [2047:0] masked_score_block_flat_r;
 
     reg signed [31:0] m_state_r [0:15];
     reg signed [31:0] l_state_r [0:15];
@@ -61,12 +70,15 @@ module FA_ROW_STATE_REAL (
     wire [31:0]  recip_out_value_w;
     wire         recip_done_pulse_w;
     wire         rowstate_unused_zero_w = (recip_done_pulse_w & 1'b0) | (alpha_r[0] & 1'b0) | (sum_beta_r[0] & 1'b0);
+    wire [3:0]  row_limit_w;
+    wire [3:0]  actual_row_idx_w;
 
     integer row_i;
     integer col_i;
     integer word_i;
     integer lane_i;
     reg signed [31:0] score_word_s;
+    reg               score_valid_s;
     reg [15:0]        valid_mask_next;
     reg               row_has_valid_next;
     reg signed [31:0] tile_row_max_next;
@@ -201,6 +213,8 @@ module FA_ROW_STATE_REAL (
 
     assign init_ready = (state_r == ST_IDLE) && !resp_valid;
     assign update_ready = ((state_r == ST_IDLE) && !resp_valid) || rowstate_unused_zero_w;
+    assign row_limit_w = (USE_MASKED_BLOCK_INPUT != 0) ? 4'd3 : 4'd15;
+    assign actual_row_idx_w = (USE_MASKED_BLOCK_INPUT != 0) ? (update_row_base_r + row_idx_r) : row_idx_r;
 
     always @(*) begin
         state_n = state_r;
@@ -240,7 +254,7 @@ module FA_ROW_STATE_REAL (
                 end
             end
             ST_ROW_COMMIT: begin
-                if (row_idx_r == 4'd15) begin
+                if (row_idx_r == row_limit_w) begin
                     state_n = ST_DONE;
                 end else begin
                     row_idx_n = row_idx_r + 1'b1;
@@ -287,8 +301,17 @@ module FA_ROW_STATE_REAL (
         row_has_valid_next = 1'b0;
         tile_row_max_next = neg_large_word_r;
         for (col_i = 0; col_i < 16; col_i = col_i + 1) begin
-            score_word_s = masked_score_tile_flat[((row_idx_r * 16) + col_i) * 32 +: 32];
-            if (score_word_s != neg_large_word_r) begin
+            if (USE_MASKED_BLOCK_INPUT != 0) begin
+                score_word_s = masked_score_block_flat_r[((row_idx_r * 16) + col_i) * 32 +: 32];
+            end else begin
+                score_word_s = masked_score_tile_flat[((row_idx_r * 16) + col_i) * 32 +: 32];
+            end
+            if ((USE_VALID_MASK_INPUT != 0) && (USE_MASKED_BLOCK_INPUT != 0)) begin
+                score_valid_s = masked_score_block_valid_r[(row_idx_r * 16) + col_i];
+            end else begin
+                score_valid_s = (score_word_s != neg_large_word_r);
+            end
+            if (score_valid_s) begin
                 valid_mask_next[col_i] = 1'b1;
                 if (!row_has_valid_next || (score_word_s > tile_row_max_next)) begin
                     tile_row_max_next = score_word_s;
@@ -344,6 +367,9 @@ module FA_ROW_STATE_REAL (
             sum_beta_r <= Q16_ZERO;
             l_new_r <= Q16_ZERO;
             recip_l_new_r <= Q16_ZERO;
+            update_row_base_r <= 4'd0;
+            masked_score_block_valid_r <= 64'd0;
+            masked_score_block_flat_r <= 2048'd0;
 `ifndef SYNTHESIS
             p_tile_flat <= 4096'd0;
             rescale_vec_flat <= 512'd0;
@@ -374,6 +400,9 @@ module FA_ROW_STATE_REAL (
             sum_beta_r <= Q16_ZERO;
             l_new_r <= Q16_ZERO;
             recip_l_new_r <= Q16_ZERO;
+            update_row_base_r <= 4'd0;
+            masked_score_block_valid_r <= 64'd0;
+            masked_score_block_flat_r <= 2048'd0;
 `ifndef SYNTHESIS
             p_tile_flat <= 4096'd0;
             rescale_vec_flat <= 512'd0;
@@ -414,9 +443,14 @@ module FA_ROW_STATE_REAL (
                         end
                     end else if (update_valid && update_ready) begin
                         neg_large_word_r <= neg_large_word;
+                        update_row_base_r <= update_row_base;
+                        masked_score_block_valid_r <= masked_score_block_valid;
+                        masked_score_block_flat_r <= masked_score_block_flat;
 `ifndef SYNTHESIS
-                        p_tile_flat <= 4096'd0;
-                        rescale_vec_flat <= 512'd0;
+                        if ((USE_MASKED_BLOCK_INPUT == 0) || (update_row_base == 4'd0)) begin
+                            p_tile_flat <= 4096'd0;
+                            rescale_vec_flat <= 512'd0;
+                        end
 `endif
                     end
                 end
@@ -426,12 +460,16 @@ module FA_ROW_STATE_REAL (
                 ST_ROW_PREP: begin
                     row_valid_mask_r <= valid_mask_next;
                     row_has_valid_r <= row_has_valid_next;
-                    row_has_history_r <= row_seen_r[row_idx_r];
-                    old_m_r <= m_state_r[row_idx_r];
-                    old_l_r <= l_state_r[row_idx_r];
+                    row_has_history_r <= row_seen_r[actual_row_idx_w];
+                    old_m_r <= m_state_r[actual_row_idx_w];
+                    old_l_r <= l_state_r[actual_row_idx_w];
                     tile_row_max_r <= tile_row_max_next;
                     for (col_i = 0; col_i < 16; col_i = col_i + 1) begin
-                        row_score_r[col_i] <= masked_score_tile_flat[((row_idx_r * 16) + col_i) * 32 +: 32];
+                        if (USE_MASKED_BLOCK_INPUT != 0) begin
+                            row_score_r[col_i] <= masked_score_block_flat_r[((row_idx_r * 16) + col_i) * 32 +: 32];
+                        end else begin
+                            row_score_r[col_i] <= masked_score_tile_flat[((row_idx_r * 16) + col_i) * 32 +: 32];
+                        end
                     end
                 end
                 ST_ROW_EXP: begin
@@ -454,34 +492,34 @@ module FA_ROW_STATE_REAL (
                 ST_ROW_COMMIT: begin
                     if (!row_has_valid_r) begin
                         for (col_i = 0; col_i < 16; col_i = col_i + 1) begin
-                            word_i = ((row_idx_r * 16) + col_i) >> 1;
+                            word_i = ((actual_row_idx_w * 16) + col_i) >> 1;
                             lane_i = col_i & 1;
                             p_tile_flat[(word_i * 32) + (lane_i * 16) +: 16] <= 16'd0;
                         end
                         if (row_has_history_r) begin
-                            rescale_vec_flat[(row_idx_r * 32) +: 32] <= Q16_ONE;
+                            rescale_vec_flat[(actual_row_idx_w * 32) +: 32] <= Q16_ONE;
                         end else begin
-                            rescale_vec_flat[(row_idx_r * 32) +: 32] <= Q16_ZERO;
-                            m_state_r[row_idx_r] <= neg_large_word_r;
-                            l_state_r[row_idx_r] <= Q16_ZERO;
-                            row_seen_r[row_idx_r] <= 1'b0;
+                            rescale_vec_flat[(actual_row_idx_w * 32) +: 32] <= Q16_ZERO;
+                            m_state_r[actual_row_idx_w] <= neg_large_word_r;
+                            l_state_r[actual_row_idx_w] <= Q16_ZERO;
+                            row_seen_r[actual_row_idx_w] <= 1'b0;
                         end
                     end else begin
                         rescale_q16_s = q16_mul_rn_sat(alpha_l_old_r, recip_l_new_r);
-                        rescale_vec_flat[(row_idx_r * 32) +: 32] <= rescale_q16_s;
+                        rescale_vec_flat[(actual_row_idx_w * 32) +: 32] <= rescale_q16_s;
                         for (col_i = 0; col_i < 16; col_i = col_i + 1) begin
                             p_q16_s = q16_mul_rn_sat(beta_r[col_i], recip_l_new_r);
                             p_q88_s = q16_to_q88_rn_sat(p_q16_s);
-                            word_i = ((row_idx_r * 16) + col_i) >> 1;
+                            word_i = ((actual_row_idx_w * 16) + col_i) >> 1;
                             lane_i = col_i & 1;
                             p_tile_flat[(word_i * 32) + (lane_i * 16) +: 16] <= p_q88_s;
                         end
-                        m_state_r[row_idx_r] <= m_new_r;
-                        l_state_r[row_idx_r] <= l_new_r;
-                        row_seen_r[row_idx_r] <= 1'b1;
+                        m_state_r[actual_row_idx_w] <= m_new_r;
+                        l_state_r[actual_row_idx_w] <= l_new_r;
+                        row_seen_r[actual_row_idx_w] <= 1'b1;
                     end
 
-                    if (row_idx_r == 4'd15) begin
+                    if (row_idx_r == row_limit_w) begin
                         resp_valid <= 1'b1;
                     end
                 end

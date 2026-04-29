@@ -163,10 +163,29 @@ module FA_CORE_BASELINE #(
     wire [3:0]   oacc_exp_rd_row;
     wire         oacc_exp_rd_valid;
     wire [1023:0] oacc_exp_rd_data;
-    wire         row_proxy_done_pulse;
     wire         oacc_real_done_pulse;
     wire         oacc_resp_valid_unused_w;
     wire         wr_dma_error_unused_w;
+    wire         qk_block_valid;
+    wire         qk_block_ready;
+    wire [3:0]   qk_block_row_base;
+    wire [2047:0] qk_block_data;
+    wire [3:0]   score_masked_block_row_base;
+    wire [63:0]  score_masked_block_valid;
+    wire [2047:0] score_masked_block_flat;
+    wire         score_stream_req_ready_w;
+    wire         score_stream_done_pulse_w;
+    wire         row_stream_done_pulse_w;
+    wire         pv_block_valid;
+    wire         pv_block_ready;
+    wire [3:0]   pv_block_row_base;
+    wire [4095:0] pv_block_data;
+    reg [2:0]    score_block_done_count_r;
+    reg [2:0]    row_update_block_done_count_r;
+    reg [2:0]    oacc_update_block_done_count_r;
+    reg          score_sched_done_pulse_r;
+    reg          row_update_sched_done_pulse_r;
+    reg          oacc_update_sched_done_pulse_r;
     wire         oacc_row_rd_en;
     wire [3:0]   oacc_row_rd_addr;
     wire         oacc_row_rd_valid;
@@ -205,6 +224,12 @@ module FA_CORE_BASELINE #(
     assign irq = irq_en && (status_done || status_error);
     assign debug_store_req_valid = store_req_valid;
     assign debug_store_done_pulse = store_done_pulse | core_unused_zero_w;
+    assign score_req_ready = (score_block_done_count_r == 3'd4);
+    assign score_done_pulse = score_sched_done_pulse_r;
+    assign row_update_ready = (row_update_block_done_count_r == 3'd4);
+    assign row_update_done_pulse = row_update_sched_done_pulse_r;
+    assign oacc_update_ready = (oacc_update_block_done_count_r == 3'd4);
+    assign oacc_update_done_pulse = oacc_update_sched_done_pulse_r;
 
     FA_RUN_CTRL u_run_ctrl (
         .clk(clk),
@@ -395,6 +420,56 @@ module FA_CORE_BASELINE #(
         end
     end
 
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            score_block_done_count_r <= 3'd0;
+            row_update_block_done_count_r <= 3'd0;
+            oacc_update_block_done_count_r <= 3'd0;
+            score_sched_done_pulse_r <= 1'b0;
+            row_update_sched_done_pulse_r <= 1'b0;
+            oacc_update_sched_done_pulse_r <= 1'b0;
+        end else if (runtime_clear) begin
+            score_block_done_count_r <= 3'd0;
+            row_update_block_done_count_r <= 3'd0;
+            oacc_update_block_done_count_r <= 3'd0;
+            score_sched_done_pulse_r <= 1'b0;
+            row_update_sched_done_pulse_r <= 1'b0;
+            oacc_update_sched_done_pulse_r <= 1'b0;
+        end else begin
+            score_sched_done_pulse_r <= 1'b0;
+            row_update_sched_done_pulse_r <= 1'b0;
+            oacc_update_sched_done_pulse_r <= 1'b0;
+
+            if (qk_req_valid && qk_req_ready) begin
+                score_block_done_count_r <= 3'd0;
+                row_update_block_done_count_r <= 3'd0;
+            end else begin
+                if (score_stream_done_pulse_w && (score_block_done_count_r != 3'd4)) begin
+                    score_block_done_count_r <= score_block_done_count_r + 1'b1;
+                end
+                if (row_stream_done_pulse_w && (row_update_block_done_count_r != 3'd4)) begin
+                    row_update_block_done_count_r <= row_update_block_done_count_r + 1'b1;
+                end
+            end
+
+            if (pv_req_valid && pv_req_ready) begin
+                oacc_update_block_done_count_r <= 3'd0;
+            end else if (oacc_real_done_pulse && (oacc_update_block_done_count_r != 3'd4)) begin
+                oacc_update_block_done_count_r <= oacc_update_block_done_count_r + 1'b1;
+            end
+
+            if (score_req_valid && score_req_ready) begin
+                score_sched_done_pulse_r <= 1'b1;
+            end
+            if (row_update_valid && row_update_ready) begin
+                row_update_sched_done_pulse_r <= 1'b1;
+            end
+            if (oacc_update_valid && oacc_update_ready) begin
+                oacc_update_sched_done_pulse_r <= 1'b1;
+            end
+        end
+    end
+
     FA_QK_PV_SHARED_CORE_REAL u_qk_pv_core (
         .clk(clk),
         .rstn(rstn),
@@ -416,6 +491,10 @@ module FA_CORE_BASELINE #(
         .qk_result_row_rd_addr(qk_result_row_rd_addr),
         .qk_result_row_rd_valid(qk_result_row_rd_valid),
         .qk_result_row_rd_data(qk_result_row_rd_data),
+        .qk_block_valid(qk_block_valid),
+        .qk_block_ready(qk_block_ready),
+        .qk_block_row_base(qk_block_row_base),
+        .qk_block_data(qk_block_data),
         .qk_done_pulse(qk_done_pulse),
         .pv_req_valid(pv_req_valid),
         .pv_req_ready(pv_req_ready),
@@ -434,58 +513,74 @@ module FA_CORE_BASELINE #(
         .pv_result_row_rd_addr(pv_result_row_rd_addr),
         .pv_result_row_rd_valid(pv_result_row_rd_valid),
         .pv_result_row_rd_data(pv_result_row_rd_data),
+        .pv_block_valid(pv_block_valid),
+        .pv_block_ready(pv_block_ready),
+        .pv_block_row_base(pv_block_row_base),
+        .pv_block_data(pv_block_data),
         .pv_done_pulse(pv_done_pulse)
     );
     assign qk_req_ready = qk_core_req_ready_w;
 
+    assign qk_block_ready = score_stream_req_ready_w;
+
     FA_SCORE_POST_REAL #(
-        .USE_SCORE_ROW_INPUT(1)
+        .USE_SCORE_ROW_INPUT(0),
+        .USE_SCORE_BLOCK_INPUT(1)
     ) u_score_post (
         .clk(clk),
         .rstn(rstn),
         .clear(runtime_clear),
-        .req_valid(score_req_valid),
-        .req_ready(score_req_ready),
+        .req_valid(qk_block_valid),
+        .req_ready(score_stream_req_ready_w),
         .q_blk_idx(sched_q_blk_idx),
         .kv_blk_idx(sched_kv_blk_idx),
         .causal_en(causal_en),
         .scale_word(scale),
         .neg_large_word(neg_large),
         .score_tile_flat(qk_result_tile_flat),
+        .score_block_row_base(qk_block_row_base),
+        .score_block_flat(qk_block_data),
         .score_row_rd_en(qk_result_row_rd_en),
         .score_row_rd_addr(qk_result_row_rd_addr),
         .score_row_rd_valid(qk_result_row_rd_valid),
         .score_row_rd_data(qk_result_row_rd_data),
         .resp_valid(score_resp_valid),
-        .resp_ready(1'b1),
+        .resp_ready(row_proxy_ready_w),
+        .masked_block_row_base(score_masked_block_row_base),
+        .masked_score_block_valid(score_masked_block_valid),
+        .masked_score_block_flat(score_masked_block_flat),
         .masked_score_tile_flat(score_masked_tile_flat),
-        .done_pulse(score_done_pulse)
+        .done_pulse(score_stream_done_pulse_w)
     );
 
-    FA_ROW_STATE_REAL u_row_state (
+    FA_ROW_STATE_REAL #(
+        .USE_MASKED_BLOCK_INPUT(1),
+        .USE_VALID_MASK_INPUT(1)
+    ) u_row_state (
         .clk(clk),
         .rstn(rstn),
         .clear(runtime_clear),
         .init_valid(row_init_valid),
         .init_ready(row_init_ready),
         .init_done_pulse(row_init_done_pulse),
-        .update_valid(row_update_valid),
+        .update_valid(score_resp_valid),
         .update_ready(row_proxy_ready_w),
         .neg_large_word(neg_large),
         .masked_score_tile_flat(score_masked_tile_flat),
+        .update_row_base(score_masked_block_row_base),
+        .masked_score_block_valid(score_masked_block_valid),
+        .masked_score_block_flat(score_masked_block_flat),
         .resp_valid(row_resp_valid),
         .resp_ready(1'b1),
         .p_tile_flat(row_p_tile_flat),
         .rescale_vec_flat(row_rescale_vec_flat),
-        .done_pulse(row_proxy_done_pulse),
+        .done_pulse(row_stream_done_pulse_w),
         .debug_m_state_flat(row_debug_m_state_flat),
         .debug_l_state_flat(row_debug_l_state_flat),
         .debug_row_seen(row_debug_seen_flat)
     );
 
     assign p_tile_flat = row_p_tile_flat;
-    assign row_update_ready = row_proxy_ready_w;
-    assign row_update_done_pulse = row_proxy_done_pulse;
 
     FA_P_BYPASS_REAL u_p_bypass (
         .clk(clk),
@@ -498,16 +593,21 @@ module FA_CORE_BASELINE #(
         .rd_data(p_pv_rd_data)
     );
 
+    assign pv_block_ready = oacc_real_ready_w;
+
     FA_OACC_UPDATE_REAL #(
-        .USE_PARTIAL_ROW_INPUT(1)
+        .USE_PARTIAL_ROW_INPUT(0),
+        .USE_PARTIAL_BLOCK_INPUT(1)
     ) u_oacc_update (
         .clk(clk),
         .rstn(rstn),
         .clear(runtime_clear),
-        .req_valid(oacc_update_valid),
+        .req_valid(pv_block_valid),
         .req_ready(oacc_real_ready_w),
         .rescale_vec_flat(row_rescale_vec_flat),
         .partial_o_tile_flat(pv_result_tile_flat),
+        .req_row_base(pv_block_row_base),
+        .partial_o_block_flat(pv_block_data),
         .partial_row_rd_en(pv_result_row_rd_en),
         .partial_row_rd_addr(pv_result_row_rd_addr),
         .partial_row_rd_valid(pv_result_row_rd_valid),
@@ -523,9 +623,6 @@ module FA_CORE_BASELINE #(
         .resp_ready(1'b1),
         .done_pulse(oacc_real_done_pulse)
     );
-
-    assign oacc_update_ready = oacc_real_ready_w;
-    assign oacc_update_done_pulse = oacc_real_done_pulse;
 
     FA_WR_DMA u_wr_dma (
         .clk(clk),

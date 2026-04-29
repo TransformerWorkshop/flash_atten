@@ -35,6 +35,7 @@ from tests.test_fa_baseline import (  # noqa: E402
     expected_pv_tile_words,
     expected_qk_tile_words,
     expected_row_state_update,
+    expected_score_post_valid_bits,
     expected_score_post_words,
     q16_mul_rn_sat_py,
     q412_oacc_words_to_q88_words,
@@ -335,12 +336,14 @@ def rtl_like_pipeline(
             scale_word=scale_word,
             neg_large_word=neg_large_word,
         )
+        valid_bits = expected_score_post_valid_bits(q_row_start // TILE_ROWS, kv_blk, causal=causal)
         p_words, rescale_words, m_state, l_state, row_seen = expected_row_state_update(
             masked_words,
             neg_large_word=neg_large_word,
             m_state=m_state,
             l_state=l_state,
             row_seen=row_seen,
+            valid_bits=valid_bits,
         )
         pv_words = expected_pv_tile_words(p_words, v_tile)
         oacc_q412_words = expected_oacc_update_q412_words(oacc_q412_words, rescale_words, pv_words)

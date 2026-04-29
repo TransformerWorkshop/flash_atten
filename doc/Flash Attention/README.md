@@ -18,6 +18,9 @@ The top is named `FA_TOP_BASELINE` because it is the currently signed-off compar
 ## 2. Documentation Map
 
 - Flash Attention architecture: this file
+- Algorithm/RTL consistency check: [`algorithm_rtl_consistency.md`](algorithm_rtl_consistency.md)
+- Important module diagrams: [`modules/README.md`](modules/README.md)
+- QK/PV block streaming方案: [`qk_pv_block_streaming.md`](qk_pv_block_streaming.md)
 - Processing Tile operator split-out repo: [`../process_tile`](../../../process_tile)
 - FA area/timing checkpoint after 4x16 GEMM: [`debug/20260428_fa_top_dc_gemm4x16_8core.md`](../../debug/20260428_fa_top_dc_gemm4x16_8core.md)
 - FA row-buffer DRC cleanup checkpoint: [`debug/20260428_fa_rowbuf_write_granularity_drc.md`](../../debug/20260428_fa_rowbuf_write_granularity_drc.md)
@@ -97,12 +100,12 @@ The scheduled datapath for one Q block is:
 4. For each KV block:
    - load K tile
    - load V tile, with overlap where the scheduler can use it
-   - run QK GEMM
-   - apply scale and causal/noncausal mask
-   - update online softmax row state
+   - run QK GEMM and stream four 4-row QK blocks
+   - apply scale and causal/noncausal mask per QK block, with an explicit valid mask
+   - update online softmax row state per masked block and valid mask
    - bypass the probability tile directly into PV
-   - run PV GEMM
-   - rescale and add into OACC
+   - run PV GEMM and stream four 4-row PV partial blocks
+   - rescale and add each PV block into OACC
 5. Store the finished O block.
 6. Advance to the next Q block.
 
@@ -133,7 +136,8 @@ The current baseline already includes these area optimizations:
 - P buffer SRAM has been removed; PV reads probability rows through `FA_P_BYPASS_REAL`.
 - QK and PV share one `GEMM_V3` instance.
 - The shared GEMM is reduced to a 4x16 array and serializes row blocks.
-- Q, K, V/PV, OACC, QK-result, and PV-result row buffers use register-backed shallow storage where this is smaller than the available SRAM macro option.
+- QK-result and PV-result row buffers have been removed from the synthesized datapath; shared core now streams 4-row QK/PV blocks into score/OACC processing.
+- Q, K, V/PV, and OACC row buffers use register-backed shallow storage where this is smaller than the available SRAM macro option.
 - Wide synthesized debug mirrors are excluded from the synthesis path.
 - Several wide reset/clear and write-mask fanout paths have been trimmed.
 
@@ -230,13 +234,13 @@ The latest valid top-level DC checkpoint before the row-buffer write-granularity
 - max-transition violations: `60`
 - main visible DRC issue: high-fanout GEMM clock net
 
-After the row-buffer write-granularity cleanup, area is estimated at about `1.83M-1.85M` NAND2 equivalent. A fresh DC run is needed to convert that estimate into a signoff number.
+After the row-buffer write-granularity cleanup plus QK/PV block streaming, area is estimated at about `1.78M-1.82M` NAND2 equivalent. A fresh DC run is needed to convert that estimate into a signoff number.
 
 ## 7. Known Limitations And Risks
 
 - The current FA baseline is fixed around the 256-token, 64-lane-head schedule. Runtime sequence length and head dimension are not CSR-programmable.
 - The design is optimized for area and uses serialized QK/PV work through one shared 4x16 GEMM array.
-- The remaining DRC risk is dominated by clock/reset and wide datapath fanout, especially around GEMM and shallow register row buffers.
+- The remaining DRC risk is dominated by clock/reset and wide datapath fanout, especially around GEMM and shallow register row buffers; QK/PV result row-buffer fanout has been removed from the main path.
 - Hold reports had near-zero residual paths in the last valid top DC run; final tapeout-style closure still needs physical signoff.
 - CSR alignment is strict: base addresses and stride must be 16-byte aligned.
 - The remote Synopsys flow reads `~/Desktop/flash_atten/synopsys/rtl`, so local RTL must be synced into that tree before SpyGlass or DC measurements.

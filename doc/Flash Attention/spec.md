@@ -1,6 +1,6 @@
 # 摘 要
 
-本项目面向大模型推理中的 Scaled Dot-Product Attention，设计并实现了一个 Flash Attention-style 的硬件加速 IP。设计目标是在不显式存储完整注意力矩阵的前提下，完成 `O = softmax(QK^T / sqrt(d) + M) V` 的端到端计算，并支持 causal 与 non-causal 两种模式。当前 RTL 以 `FA_TOP_BASELINE` 为顶层，固定支持 `SEQ_LEN=256`、`HEAD_DIM=64`、`16x16` tile 调度，通过 AXI4-Lite CSR 配置，通过 128-bit AXI master 读写外部 Q/K/V/O 数据。核心方案采用在线 softmax、分块 QK/PV 计算、OACC 累加与输出回写，并围绕面积约束完成了 OACC Q4.12 压缩、P buffer 旁路、QK/PV 共享 4x16 GEMM、future causal tile 跳过和 Q tile 预取等优化。验证方面，cocotb 回归覆盖 CSR、DMA、端到端 causal/non-causal、背压、soft reset、数值精度和性能计数；当前采样精度满足 `mean_err <= 0.03`、`max_err <= 0.10`。200MHz 下实测完整运行 cycles 为 causal `91,011`、non-causal `161,091`，均小于 `300k` 目标；最近有效顶层 DC 结果为 `545,044.935124` 标准单元面积，约 `1,853,894` NAND2 等效门，满足 `<2M` NAND2 面积约束。
+本项目面向大模型推理中的 Scaled Dot-Product Attention，设计并实现了一个 Flash Attention-style 的硬件加速 IP。设计目标是在不显式存储完整注意力矩阵的前提下，完成 `O = softmax(QK^T / sqrt(d) + M) V` 的端到端计算，并支持 causal 与 non-causal 两种模式。当前 RTL 以 `FA_TOP_BASELINE` 为顶层，固定支持 `SEQ_LEN=256`、`HEAD_DIM=64`、`16x16` tile 调度，通过 AXI4-Lite CSR 配置，通过 128-bit AXI master 读写外部 Q/K/V/O 数据。核心方案采用在线 softmax、分块 QK/PV 计算、OACC 累加与输出回写，并围绕面积约束完成了 OACC Q4.12 压缩、P buffer 旁路、QK/PV 共享 4x16 GEMM、QK/PV 4-row block streaming、future causal tile 跳过和 Q tile 预取等优化。验证方面，cocotb 回归覆盖 CSR、DMA、端到端 causal/non-causal、背压、soft reset、数值精度和性能计数；当前采样精度满足 `mean_err <= 0.03`、`max_err <= 0.10`。200MHz 下实测完整运行 cycles 为 causal `91,113`、non-causal `161,205`，均小于 `300k` 目标；最近有效顶层 DC 结果为 `545,044.935124` 标准单元面积，约 `1,853,894` NAND2 等效门，满足 `<2M` NAND2 面积约束。
 
 关键词：Flash Attention; online softmax; 硬件加速器; AXI; 面积优化
 
@@ -35,8 +35,8 @@
 |---|---|---|---|
 | SDPA/Flash Attention 功能 | QK、scale/mask、online softmax、PV、OACC update、store | `FA_CORE_BASELINE` 内部调度各计算阶段 | `fa_full`、`fa_baseline` 端到端数值测试 |
 | causal/non-causal 模式 | CSR 配置 `causal_en`，调度器跳过 future tile，score post 执行 mask | `FA_CSR`、`FA_TILE_SCHED`、`FA_SCORE_POST_REAL` | causal/non-causal full cases、descriptor count cases |
-| 片上存储控制 | Q/K/V tile buffer、row-state、OACC、result row buffer | `fa_buffers_real.v`、`FA_ROW_STATE_REAL`、`FA_P_BYPASS_REAL` | buffer directed tests、protocol tests |
-| 面积约束 | 压缩 OACC、移除 P buffer、共享并缩小 GEMM、减少宽调试路径 | Q4.12 OACC、P bypass、shared 4x16 `GEMM_V3` | DC area report、SpyGlass lint |
+| 片上存储控制 | Q/K/V tile buffer、row-state、OACC、QK/PV block stream | `fa_buffers_real.v`、`FA_ROW_STATE_REAL`、`FA_P_BYPASS_REAL`、`FA_QK_PV_SHARED_CORE_REAL` | buffer directed tests、protocol tests |
+| 面积约束 | 压缩 OACC、移除 P buffer、共享并缩小 GEMM、移除 QK/PV result row buffer、减少宽调试路径 | Q4.12 OACC、P bypass、shared 4x16 `GEMM_V3`、4-row block streaming | DC area report、SpyGlass lint |
 | 性能约束 | tile 流水调度、Q prefetch、future causal tile skip | `FA_TILE_SCHED` | `ADDR_CYCLES` 实测、`fa_baseline_profile.py` |
 | 外部接口 | AXI4-Lite CSR + 128-bit AXI read/write master | `FA_TOP_BASELINE`、`fa_dma_shell.v` | AXI full tests、CSR tests、backpressure tests |
 
@@ -58,7 +58,7 @@
 - 主路径移除独立 P buffer SRAM，由 `FA_P_BYPASS_REAL` 直接从 row-state 的 probability tile 切片供给 PV。
 - QK 与 PV 共用一个 GEMM 阵列，避免两套大面积 MAC 阵列并存。
 - GEMM 阵列缩小为 4x16，通过串行 row block 换取面积下降。
-- 对浅而宽的 tile/result buffer 优先使用寄存器结构；已评估当前 SRAM macro 对这些 buffer 不是面积优势方案。
+- 对浅而宽的 Q/K/V/OACC buffer 优先使用寄存器结构；QK/PV result row buffer 已由 4-row block stream 替代。
 - 排除综合路径中的宽调试 mirror，削减 reset/clear fanout。
 
 ### 1.3.2 速度与时序
@@ -67,14 +67,14 @@
 
 - Setup WNS/TNS：`0.00 / 0.00`
 - Setup violating paths：`0`
-- 主要剩余 DRC 风险：GEMM clock/reset fanout 与 result row buffer 周边 max-transition。
+- 主要剩余 DRC 风险：GEMM clock/reset fanout 与浅层寄存器 buffer 周边 max-transition；QK/PV result row-buffer 风险已从主路径移除。
 
 完整端到端实测性能：
 
 | 模式 | Cycles | 200MHz 时间 | 说明 |
 |---|---:|---:|---|
-| causal | `91,011` | `455.055 us` | 跳过 future causal tiles，处理 `136/256` 个 KV tiles |
-| non-causal | `161,091` | `805.455 us` | 处理全部 `256/256` 个 KV tiles |
+| causal | `91,113` | `455.565 us` | 跳过 future causal tiles，处理 `136/256` 个 KV tiles |
+| non-causal | `161,205` | `806.025 us` | 处理全部 `256/256` 个 KV tiles |
 
 ### 1.3.3 功耗
 
@@ -178,6 +178,7 @@ Golden model 使用 Python 实现，主要位于：
 - 使用 Q16.16 保存 row-state 的 `m`、`l` 与 rescale。
 - OACC 写回前执行 round-to-nearest 和 saturation。
 - 对负大 mask 使用 CSR `NEG_LARGE` 配置。
+- active block-streaming path 使用 score post 输出的显式 valid mask，而不是用 `score == NEG_LARGE` 反推 mask；因此真实 score 即使数值等于 `NEG_LARGE` 仍可参与 softmax。
 - 精度分析脚本对误差分层统计，当前 sampled full-KV causal worst case 为 `mean=0.022474`、`max=0.042657`。
 
 ### 2.2.3 关键算子设计方案
@@ -185,8 +186,8 @@ Golden model 使用 Python 实现，主要位于：
 | 算子 | 硬件实现 | 说明 |
 |---|---|---|
 | QK GEMM | shared 4x16 `GEMM_V3` | `num_acc=32`，覆盖 64 lane packed dot |
-| score post | `FA_SCORE_POST_REAL` | scale 与 causal/non-causal mask |
-| online softmax | `FA_ROW_STATE_REAL` | 维护每行 `m/l`，输出 probability tile 与 rescale vector |
+| score post | `FA_SCORE_POST_REAL` | scale、causal/non-causal mask 与显式 valid mask |
+| online softmax | `FA_ROW_STATE_REAL` | 维护每行 `m/l`，使用显式 valid mask，输出 probability tile 与 rescale vector |
 | P bypass | `FA_P_BYPASS_REAL` | 将 row-state 输出切片供 PV 读取，替代 P SRAM |
 | PV GEMM | shared 4x16 `GEMM_V3` | `num_acc=8`，按列块序列化 |
 | OACC update | `FA_OACC_UPDATE_REAL` | `O_new = O_old * rescale + PV_partial` |
@@ -236,12 +237,199 @@ Golden model 使用 Python 实现，主要位于：
 | Core datapath | `FA_CORE_BASELINE` | 调度 Q/K/V load、QK、softmax、PV、OACC、store |
 | DMA shell | `fa_dma_shell.v` | 将 core descriptor 转换为 128-bit AXI read/write transaction |
 
-核心数据流：
+重要子模块的独立框图文档位于 [`modules/README.md`](modules/README.md)，每个模块一个 Markdown 文件。
+
+总体架构框图如下，使用普通 Markdown `text` 代码块表示，不依赖 Mermaid 或其他渲染插件。
 
 ```text
-AXI read -> Q/K/V buffers -> QK -> score/mask -> online softmax
-         -> P bypass -> PV -> OACC update -> OACC export -> AXI write
+                         +---------------------+
+                         | Software / testbench|
+                         +----------+----------+
+                                    | s_axil_*
+                                    v
++--------------------------------------------------------------------------------+
+| FA_TOP_BASELINE                                                                 |
+|                                                                                |
+|  +--------------+     config/start/reset      +------------------------------+ |
+|  | FA_CSR       |---------------------------->| FA_CORE_BASELINE             | |
+|  | csr_array    |<----------------------------| busy/done/error/counters     | |
+|  +------+-------+                             +-------+---------------+------+ |
+|         | irq/status                                  |               |        |
+|         v                                             | rd_desc/data  | wr_desc/data |
+|        irq                                            v               v        |
+|                                               +-------+-------+ +-----+------+ |
+|                                               | FA_AXI_RD_   | | FA_AXI_WR_ | |
+|                                               | MASTER       | | MASTER     | |
+|                                               +-------+-------+ +-----+------+ |
++-------------------------------------------------------|---------------|--------+
+                                                        |               |
+                                                        | m_axi_ar/r*   | m_axi_aw/w/b*
+                                                        v               v
+                                              +---------+---------------+--------+
+                                              | External memory                 |
+                                              | Q/K/V input, O output           |
+                                              +---------------------------------+
 ```
+
+`FA_CORE_BASELINE` 内部数据通路框图如下：
+
+```text
++--------------------------------------------------------------------------------+
+| FA_CORE_BASELINE                                                                |
+|                                                                                |
+|  +-------------+          phase valid/ready/done          +------------------+  |
+|  | FA_RUN_CTRL |<---------------------------------------->| FA_TILE_SCHED    |  |
+|  | busy/done   |                                          | Q/KV/head FSM    |  |
+|  +-------------+                                          +---------+--------+  |
+|                                                                    |           |
+|                                                                    v           |
+|  +----------------+      128-bit read beats      +-------------------------+   |
+|  | FA_RD_DMA      |----------------------------->| Q_BUF / K_BUF / V_BUF   |   |
+|  | Q/K/V desc     |                              | V_BUF_PV layout buffer  |   |
+|  +----------------+                              +-----------+-------------+   |
+|                                                              |                 |
+|                                                              v                 |
+|  +----------------------+     QK 4-row blocks     +------------------------+   |
+|  | FA_SCORE_POST_REAL   |<------------------------| FA_QK_PV_SHARED_CORE   |   |
+|  | scale + causal mask  |                         | shared 4x16 GEMM_V3    |   |
+|  +----------+-----------+                         | QK mode / PV mode      |   |
+|             | masked 4-row blocks                 +-----------+------------+   |
+|             v                                                 ^                |
+|  +----------------------+       p_tile_flat        +----------+-------------+  |
+|  | FA_ROW_STATE_REAL    |------------------------->| FA_P_BYPASS_REAL       |  |
+|  | online softmax m/l   |                          | no standalone P SRAM   |  |
+|  +----------+-----------+                          +------------------------+  |
+|             | rescale_vec                                                       |
+|             v                                                                   |
+|  +----------------------+      PV 4-row blocks     +------------------------+   |
+|  | FA_OACC_UPDATE_REAL  |<-------------------------| shared core PV result  |   |
+|  | rescale + accumulate |                          +------------------------+   |
+|  +----------+-----------+                                                       |
+|             | updated O rows                                                    |
+|             v                                                                   |
+|  +----------------------+       export rows       +-------------------------+   |
+|  | FA_OACC_BUF_REAL     |------------------------>| FA_WR_DMA               |   |
+|  | Q4.12 accumulator    |                         | O write descriptors     |   |
+|  +----------------------+                         +-------------------------+   |
++--------------------------------------------------------------------------------+
+```
+
+进一步展开到实例级内部结构：
+
+```text
++--------------------------------------------------------------------------------+
+| FA_CORE_BASELINE instance-level structure                                        |
++--------------------------------------------------------------------------------+
+
+Control/status:
+
+  CSR/config
+  start, soft_reset, irq_en, causal_en, base/stride, scale, neg_large, shape cfg
+          |
+          v
+  +------------------+       run_active       +-------------------------------+
+  | u_run_ctrl       |----------------------->| u_sched                       |
+  | FA_RUN_CTRL      |<-----------------------| FA_TILE_SCHED                 |
+  | busy/done/error  |  complete/error pulses | head, Q block, KV block FSM   |
+  +------------------+                        +---------------+---------------+
+                                                              |
+                                                              | stage requests
+                                                              v
+             load, row_init, oacc_clear, qk, score, row_update,
+             pv, oacc_update, store
+
+Read and tile storage:
+
+  rd_desc_* to top read path
+        ^
+        |
+  +-----+------------+        qkv_wr_*       +----------------+
+  | u_rd_dma         |---------------------->| u_q_buf        |-- Q rows --+
+  | FA_RD_DMA        |---------------------->| u_k_buf        |-- K rows --+
+  | Q/K/V address    |---------------------->| u_v_buf        |            |
+  | + beat unpack    |--- v_pv_src_* ------->| u_v_buf_pv     |-- V rows --+
+  +--------+---------+                       +----------------+            |
+           ^                                                             |
+           | rd_beat_* from top read path                                |
+           +-------------------------------------------------------------+
+
+QK, score, and online softmax:
+
+  +---------+ Q rows
+  | u_q_buf |--------+
+  +---------+        |
+                     v
+              +------+-------------------+ qk block  +------------------+
+              | u_qk_pv_core            |---------->| u_score_post     |
+              | shared 4x16 GEMM        |           | scale + mask     |
+              | QK mode                 |           +--------+---------+
+              +------+-------------------+                    |
+                     ^                                        | masked block
+  +---------+ K rows |                                        v
+  | u_k_buf |--------+                               +------------------+
+  +---------+                                        | u_row_state      |
+                                                     | online m/l       |
+                                                     | p_tile/rescale   |
+                                                     +----+--------+----+
+                                                          |        |
+                                                p_tile_flat|        |rescale_vec
+                                                          v        v
+PV and OACC update:
+
+  p_tile_flat from u_row_state
+        |
+        v
+  +------------------+ P rows
+  | u_p_bypass       |--------+
+  | P slice reader   |        |
+  +------------------+        v
+                        +-----+--------------------+ PV block +-----------------+
+                        | u_qk_pv_core            |-------->| u_oacc_update    |
+                        | shared 4x16 GEMM        |         | old*rescale + PV |
+                        | PV mode                 |         +--------+---------+
+                        +-----+--------------------+                  |
+  rescale_vec from u_row_state ------------------------------->       |
+                              ^                                       | OACC rd/wr
+                              | V rows                                v
+                     +--------+---------+                    +------------------+
+                     | u_v_buf_pv      |                    | u_oacc_buf       |
+                     | PV V layout     |                    | Q4.12 OACC rows  |
+                     +-----------------+                    +--------+---------+
+                                                                      |
+                                                                      | export rows
+                                                                      v
+Writeback:
+
+  +------------------+        wr_desc_* / wr_data_*         top write path
+  | u_wr_dma         |--------------------------------------------->
+  | FA_WR_DMA        |
+  +--------+---------+
+           |
+           | store_done
+           v
+        u_sched
+
+Counters:
+
+  rd_bytes counts accepted rd_beat_* payload words.
+  wr_bytes counts accepted wr_data_* words.
+  run_complete_pulse comes from u_sched; read/top error pulses return to u_run_ctrl.
+```
+
+内部子模块职责如下：
+
+| 分类 | 实例 / 模块 | 主要作用 |
+|---|---|---|
+| 运行控制 | `u_run_ctrl` / `FA_RUN_CTRL` | 接收 `start_pulse`、`soft_reset_pulse`、完成和错误脉冲，产生 `busy/done/error/cycles` |
+| tile 调度 | `u_sched` / `FA_TILE_SCHED` | 遍历 head、Q block、KV block，发起 load、row init、OACC clear、QK、score、row update、PV、OACC update、store |
+| 读搬运 | `u_rd_dma` / `FA_RD_DMA` | 根据 Q/K/V base、stride 和 block index 生成读 descriptor，将 128-bit beat 拆写到 Q/K/V buffer |
+| Q/K/V 存储 | `u_q_buf`、`u_k_buf`、`u_v_buf`、`u_v_buf_pv` | 保存当前 tile；`u_v_buf_pv` 同步生成 PV 读取友好的 V 布局 |
+| 共享计算 | `u_qk_pv_core` / `FA_QK_PV_SHARED_CORE_REAL` | 复用同一 4x16 `GEMM_V3` 阵列，按调度在 QK 与 PV 两种模式间切换，并输出 4-row QK/PV blocks |
+| score 后处理 | `u_score_post` / `FA_SCORE_POST_REAL` | 对 4-row QK block 执行 scale、causal/non-causal mask，并输出独立 valid mask |
+| online softmax | `u_row_state` / `FA_ROW_STATE_REAL` | 按 4-row masked block 与 valid mask 维护每行 `m/l` 状态，输出 probability tile 与 OACC rescale vector |
+| P 旁路 | `u_p_bypass` / `FA_P_BYPASS_REAL` | 从 `row_p_tile_flat` 切出 PV 所需 P rows，替代独立 P SRAM |
+| O 累加 | `u_oacc_buf`、`u_oacc_update` | `u_oacc_buf` 保存 Q4.12 OACC；`u_oacc_update` 对 4-row PV block 执行 `old * rescale + PV_partial` |
+| 写搬运 | `u_wr_dma` / `FA_WR_DMA` | 从 OACC export rows 生成 O 写 descriptor 和 32-bit packed write data |
 
 ### 3.1.2 接口协议与总线功能
 
@@ -290,15 +478,17 @@ AXI read -> Q/K/V buffers -> QK -> score/mask -> online softmax
 
 causal 模式下，如果整个 KV tile 都在当前 Q tile 的未来位置，则调度器跳过该 KV tile 的计算阶段。store 阶段可预取下一 Q tile。
 
+QK/PV 后处理在 `FA_CORE_BASELINE` 内部以 4-row block 流水执行：QK GEMM 每完成一个 row block 直接送入 score post，score post 输出 masked block 和 valid mask 后送入 row-state；PV GEMM 每完成一个 `4 x 64` partial block 直接送入 OACC update。`FA_TILE_SCHED` 对外仍看到原来的 score/row/OACC 阶段，内部通过 4 个 block done counter 产生对应 done pulse。
+
 ### 3.2.2 关键计算单元实现
 
 | 计算单元 | 模块 | 设计说明 |
 |---|---|---|
 | GEMM PE array | `GEMM_V3` / `GEMU_V3` | packed lane 乘加，当前共享阵列为 4x16 |
-| Shared QK/PV wrapper | `FA_QK_PV_SHARED_CORE_REAL` | mode 选择 QK 或 PV 输入，复用同一 GEMM |
-| Score post | `FA_SCORE_POST_REAL` | 对 QK 结果执行 scale 与 mask |
+| Shared QK/PV wrapper | `FA_QK_PV_SHARED_CORE_REAL` | mode 选择 QK 或 PV 输入，复用同一 GEMM，并输出 QK/PV 4-row block |
+| Score post | `FA_SCORE_POST_REAL` | 对 QK block 执行 scale 与 mask，输出显式 valid mask |
 | Exp/reciprocal | `FA_ROW_STATE_REAL`、`FA_RECIP_Q16_16` | 支撑 online softmax |
-| OACC update | `FA_OACC_UPDATE_REAL` | rescale old OACC 并加上 PV partial |
+| OACC update | `FA_OACC_UPDATE_REAL` | rescale old OACC 并加上 PV partial block |
 
 ### 3.2.3 存储与数据搬运设计
 
@@ -309,7 +499,7 @@ causal 模式下，如果整个 KV tile 都在当前 Q tile 的未来位置，�
 | V/PV buffer | 保存 V tile，并按 PV 所需布局读出 |
 | P bypass | 不落独立 P SRAM，直接从 row-state `p_tile_flat` 切出 PV 读取 slice |
 | OACC buffer | 内部 16-bit Q4.12 存储，导出为 Q8.8 packed words |
-| QK/PV result row buffers | 保存共享 GEMM 输出，供后级 row-state/OACC 读取 |
+| QK/PV block stream | shared core 直接输出 4-row QK/PV blocks，替代综合主路径中的 result row buffers |
 | Read DMA | 根据 Q/K/V descriptor 读取 128-bit AXI beats |
 | Write DMA | 根据 O descriptor 写回 128-bit AXI beats |
 
@@ -514,7 +704,7 @@ ________
 | P buffer 面积与 P-load 延迟 | 用 `FA_P_BYPASS_REAL` 旁路 row-state 输出 | P bypass directed test 与 full tests 通过 |
 | QK/PV 双 GEMM 面积过大 | 共享同一 `GEMM_V3` | shared GEMM tests 与 full tests 通过 |
 | GEMM 仍为面积热点 | 缩小为 4x16 并串行化 | DC 面积降至约 `1.854M` NAND2 |
-| causal 无效 tile 浪费 cycles | 调度器跳过完整 future causal tile | causal full-run 实测 `91,011` cycles |
+| causal 无效 tile 浪费 cycles | 调度器跳过完整 future causal tile | causal full-run 实测 `91,113` cycles |
 | store 后 Q load 暴露延迟 | store 阶段预取下一 Q tile | full regression 通过 |
 
 ---
@@ -573,8 +763,8 @@ ________
 
 | 指标 | 目标 | 当前结果 | 状态 |
 |---|---:|---:|---|
-| causal 完整 cycles | `<300k` | `91,011` | 达成 |
-| non-causal 完整 cycles | `<300k` | `161,091` | 达成 |
+| causal 完整 cycles | `<300k` | `91,113` | 达成 |
+| non-causal 完整 cycles | `<300k` | `161,205` | 达成 |
 | 面积 | `<2M` NAND2 | `1,853,894` NAND2 | 达成 |
 | setup timing | `200MHz` | WNS/TNS `0.00/0.00` | 达成 |
 | 精度 mean error | `<=0.03` | worst sampled `0.022474` | 达成 |
@@ -597,8 +787,9 @@ ________
 当前设计主要选择是以适量增加串行计算换取面积下降：
 
 - 共享 4x16 GEMM 显著降低面积，是满足 `<2M` NAND2 的关键，但降低了峰值并行度。
+- QK/PV 4-row block streaming 移除 result row buffer，减少宽读 mux 和局部 fanout，代价是每个 block 边界最多 1 cycle backpressure bubble。
 - causal future tile skip 和 Q prefetch 抵消部分串行化性能损失，使完整运行 cycles 仍远低于 `300k`。
 - OACC Q4.12 和 P bypass 主要降低存储面积；代价是更严格的数值验证和 PV 输入路径时序关注。
-- 主要剩余风险集中在 GEMM clock/reset fanout、result row buffer 周边 DRC、near-zero hold paths，以及尚未完成的功耗评估。
+- 主要剩余风险集中在 GEMM clock/reset fanout、浅层寄存器 buffer 周边 DRC、near-zero hold paths，以及尚未完成的功耗评估。
 
 ---

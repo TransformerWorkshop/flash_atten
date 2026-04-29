@@ -1,5 +1,6 @@
 module FA_SCORE_POST_REAL #(
-    parameter USE_SCORE_ROW_INPUT = 0
+    parameter USE_SCORE_ROW_INPUT = 0,
+    parameter USE_SCORE_BLOCK_INPUT = 0
 ) (
     input  wire          clk,
     input  wire          rstn,
@@ -12,12 +13,17 @@ module FA_SCORE_POST_REAL #(
     input  wire [31:0]   scale_word,
     input  wire [31:0]   neg_large_word,
     input  wire [8191:0] score_tile_flat,
+    input  wire [3:0]    score_block_row_base,
+    input  wire [2047:0] score_block_flat,
     output reg           score_row_rd_en,
     output reg  [3:0]    score_row_rd_addr,
     input  wire          score_row_rd_valid,
     input  wire [511:0]  score_row_rd_data,
     output reg           resp_valid,
     input  wire          resp_ready,
+    output reg  [3:0]    masked_block_row_base,
+    output reg  [63:0]   masked_score_block_valid,
+    output reg  [2047:0] masked_score_block_flat,
     output reg  [8191:0] masked_score_tile_flat,
     output reg           done_pulse
 );
@@ -35,8 +41,12 @@ module FA_SCORE_POST_REAL #(
     reg       causal_r;
     reg [31:0] scale_word_r;
     reg [31:0] neg_large_word_r;
+    reg [3:0] score_block_row_base_r;
+    reg [2047:0] score_block_flat_r;
     reg [3:0] row_idx_r;
     reg [3:0] row_idx_n;
+    wire [3:0] row_limit_w;
+    wire [3:0] actual_row_idx_w;
 
     integer col_idx;
     integer global_q_idx;
@@ -71,6 +81,8 @@ module FA_SCORE_POST_REAL #(
         end
     endfunction
 
+    assign row_limit_w = (USE_SCORE_BLOCK_INPUT != 0) ? 4'd3 : 4'd15;
+    assign actual_row_idx_w = (USE_SCORE_BLOCK_INPUT != 0) ? (score_block_row_base_r + row_idx_r) : row_idx_r;
     assign req_ready = (state_r == ST_IDLE) && !resp_valid;
 
     always @(*) begin
@@ -89,7 +101,7 @@ module FA_SCORE_POST_REAL #(
                 end
             end
             ST_RUN: begin
-                if (row_idx_r == 4'd15) begin
+                if (row_idx_r == row_limit_w) begin
                     state_n = ST_DONE;
                 end else begin
                     row_idx_n = row_idx_r + 1'b1;
@@ -100,7 +112,7 @@ module FA_SCORE_POST_REAL #(
             end
             ST_ROW_WAIT: begin
                 if (score_row_rd_valid) begin
-                    if (row_idx_r == 4'd15) begin
+                    if (row_idx_r == row_limit_w) begin
                         state_n = ST_DONE;
                     end else begin
                         row_idx_n = row_idx_r + 1'b1;
@@ -137,9 +149,14 @@ module FA_SCORE_POST_REAL #(
             causal_r <= 1'b0;
             scale_word_r <= 32'd0;
             neg_large_word_r <= 32'd0;
+            score_block_row_base_r <= 4'd0;
+            score_block_flat_r <= 2048'd0;
             score_row_rd_en <= 1'b0;
             score_row_rd_addr <= 4'd0;
             resp_valid <= 1'b0;
+            masked_block_row_base <= 4'd0;
+            masked_score_block_valid <= 64'd0;
+            masked_score_block_flat <= 2048'd0;
 `ifndef SYNTHESIS
             masked_score_tile_flat <= 8192'd0;
 `endif
@@ -150,9 +167,14 @@ module FA_SCORE_POST_REAL #(
             causal_r <= 1'b0;
             scale_word_r <= 32'd0;
             neg_large_word_r <= 32'd0;
+            score_block_row_base_r <= 4'd0;
+            score_block_flat_r <= 2048'd0;
             score_row_rd_en <= 1'b0;
             score_row_rd_addr <= 4'd0;
             resp_valid <= 1'b0;
+            masked_block_row_base <= 4'd0;
+            masked_score_block_valid <= 64'd0;
+            masked_score_block_flat <= 2048'd0;
 `ifndef SYNTHESIS
             masked_score_tile_flat <= 8192'd0;
 `endif
@@ -174,23 +196,38 @@ module FA_SCORE_POST_REAL #(
                         causal_r <= causal_en;
                         scale_word_r <= scale_word;
                         neg_large_word_r <= neg_large_word;
+                        score_block_row_base_r <= score_block_row_base;
+                        score_block_flat_r <= score_block_flat;
+                        masked_block_row_base <= score_block_row_base;
+                        masked_score_block_valid <= 64'd0;
+                        masked_score_block_flat <= 2048'd0;
 `ifndef SYNTHESIS
-                        masked_score_tile_flat <= 8192'd0;
+                        if ((USE_SCORE_BLOCK_INPUT == 0) || (score_block_row_base == 4'd0)) begin
+                            masked_score_tile_flat <= 8192'd0;
+                        end
 `endif
                     end
                 end
                 ST_RUN: begin
-                    global_q_idx = (q_blk_r * 16) + row_idx_r;
+                    global_q_idx = (q_blk_r * 16) + actual_row_idx_w;
                     for (col_idx = 0; col_idx < 16; col_idx = col_idx + 1) begin
                         global_k_idx = (kv_blk_r * 16) + col_idx;
-                        score_word_s = score_tile_flat[((row_idx_r * 16) + col_idx) * 32 +: 32];
-                        if (causal_r && (global_k_idx > global_q_idx)) begin
-                            masked_score_tile_flat[((row_idx_r * 16) + col_idx) * 32 +: 32] <= neg_large_word_r;
+                        if (USE_SCORE_BLOCK_INPUT != 0) begin
+                            score_word_s = score_block_flat_r[((row_idx_r * 16) + col_idx) * 32 +: 32];
                         end else begin
-                            masked_score_tile_flat[((row_idx_r * 16) + col_idx) * 32 +: 32] <= q16_mul_rn_sat(score_word_s, scale_word_r);
+                            score_word_s = score_tile_flat[((row_idx_r * 16) + col_idx) * 32 +: 32];
+                        end
+                        if (causal_r && (global_k_idx > global_q_idx)) begin
+                            masked_score_block_valid[(row_idx_r * 16) + col_idx] <= 1'b0;
+                            masked_score_block_flat[((row_idx_r * 16) + col_idx) * 32 +: 32] <= neg_large_word_r;
+                            masked_score_tile_flat[((actual_row_idx_w * 16) + col_idx) * 32 +: 32] <= neg_large_word_r;
+                        end else begin
+                            masked_score_block_valid[(row_idx_r * 16) + col_idx] <= 1'b1;
+                            masked_score_block_flat[((row_idx_r * 16) + col_idx) * 32 +: 32] <= q16_mul_rn_sat(score_word_s, scale_word_r);
+                            masked_score_tile_flat[((actual_row_idx_w * 16) + col_idx) * 32 +: 32] <= q16_mul_rn_sat(score_word_s, scale_word_r);
                         end
                     end
-                    if (row_idx_r == 4'd15) begin
+                    if (row_idx_r == row_limit_w) begin
                         resp_valid <= 1'b1;
                     end
                 end
@@ -200,17 +237,25 @@ module FA_SCORE_POST_REAL #(
                 end
                 ST_ROW_WAIT: begin
                     if (score_row_rd_valid) begin
-                        global_q_idx = (q_blk_r * 16) + row_idx_r;
+                        global_q_idx = (q_blk_r * 16) + actual_row_idx_w;
                         for (col_idx = 0; col_idx < 16; col_idx = col_idx + 1) begin
                             global_k_idx = (kv_blk_r * 16) + col_idx;
                             score_word_s = score_row_rd_data[(col_idx * 32) +: 32];
                             if (causal_r && (global_k_idx > global_q_idx)) begin
+                                if (row_idx_r < 4) begin
+                                    masked_score_block_valid[(row_idx_r * 16) + col_idx] <= 1'b0;
+                                end
+                                masked_score_block_flat[((row_idx_r * 16) + col_idx) * 32 +: 32] <= neg_large_word_r;
                                 masked_score_tile_flat[((row_idx_r * 16) + col_idx) * 32 +: 32] <= neg_large_word_r;
                             end else begin
+                                if (row_idx_r < 4) begin
+                                    masked_score_block_valid[(row_idx_r * 16) + col_idx] <= 1'b1;
+                                end
+                                masked_score_block_flat[((row_idx_r * 16) + col_idx) * 32 +: 32] <= q16_mul_rn_sat(score_word_s, scale_word_r);
                                 masked_score_tile_flat[((row_idx_r * 16) + col_idx) * 32 +: 32] <= q16_mul_rn_sat(score_word_s, scale_word_r);
                             end
                         end
-                        if (row_idx_r == 4'd15) begin
+                        if (row_idx_r == row_limit_w) begin
                             resp_valid <= 1'b1;
                         end
                     end
