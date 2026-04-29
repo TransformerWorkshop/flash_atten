@@ -80,6 +80,7 @@ module FA_TOP_BASELINE_SIM #(
     wire [31:0] status_rd_bytes;
     wire [31:0] status_wr_bytes;
 
+    //debug
     wire [16383:0] q_tile_flat;
     wire [16383:0] k_tile_flat;
     wire [16383:0] v_tile_flat;
@@ -218,6 +219,7 @@ module FA_TOP_BASELINE_SIM #(
         .rd_bytes(status_rd_bytes),
         .wr_bytes(status_wr_bytes),
         .irq(core_irq),
+        //debug
         .q_tile_flat(q_tile_flat),
         .k_tile_flat(k_tile_flat),
         .v_tile_flat(v_tile_flat),

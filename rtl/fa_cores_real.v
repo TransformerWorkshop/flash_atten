@@ -1,18 +1,30 @@
-module FA_QK_PV_REQ_ARB (
-    input  wire stream_idle,
-    input  wire qk_req_valid,
-    output wire qk_req_ready,
-    output wire qk_req_fire,
-    input  wire qk_resp_valid,
-    input  wire qk_block_valid,
-    input  wire pv_req_valid,
-    output wire pv_req_ready,
-    output wire pv_req_fire,
-    input  wire pv_resp_valid,
-    input  wire pv_block_valid
+module FA_QK_PV_ARB (
+    input  wire         stream_idle,
+    input  wire         qk_req_valid,
+    output wire         qk_req_ready,
+    output wire         qk_req_fire,
+    input  wire         qk_resp_valid,
+    input  wire         qk_block_valid,
+    input  wire         pv_req_valid,
+    output wire         pv_req_ready,
+    output wire         pv_req_fire,
+    input  wire         pv_resp_valid,
+    input  wire         pv_block_valid,
+    input  wire         mode,
+    input  wire [1:0]   row_blk,
+    input  wire [511:0] q_rd_data,
+    input  wire [511:0] k_rd_data,
+    input  wire [511:0] p_rd_data,
+    input  wire [511:0] v_rd_data,
+    output reg  [127:0] gemm_a_data,
+    output wire [511:0] gemm_b_data,
+    output wire [31:0]  gemm_num_acc
 );
 
+    localparam MODE_QK = 1'b0;
+
     wire idle_ready_w;
+    wire [511:0] gemm_a_full_data_w;
 
     assign idle_ready_w = stream_idle &&
                           !qk_resp_valid &&
@@ -23,6 +35,18 @@ module FA_QK_PV_REQ_ARB (
     assign pv_req_ready = idle_ready_w && !qk_req_valid;
     assign qk_req_fire = qk_req_valid && qk_req_ready;
     assign pv_req_fire = pv_req_valid && pv_req_ready;
+    assign gemm_a_full_data_w = (mode == MODE_QK) ? q_rd_data : p_rd_data;
+    assign gemm_b_data = (mode == MODE_QK) ? k_rd_data : v_rd_data;
+    assign gemm_num_acc = (mode == MODE_QK) ? 32'd32 : 32'd8;
+
+    always @(*) begin
+        case (row_blk)
+            2'd0: gemm_a_data = gemm_a_full_data_w[127:0];
+            2'd1: gemm_a_data = gemm_a_full_data_w[255:128];
+            2'd2: gemm_a_data = gemm_a_full_data_w[383:256];
+            default: gemm_a_data = gemm_a_full_data_w[511:384];
+        endcase
+    end
 
 endmodule
 
@@ -60,8 +84,7 @@ module FA_QK_PV_STREAM_CTRL (
     output wire        gemm_start,
     output wire        gemm_feed_fire,
     output wire        gemm_output_ready,
-    output wire        gemm_stream_fire,
-    output wire [31:0] gemm_num_acc
+    output wire        gemm_stream_fire
 );
 
     localparam [1:0] ST_IDLE = 2'd0;
@@ -126,8 +149,6 @@ module FA_QK_PV_STREAM_CTRL (
     assign p_rd_addr = pv_issue_addr_w;
     assign v_rd_en = read_issue_w && (mode_r == MODE_PV);
     assign v_rd_addr = {col_blk_r, pv_issue_addr_w};
-    assign gemm_num_acc = (mode_r == MODE_QK) ? 32'd32 : 32'd8;
-
     always @(*) begin
         state_n = state_r;
         mode_n = mode_r;
@@ -248,7 +269,6 @@ module FA_QK_PV_RESULT_PACKER (
     input  wire           gemm_last,
     output reg            qk_resp_valid,
     input  wire           qk_resp_ready,
-    output wire [8191:0]  qk_result_tile_flat,
     input  wire           qk_result_row_rd_en,
     input  wire [3:0]     qk_result_row_rd_addr,
     output reg            qk_result_row_rd_valid,
@@ -260,7 +280,6 @@ module FA_QK_PV_RESULT_PACKER (
     output reg            qk_done_pulse,
     output reg            pv_resp_valid,
     input  wire           pv_resp_ready,
-    output wire [16383:0] pv_result_tile_flat,
     input  wire           pv_result_row_rd_en,
     input  wire [3:0]     pv_result_row_rd_addr,
     output reg            pv_result_row_rd_valid,
@@ -269,7 +288,10 @@ module FA_QK_PV_RESULT_PACKER (
     input  wire           pv_block_ready,
     output reg  [3:0]     pv_block_row_base,
     output reg  [4095:0]  pv_block_data,
-    output reg            pv_done_pulse
+    output reg            pv_done_pulse,
+    //debug
+    output wire [8191:0]  qk_result_tile_flat,
+    output wire [16383:0] pv_result_tile_flat
 );
 
     localparam MODE_QK = 1'b0;
@@ -524,7 +546,6 @@ module FA_QK_PV_SHARED_CORE_REAL (
     input  wire [511:0]  k_rd_data,
     output wire          qk_resp_valid,
     input  wire          qk_resp_ready,
-    output wire [8191:0] qk_result_tile_flat,
     input  wire          qk_result_row_rd_en,
     input  wire [3:0]    qk_result_row_rd_addr,
     output wire          qk_result_row_rd_valid,
@@ -546,7 +567,6 @@ module FA_QK_PV_SHARED_CORE_REAL (
     input  wire [511:0]  v_rd_data,
     output wire          pv_resp_valid,
     input  wire          pv_resp_ready,
-    output wire [16383:0] pv_result_tile_flat,
     input  wire          pv_result_row_rd_en,
     input  wire [3:0]    pv_result_row_rd_addr,
     output wire          pv_result_row_rd_valid,
@@ -555,10 +575,11 @@ module FA_QK_PV_SHARED_CORE_REAL (
     input  wire          pv_block_ready,
     output wire [3:0]    pv_block_row_base,
     output wire [4095:0] pv_block_data,
-    output wire          pv_done_pulse
+    output wire          pv_done_pulse,
+    //debug
+    output wire [8191:0] qk_result_tile_flat,
+    output wire [16383:0] pv_result_tile_flat
 );
-
-    localparam MODE_QK = 1'b0;
 
     wire         stream_idle_w;
     wire         mode_w;
@@ -580,10 +601,8 @@ module FA_QK_PV_SHARED_CORE_REAL (
     wire [127:0] gemm_a_data_w;
     wire [511:0] gemm_b_data_w;
     wire [31:0]  gemm_num_acc_w;
-    wire [511:0] gemm_a_full_data_w;
-    reg  [127:0] gemm_a_data_r;
 
-    FA_QK_PV_REQ_ARB u_req_arb (
+    FA_QK_PV_ARB u_arb (
         .stream_idle(stream_idle_w),
         .qk_req_valid(qk_req_valid),
         .qk_req_ready(qk_req_ready),
@@ -594,7 +613,16 @@ module FA_QK_PV_SHARED_CORE_REAL (
         .pv_req_ready(pv_req_ready),
         .pv_req_fire(pv_req_fire_w),
         .pv_resp_valid(pv_resp_valid),
-        .pv_block_valid(pv_block_valid)
+        .pv_block_valid(pv_block_valid),
+        .mode(mode_w),
+        .row_blk(row_blk_w),
+        .q_rd_data(q_rd_data),
+        .k_rd_data(k_rd_data),
+        .p_rd_data(p_rd_data),
+        .v_rd_data(v_rd_data),
+        .gemm_a_data(gemm_a_data_w),
+        .gemm_b_data(gemm_b_data_w),
+        .gemm_num_acc(gemm_num_acc_w)
     );
 
     FA_QK_PV_STREAM_CTRL u_stream_ctrl (
@@ -631,22 +659,8 @@ module FA_QK_PV_SHARED_CORE_REAL (
         .gemm_start(gemm_start_w),
         .gemm_feed_fire(gemm_feed_fire_w),
         .gemm_output_ready(gemm_output_ready_w),
-        .gemm_stream_fire(gemm_stream_fire_w),
-        .gemm_num_acc(gemm_num_acc_w)
+        .gemm_stream_fire(gemm_stream_fire_w)
     );
-
-    assign gemm_a_full_data_w = (mode_w == MODE_QK) ? q_rd_data : p_rd_data;
-    assign gemm_a_data_w = gemm_a_data_r;
-    assign gemm_b_data_w = (mode_w == MODE_QK) ? k_rd_data : v_rd_data;
-
-    always @(*) begin
-        case (row_blk_w)
-            2'd0: gemm_a_data_r = gemm_a_full_data_w[127:0];
-            2'd1: gemm_a_data_r = gemm_a_full_data_w[255:128];
-            2'd2: gemm_a_data_r = gemm_a_full_data_w[383:256];
-            default: gemm_a_data_r = gemm_a_full_data_w[511:384];
-        endcase
-    end
 
     GEMM_V3 #(
         .WIDTH(32),
@@ -690,7 +704,6 @@ module FA_QK_PV_SHARED_CORE_REAL (
         .gemm_last(gemm_last_w),
         .qk_resp_valid(qk_resp_valid),
         .qk_resp_ready(qk_resp_ready),
-        .qk_result_tile_flat(qk_result_tile_flat),
         .qk_result_row_rd_en(qk_result_row_rd_en),
         .qk_result_row_rd_addr(qk_result_row_rd_addr),
         .qk_result_row_rd_valid(qk_result_row_rd_valid),
@@ -702,7 +715,6 @@ module FA_QK_PV_SHARED_CORE_REAL (
         .qk_done_pulse(qk_done_pulse),
         .pv_resp_valid(pv_resp_valid),
         .pv_resp_ready(pv_resp_ready),
-        .pv_result_tile_flat(pv_result_tile_flat),
         .pv_result_row_rd_en(pv_result_row_rd_en),
         .pv_result_row_rd_addr(pv_result_row_rd_addr),
         .pv_result_row_rd_valid(pv_result_row_rd_valid),
@@ -711,7 +723,10 @@ module FA_QK_PV_SHARED_CORE_REAL (
         .pv_block_ready(pv_block_ready),
         .pv_block_row_base(pv_block_row_base),
         .pv_block_data(pv_block_data),
-        .pv_done_pulse(pv_done_pulse)
+        .pv_done_pulse(pv_done_pulse),
+        //debug
+        .qk_result_tile_flat(qk_result_tile_flat),
+        .pv_result_tile_flat(pv_result_tile_flat)
     );
 
 endmodule

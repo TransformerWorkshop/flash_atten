@@ -11,6 +11,7 @@ module FA_BANKED_TILE_BUF_REAL (
     input  wire [4:0]     rd_addr,
     output reg            rd_valid,
     output reg  [511:0]   rd_data,
+    //debug
     output wire [16383:0] tile_flat
 );
 
@@ -128,6 +129,7 @@ module FA_REG_TILE_BUF_REAL (
     input  wire [4:0]     rd_addr,
     output reg            rd_valid,
     output reg  [511:0]   rd_data,
+    //debug
     output wire [16383:0] tile_flat
 );
 
@@ -211,6 +213,7 @@ module FA_Q_BUF_REAL (
     input  wire [4:0]     qk_rd_addr,
     output wire           qk_rd_valid,
     output wire [511:0]   qk_rd_data,
+    //debug
     output wire [16383:0] tile_flat
 );
 
@@ -227,6 +230,7 @@ module FA_Q_BUF_REAL (
         .rd_addr(qk_rd_addr),
         .rd_valid(qk_rd_valid),
         .rd_data(qk_rd_data),
+        //debug
         .tile_flat(tile_flat)
     );
 
@@ -245,6 +249,7 @@ module FA_K_BUF_REAL (
     input  wire [4:0]     qk_rd_addr,
     output wire           qk_rd_valid,
     output wire [511:0]   qk_rd_data,
+    //debug
     output wire [16383:0] tile_flat
 );
 
@@ -261,6 +266,7 @@ module FA_K_BUF_REAL (
         .rd_addr(qk_rd_addr),
         .rd_valid(qk_rd_valid),
         .rd_data(qk_rd_data),
+        //debug
         .tile_flat(tile_flat)
     );
 
@@ -275,6 +281,7 @@ module FA_V_BUF_REAL (
     input  wire [2:0]     beat_write_local_addr,
     input  wire [3:0]     beat_write_word_mask,
     input  wire [127:0]   beat_write_data,
+    //debug
     output wire [16383:0] tile_flat
 );
 
@@ -336,6 +343,7 @@ module FA_V_BUF_PV_REAL (
     input  wire [4:0]      rd_addr,
     output reg             rd_valid,
     output wire [511:0]    rd_data,
+    //debug
     output wire [16383:0]  layout_flat
 );
 
@@ -470,6 +478,7 @@ module FA_P_BUF_REAL (
     input  wire [2:0]     pv_rd_addr,
     output reg            pv_rd_valid,
     output wire [511:0]   pv_rd_data,
+    //debug
     output wire [4095:0]  tile_flat
 );
 
@@ -629,6 +638,7 @@ module FA_OACC_BUF_REAL (
     input  wire [3:0]      exp_rd_addr,
     output reg             exp_rd_valid,
     output wire [1023:0]   exp_rd_data,
+    //debug
     output wire [16383:0]  tile_flat
 );
 

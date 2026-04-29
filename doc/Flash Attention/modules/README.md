@@ -18,7 +18,7 @@
 | `FA_V_BUF_PV_REAL` | [fa_v_buf_pv_real.md](fa_v_buf_pv_real.md) | [`rtl/fa_buffers_real.v`](../../../rtl/fa_buffers_real.v) |
 | `GEMM_V3` | [gemm_v3.md](gemm_v3.md) | [`rtl/gemm_v3.v`](../../../rtl/gemm_v3.v) |
 | `FA_QK_PV_SHARED_CORE_REAL` | [fa_qk_pv_shared_core_real.md](fa_qk_pv_shared_core_real.md) | [`rtl/fa_cores_real.v`](../../../rtl/fa_cores_real.v) |
-| `FA_QK_PV_REQ_ARB` | [fa_qk_pv_req_arb.md](fa_qk_pv_req_arb.md) | [`rtl/fa_cores_real.v`](../../../rtl/fa_cores_real.v) |
+| `FA_QK_PV_ARB` | [fa_qk_pv_arb.md](fa_qk_pv_arb.md) | [`rtl/fa_cores_real.v`](../../../rtl/fa_cores_real.v) |
 | `FA_QK_PV_STREAM_CTRL` | [fa_qk_pv_stream_ctrl.md](fa_qk_pv_stream_ctrl.md) | [`rtl/fa_cores_real.v`](../../../rtl/fa_cores_real.v) |
 | `FA_QK_PV_RESULT_PACKER` | [fa_qk_pv_result_packer.md](fa_qk_pv_result_packer.md) | [`rtl/fa_cores_real.v`](../../../rtl/fa_cores_real.v) |
 | `FA_SCORE_POST_REAL` | [fa_score_post_real.md](fa_score_post_real.md) | [`rtl/fa_score_post_real.v`](../../../rtl/fa_score_post_real.v) |

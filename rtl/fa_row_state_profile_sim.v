@@ -30,6 +30,7 @@ module FA_ROW_STATE_PROFILE_SIM #(
     output wire [4095:0] p_tile_flat,
     output wire [511:0]  rescale_vec_flat,
     output wire          done_pulse,
+    //debug
     output wire [511:0]  debug_m_state_flat,
     output wire [511:0]  debug_l_state_flat,
     output wire [15:0]   debug_row_seen
@@ -69,6 +70,7 @@ module FA_ROW_STATE_PROFILE_SIM #(
         .p_tile_flat(p_tile_flat),
         .rescale_vec_flat(rescale_vec_flat),
         .done_pulse(done_pulse),
+        //debug
         .debug_m_state_flat(debug_m_state_flat),
         .debug_l_state_flat(debug_l_state_flat),
         .debug_row_seen(debug_row_seen)

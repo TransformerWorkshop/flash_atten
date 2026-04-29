@@ -8,7 +8,7 @@ RTL: [`rtl/fa_cores_real.v`](../../../rtl/fa_cores_real.v)
 
 | 子模块 | 职责 |
 |---|---|
-| `FA_QK_PV_REQ_ARB` | 仲裁 QK/PV 请求，QK 优先，生成 `qk_req_ready/pv_req_ready` 与 fire pulse |
+| `FA_QK_PV_ARB` | 仲裁 QK/PV 请求，QK 优先；同时选择 GEMM A/B 输入与 `num_acc` |
 | `FA_QK_PV_STREAM_CTRL` | 维护 mode、`row_blk/col_blk`、issue/feed counters，驱动 Q/K/P/V 读端口和 GEMM valid/start/ready |
 | `FA_QK_PV_RESULT_PACKER` | 将 GEMM output group 打包成 QK/PV 4-row block，维护 resp/done，并保留仿真 debug flat mirror |
 
@@ -19,12 +19,13 @@ RTL: [`rtl/fa_cores_real.v`](../../../rtl/fa_cores_real.v)
 | qk_req_valid / pv_req_valid                                                     |
 |        |                                                                       |
 |        v                                                                       |
-| +------------------+ mode select +-----------------------------------------+   |
-| | FA_QK_PV_REQ_ARB |------------>| FA_QK_PV_STREAM_CTRL                   |   |
-| | QK has priority  |             | issue_count, feed_count, row_blk,col_blk |   |
-| +------------------+             +-------------------+---------------------+   |
-|                                                       |                         |
-|                                                       v                         |
+| +------------------+ request fire +---------------------------------------+   |
+| | FA_QK_PV_ARB    |------------->| FA_QK_PV_STREAM_CTRL                   |   |
+| | req + GEMM mux  |<-------------| mode,row_blk,col_blk                   |   |
+| +--------+---------+             +-------------------+---------------------+   |
+|          |                                         |                         |
+|          | gemm_a/gemm_b/num_acc                   |                         |
+|          +---------------------------+             v                         |
 | QK mode: q/k reads                         +-------------------------------+   |
 | q_rd_en/q_rd_addr -> Q buffer              | GEMM_V3                       |   |
 | k_rd_en/k_rd_addr -> K buffer              | X_DIM=4, Y_DIM=16             |   |
@@ -77,9 +78,11 @@ QK/PV response fires after the final block of the tile
 封装边界：
 
 ```text
-REQ_ARB:
+ARB:
   stream_idle + outstanding resp/block flags + qk_req_valid/pv_req_valid
   -> qk_req_ready/pv_req_ready + qk_req_fire/pv_req_fire
+  mode + row_blk + Q/K/P/V read data
+  -> GEMM A/B data + num_acc
 
 STREAM_CTRL:
   request fire + source valid + GEMM ready + block backpressure

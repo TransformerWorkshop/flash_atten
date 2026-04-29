@@ -24,8 +24,9 @@ module FA_SCORE_POST_REAL #(
     output reg  [3:0]    masked_block_row_base,
     output reg  [63:0]   masked_score_block_valid,
     output reg  [2047:0] masked_score_block_flat,
-    output reg  [8191:0] masked_score_tile_flat,
-    output reg           done_pulse
+    output reg           done_pulse,
+    //debug
+    output reg  [8191:0] masked_score_tile_flat
 );
 
     localparam [2:0] ST_IDLE     = 3'd0;

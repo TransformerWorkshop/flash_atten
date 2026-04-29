@@ -46,7 +46,7 @@ PV block: 4 rows x 64 cols x 16-bit partial = 4096 bits
 
 | 子模块 | 功能 |
 |---|---|
-| `FA_QK_PV_REQ_ARB` | QK/PV 请求仲裁与 ready/fire 生成 |
+| `FA_QK_PV_ARB` | QK/PV 请求仲裁、GEMM A/B 输入选择与 `num_acc` 选择 |
 | `FA_QK_PV_STREAM_CTRL` | stream FSM、读地址、GEMM start/feed、backpressure 处理 |
 | `FA_QK_PV_RESULT_PACKER` | GEMM output group 到 QK/PV block 的打包，以及 resp/done/debug mirror |
 

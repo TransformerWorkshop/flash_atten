@@ -20,6 +20,7 @@ module FA_ROW_STATE_REAL #(
     output reg  [4095:0] p_tile_flat,
     output reg  [511:0]  rescale_vec_flat,
     output reg           done_pulse,
+    //debug
     output wire [511:0]  debug_m_state_flat,
     output wire [511:0]  debug_l_state_flat,
     output wire [15:0]   debug_row_seen
@@ -202,6 +203,7 @@ module FA_ROW_STATE_REAL #(
         end
     endfunction
 
+    //debug
     generate
         genvar gi;
         for (gi = 0; gi < 16; gi = gi + 1) begin : gen_debug_flat

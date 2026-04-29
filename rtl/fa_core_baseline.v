@@ -57,6 +57,7 @@ module FA_CORE_BASELINE #(
     output wire [31:0]  rd_bytes,
     output wire [31:0]  wr_bytes,
     output wire         irq,
+    //debug
     output wire [16383:0] q_tile_flat,
     output wire [16383:0] k_tile_flat,
     output wire [16383:0] v_tile_flat,
@@ -338,6 +339,7 @@ module FA_CORE_BASELINE #(
         .qk_rd_addr(q_qk_rd_addr),
         .qk_rd_valid(q_qk_rd_valid),
         .qk_rd_data(q_qk_rd_data),
+        //debug
         .tile_flat(q_tile_flat)
     );
 
@@ -354,6 +356,7 @@ module FA_CORE_BASELINE #(
         .qk_rd_addr(k_qk_rd_addr),
         .qk_rd_valid(k_qk_rd_valid),
         .qk_rd_data(k_qk_rd_data),
+        //debug
         .tile_flat(k_tile_flat)
     );
 
@@ -366,6 +369,7 @@ module FA_CORE_BASELINE #(
         .beat_write_local_addr(qkv_wr_local_addr),
         .beat_write_word_mask(qkv_wr_word_mask),
         .beat_write_data(qkv_wr_data),
+        //debug
         .tile_flat(v_tile_flat)
     );
 
@@ -381,6 +385,7 @@ module FA_CORE_BASELINE #(
         .rd_addr(v_pv_rd_addr),
         .rd_valid(v_pv_rd_valid),
         .rd_data(v_pv_rd_data),
+        //debug
         .layout_flat(v_pv_layout_flat)
     );
 
@@ -406,6 +411,7 @@ module FA_CORE_BASELINE #(
         .exp_rd_addr(oacc_exp_rd_row),
         .exp_rd_valid(oacc_exp_rd_valid),
         .exp_rd_data(oacc_exp_rd_data),
+        //debug
         .tile_flat(oacc_tile_flat)
     );
 
@@ -486,7 +492,6 @@ module FA_CORE_BASELINE #(
         .k_rd_data(k_qk_rd_data),
         .qk_resp_valid(qk_resp_valid),
         .qk_resp_ready(1'b1),
-        .qk_result_tile_flat(qk_result_tile_flat),
         .qk_result_row_rd_en(qk_result_row_rd_en),
         .qk_result_row_rd_addr(qk_result_row_rd_addr),
         .qk_result_row_rd_valid(qk_result_row_rd_valid),
@@ -508,7 +513,6 @@ module FA_CORE_BASELINE #(
         .v_rd_data(v_pv_rd_data),
         .pv_resp_valid(pv_resp_valid),
         .pv_resp_ready(1'b1),
-        .pv_result_tile_flat(pv_result_tile_flat),
         .pv_result_row_rd_en(pv_result_row_rd_en),
         .pv_result_row_rd_addr(pv_result_row_rd_addr),
         .pv_result_row_rd_valid(pv_result_row_rd_valid),
@@ -517,7 +521,10 @@ module FA_CORE_BASELINE #(
         .pv_block_ready(pv_block_ready),
         .pv_block_row_base(pv_block_row_base),
         .pv_block_data(pv_block_data),
-        .pv_done_pulse(pv_done_pulse)
+        .pv_done_pulse(pv_done_pulse),
+        //debug
+        .qk_result_tile_flat(qk_result_tile_flat),
+        .pv_result_tile_flat(pv_result_tile_flat)
     );
     assign qk_req_ready = qk_core_req_ready_w;
 
@@ -549,8 +556,9 @@ module FA_CORE_BASELINE #(
         .masked_block_row_base(score_masked_block_row_base),
         .masked_score_block_valid(score_masked_block_valid),
         .masked_score_block_flat(score_masked_block_flat),
-        .masked_score_tile_flat(score_masked_tile_flat),
-        .done_pulse(score_stream_done_pulse_w)
+        .done_pulse(score_stream_done_pulse_w),
+        //debug
+        .masked_score_tile_flat(score_masked_tile_flat)
     );
 
     FA_ROW_STATE_REAL #(
@@ -575,6 +583,7 @@ module FA_CORE_BASELINE #(
         .p_tile_flat(row_p_tile_flat),
         .rescale_vec_flat(row_rescale_vec_flat),
         .done_pulse(row_stream_done_pulse_w),
+        //debug
         .debug_m_state_flat(row_debug_m_state_flat),
         .debug_l_state_flat(row_debug_l_state_flat),
         .debug_row_seen(row_debug_seen_flat)
