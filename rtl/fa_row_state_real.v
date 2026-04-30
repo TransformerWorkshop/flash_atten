@@ -1,7 +1,4 @@
-module FA_ROW_STATE_REAL #(
-    parameter USE_MASKED_BLOCK_INPUT = 0,
-    parameter USE_VALID_MASK_INPUT = 0
-) (
+module FA_ROW_STATE_REAL (
     input  wire          clk,
     input  wire          rstn,
     input  wire          clear,
@@ -11,12 +8,9 @@ module FA_ROW_STATE_REAL #(
     input  wire          update_valid,
     output wire          update_ready,
     input  wire [31:0]   neg_large_word,
-    input  wire [8191:0] masked_score_tile_flat,
     input  wire [3:0]    update_row_base,
     input  wire [63:0]   masked_score_block_valid,
     input  wire [2047:0] masked_score_block_flat,
-    output reg           resp_valid,
-    input  wire          resp_ready,
     output reg  [4095:0] p_tile_flat,
     output reg  [511:0]  rescale_vec_flat,
     output reg           done_pulse,
@@ -46,6 +40,7 @@ module FA_ROW_STATE_REAL #(
     reg [3:0] update_row_base_r;
     reg [63:0] masked_score_block_valid_r;
     reg [2047:0] masked_score_block_flat_r;
+    reg resp_valid;
 
     reg signed [31:0] m_state_r [0:15];
     reg signed [31:0] l_state_r [0:15];
@@ -71,8 +66,19 @@ module FA_ROW_STATE_REAL #(
     wire [31:0]  recip_out_value_w;
     wire         recip_done_pulse_w;
     wire         rowstate_unused_zero_w = (recip_done_pulse_w & 1'b0) | (alpha_r[0] & 1'b0) | (sum_beta_r[0] & 1'b0);
-    wire [3:0]  row_limit_w;
     wire [3:0]  actual_row_idx_w;
+    (* keep = "true" *) wire row_has_valid_commit_g0_w;
+    (* keep = "true" *) wire row_has_valid_commit_g1_w;
+    (* keep = "true" *) wire row_has_valid_commit_g2_w;
+    (* keep = "true" *) wire row_has_valid_commit_g3_w;
+    (* keep = "true" *) wire signed [31:0] recip_l_commit_g0_w;
+    (* keep = "true" *) wire signed [31:0] recip_l_commit_g1_w;
+    (* keep = "true" *) wire signed [31:0] recip_l_commit_g2_w;
+    (* keep = "true" *) wire signed [31:0] recip_l_commit_g3_w;
+    (* keep = "true" *) wire [3:0] actual_row_idx_commit_g0_w;
+    (* keep = "true" *) wire [3:0] actual_row_idx_commit_g1_w;
+    (* keep = "true" *) wire [3:0] actual_row_idx_commit_g2_w;
+    (* keep = "true" *) wire [3:0] actual_row_idx_commit_g3_w;
 
     integer row_i;
     integer col_i;
@@ -215,14 +221,25 @@ module FA_ROW_STATE_REAL #(
 
     assign init_ready = (state_r == ST_IDLE) && !resp_valid;
     assign update_ready = ((state_r == ST_IDLE) && !resp_valid) || rowstate_unused_zero_w;
-    assign row_limit_w = (USE_MASKED_BLOCK_INPUT != 0) ? 4'd3 : 4'd15;
-    assign actual_row_idx_w = (USE_MASKED_BLOCK_INPUT != 0) ? (update_row_base_r + row_idx_r) : row_idx_r;
+    assign actual_row_idx_w = update_row_base_r + row_idx_r;
+    assign row_has_valid_commit_g0_w = row_has_valid_r;
+    assign row_has_valid_commit_g1_w = row_has_valid_r;
+    assign row_has_valid_commit_g2_w = row_has_valid_r;
+    assign row_has_valid_commit_g3_w = row_has_valid_r;
+    assign recip_l_commit_g0_w = recip_l_new_r;
+    assign recip_l_commit_g1_w = recip_l_new_r;
+    assign recip_l_commit_g2_w = recip_l_new_r;
+    assign recip_l_commit_g3_w = recip_l_new_r;
+    assign actual_row_idx_commit_g0_w = actual_row_idx_w;
+    assign actual_row_idx_commit_g1_w = actual_row_idx_w;
+    assign actual_row_idx_commit_g2_w = actual_row_idx_w;
+    assign actual_row_idx_commit_g3_w = actual_row_idx_w;
 
     always @(*) begin
         state_n = state_r;
         row_idx_n = row_idx_r;
 
-        if ((state_r == ST_DONE) && resp_valid && resp_ready) begin
+        if ((state_r == ST_DONE) && resp_valid) begin
             state_n = ST_IDLE;
         end
 
@@ -256,7 +273,7 @@ module FA_ROW_STATE_REAL #(
                 end
             end
             ST_ROW_COMMIT: begin
-                if (row_idx_r == row_limit_w) begin
+                if (row_idx_r == 4'd3) begin
                     state_n = ST_DONE;
                 end else begin
                     row_idx_n = row_idx_r + 1'b1;
@@ -296,23 +313,15 @@ module FA_ROW_STATE_REAL #(
         .resp_ready(1'b1),
         .out_value(recip_out_value_w),
         .done_pulse(recip_done_pulse_w)
-    );
+        );
 
     always @(*) begin
         valid_mask_next = 16'd0;
         row_has_valid_next = 1'b0;
         tile_row_max_next = neg_large_word_r;
         for (col_i = 0; col_i < 16; col_i = col_i + 1) begin
-            if (USE_MASKED_BLOCK_INPUT != 0) begin
-                score_word_s = masked_score_block_flat_r[((row_idx_r * 16) + col_i) * 32 +: 32];
-            end else begin
-                score_word_s = masked_score_tile_flat[((row_idx_r * 16) + col_i) * 32 +: 32];
-            end
-            if ((USE_VALID_MASK_INPUT != 0) && (USE_MASKED_BLOCK_INPUT != 0)) begin
-                score_valid_s = masked_score_block_valid_r[(row_idx_r * 16) + col_i];
-            end else begin
-                score_valid_s = (score_word_s != neg_large_word_r);
-            end
+            score_word_s = masked_score_block_flat_r[((row_idx_r * 16) + col_i) * 32 +: 32];
+            score_valid_s = masked_score_block_valid_r[(row_idx_r * 16) + col_i];
             if (score_valid_s) begin
                 valid_mask_next[col_i] = 1'b1;
                 if (!row_has_valid_next || (score_word_s > tile_row_max_next)) begin
@@ -425,7 +434,7 @@ module FA_ROW_STATE_REAL #(
             init_done_pulse <= 1'b0;
             done_pulse <= 1'b0;
 
-            if (resp_valid && resp_ready) begin
+            if (resp_valid) begin
                 resp_valid <= 1'b0;
                 done_pulse <= 1'b1;
             end
@@ -449,7 +458,7 @@ module FA_ROW_STATE_REAL #(
                         masked_score_block_valid_r <= masked_score_block_valid;
                         masked_score_block_flat_r <= masked_score_block_flat;
 `ifndef SYNTHESIS
-                        if ((USE_MASKED_BLOCK_INPUT == 0) || (update_row_base == 4'd0)) begin
+                        if (update_row_base == 4'd0) begin
                             p_tile_flat <= 4096'd0;
                             rescale_vec_flat <= 512'd0;
                         end
@@ -467,11 +476,7 @@ module FA_ROW_STATE_REAL #(
                     old_l_r <= l_state_r[actual_row_idx_w];
                     tile_row_max_r <= tile_row_max_next;
                     for (col_i = 0; col_i < 16; col_i = col_i + 1) begin
-                        if (USE_MASKED_BLOCK_INPUT != 0) begin
-                            row_score_r[col_i] <= masked_score_block_flat_r[((row_idx_r * 16) + col_i) * 32 +: 32];
-                        end else begin
-                            row_score_r[col_i] <= masked_score_tile_flat[((row_idx_r * 16) + col_i) * 32 +: 32];
-                        end
+                        row_score_r[col_i] <= masked_score_block_flat_r[((row_idx_r * 16) + col_i) * 32 +: 32];
                     end
                 end
                 ST_ROW_EXP: begin
@@ -493,11 +498,6 @@ module FA_ROW_STATE_REAL #(
                 end
                 ST_ROW_COMMIT: begin
                     if (!row_has_valid_r) begin
-                        for (col_i = 0; col_i < 16; col_i = col_i + 1) begin
-                            word_i = ((actual_row_idx_w * 16) + col_i) >> 1;
-                            lane_i = col_i & 1;
-                            p_tile_flat[(word_i * 32) + (lane_i * 16) +: 16] <= 16'd0;
-                        end
                         if (row_has_history_r) begin
                             rescale_vec_flat[(actual_row_idx_w * 32) +: 32] <= Q16_ONE;
                         end else begin
@@ -509,19 +509,73 @@ module FA_ROW_STATE_REAL #(
                     end else begin
                         rescale_q16_s = q16_mul_rn_sat(alpha_l_old_r, recip_l_new_r);
                         rescale_vec_flat[(actual_row_idx_w * 32) +: 32] <= rescale_q16_s;
-                        for (col_i = 0; col_i < 16; col_i = col_i + 1) begin
-                            p_q16_s = q16_mul_rn_sat(beta_r[col_i], recip_l_new_r);
-                            p_q88_s = q16_to_q88_rn_sat(p_q16_s);
-                            word_i = ((actual_row_idx_w * 16) + col_i) >> 1;
-                            lane_i = col_i & 1;
-                            p_tile_flat[(word_i * 32) + (lane_i * 16) +: 16] <= p_q88_s;
-                        end
                         m_state_r[actual_row_idx_w] <= m_new_r;
                         l_state_r[actual_row_idx_w] <= l_new_r;
                         row_seen_r[actual_row_idx_w] <= 1'b1;
                     end
 
-                    if (row_idx_r == row_limit_w) begin
+                    if (!row_has_valid_commit_g0_w) begin
+                        for (col_i = 0; col_i < 4; col_i = col_i + 1) begin
+                            word_i = ((actual_row_idx_commit_g0_w * 16) + col_i) >> 1;
+                            lane_i = col_i & 1;
+                            p_tile_flat[(word_i * 32) + (lane_i * 16) +: 16] <= 16'd0;
+                        end
+                    end else begin
+                        for (col_i = 0; col_i < 4; col_i = col_i + 1) begin
+                            p_q16_s = q16_mul_rn_sat(beta_r[col_i], recip_l_commit_g0_w);
+                            p_q88_s = q16_to_q88_rn_sat(p_q16_s);
+                            word_i = ((actual_row_idx_commit_g0_w * 16) + col_i) >> 1;
+                            lane_i = col_i & 1;
+                            p_tile_flat[(word_i * 32) + (lane_i * 16) +: 16] <= p_q88_s;
+                        end
+                    end
+                    if (!row_has_valid_commit_g1_w) begin
+                        for (col_i = 4; col_i < 8; col_i = col_i + 1) begin
+                            word_i = ((actual_row_idx_commit_g1_w * 16) + col_i) >> 1;
+                            lane_i = col_i & 1;
+                            p_tile_flat[(word_i * 32) + (lane_i * 16) +: 16] <= 16'd0;
+                        end
+                    end else begin
+                        for (col_i = 4; col_i < 8; col_i = col_i + 1) begin
+                            p_q16_s = q16_mul_rn_sat(beta_r[col_i], recip_l_commit_g1_w);
+                            p_q88_s = q16_to_q88_rn_sat(p_q16_s);
+                            word_i = ((actual_row_idx_commit_g1_w * 16) + col_i) >> 1;
+                            lane_i = col_i & 1;
+                            p_tile_flat[(word_i * 32) + (lane_i * 16) +: 16] <= p_q88_s;
+                        end
+                    end
+                    if (!row_has_valid_commit_g2_w) begin
+                        for (col_i = 8; col_i < 12; col_i = col_i + 1) begin
+                            word_i = ((actual_row_idx_commit_g2_w * 16) + col_i) >> 1;
+                            lane_i = col_i & 1;
+                            p_tile_flat[(word_i * 32) + (lane_i * 16) +: 16] <= 16'd0;
+                        end
+                    end else begin
+                        for (col_i = 8; col_i < 12; col_i = col_i + 1) begin
+                            p_q16_s = q16_mul_rn_sat(beta_r[col_i], recip_l_commit_g2_w);
+                            p_q88_s = q16_to_q88_rn_sat(p_q16_s);
+                            word_i = ((actual_row_idx_commit_g2_w * 16) + col_i) >> 1;
+                            lane_i = col_i & 1;
+                            p_tile_flat[(word_i * 32) + (lane_i * 16) +: 16] <= p_q88_s;
+                        end
+                    end
+                    if (!row_has_valid_commit_g3_w) begin
+                        for (col_i = 12; col_i < 16; col_i = col_i + 1) begin
+                            word_i = ((actual_row_idx_commit_g3_w * 16) + col_i) >> 1;
+                            lane_i = col_i & 1;
+                            p_tile_flat[(word_i * 32) + (lane_i * 16) +: 16] <= 16'd0;
+                        end
+                    end else begin
+                        for (col_i = 12; col_i < 16; col_i = col_i + 1) begin
+                            p_q16_s = q16_mul_rn_sat(beta_r[col_i], recip_l_commit_g3_w);
+                            p_q88_s = q16_to_q88_rn_sat(p_q16_s);
+                            word_i = ((actual_row_idx_commit_g3_w * 16) + col_i) >> 1;
+                            lane_i = col_i & 1;
+                            p_tile_flat[(word_i * 32) + (lane_i * 16) +: 16] <= p_q88_s;
+                        end
+                    end
+
+                    if (row_idx_r == 4'd3) begin
                         resp_valid <= 1'b1;
                     end
                 end

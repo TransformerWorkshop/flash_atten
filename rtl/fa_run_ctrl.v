@@ -7,7 +7,6 @@ module FA_RUN_CTRL (
     input  wire        run_complete_pulse,
     input  wire        run_error_pulse,
     output wire        run_active,
-    output wire        busy,
     output wire        done_sticky,
     output wire        error_sticky,
     output wire [31:0] cycles
@@ -19,7 +18,6 @@ module FA_RUN_CTRL (
     reg [31:0] cycles_r;
 
     assign run_active = run_active_r;
-    assign busy = run_active_r;
     assign done_sticky = done_sticky_r;
     assign error_sticky = error_sticky_r;
     assign cycles = cycles_r;

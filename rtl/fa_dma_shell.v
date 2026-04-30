@@ -248,8 +248,7 @@ module FA_WR_DMA (
     input  wire         wr_data_ready,
     output wire [31:0]  wr_data,
     output wire         wr_data_last,
-    output reg          done_pulse,
-    output reg          error_pulse
+    output reg          done_pulse
 );
 
     localparam [2:0] ST_IDLE = 3'd0;
@@ -346,18 +345,15 @@ module FA_WR_DMA (
             oacc_exp_rd_en <= 1'b0;
             oacc_exp_rd_row <= 4'd0;
             done_pulse <= 1'b0;
-            error_pulse <= 1'b0;
         end else if (clear) begin
             desc_addr_r <= 64'd0;
             row_data_r <= 1024'd0;
             oacc_exp_rd_en <= 1'b0;
             oacc_exp_rd_row <= 4'd0;
             done_pulse <= 1'b0;
-            error_pulse <= 1'b0;
         end else begin
             oacc_exp_rd_en <= 1'b0;
             done_pulse <= 1'b0;
-            error_pulse <= 1'b0;
             case (state_r)
                 ST_IDLE: begin
                     if (req_valid) begin

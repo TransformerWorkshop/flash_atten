@@ -3,12 +3,10 @@ module FA_QK_PV_ARB (
     input  wire         qk_req_valid,
     output wire         qk_req_ready,
     output wire         qk_req_fire,
-    input  wire         qk_resp_valid,
     input  wire         qk_block_valid,
     input  wire         pv_req_valid,
     output wire         pv_req_ready,
     output wire         pv_req_fire,
-    input  wire         pv_resp_valid,
     input  wire         pv_block_valid,
     input  wire         mode,
     input  wire [1:0]   row_blk,
@@ -27,8 +25,6 @@ module FA_QK_PV_ARB (
     wire [511:0] gemm_a_full_data_w;
 
     assign idle_ready_w = stream_idle &&
-                          !qk_resp_valid &&
-                          !pv_resp_valid &&
                           !qk_block_valid &&
                           !pv_block_valid;
     assign qk_req_ready = idle_ready_w;
@@ -267,23 +263,11 @@ module FA_QK_PV_RESULT_PACKER (
     input  wire [2047:0]  gemm_group_data,
     input  wire [31:0]    gemm_group_idx,
     input  wire           gemm_last,
-    output reg            qk_resp_valid,
-    input  wire           qk_resp_ready,
-    input  wire           qk_result_row_rd_en,
-    input  wire [3:0]     qk_result_row_rd_addr,
-    output reg            qk_result_row_rd_valid,
-    output wire [511:0]   qk_result_row_rd_data,
     output reg            qk_block_valid,
     input  wire           qk_block_ready,
     output reg  [3:0]     qk_block_row_base,
     output reg  [2047:0]  qk_block_data,
     output reg            qk_done_pulse,
-    output reg            pv_resp_valid,
-    input  wire           pv_resp_ready,
-    input  wire           pv_result_row_rd_en,
-    input  wire [3:0]     pv_result_row_rd_addr,
-    output reg            pv_result_row_rd_valid,
-    output wire [1023:0]  pv_result_row_rd_data,
     output reg            pv_block_valid,
     input  wire           pv_block_ready,
     output reg  [3:0]     pv_block_row_base,
@@ -303,13 +287,18 @@ module FA_QK_PV_RESULT_PACKER (
 `endif
     reg [511:0]  qk_result_wr_data_w;
     reg [1023:0] pv_result_wr_data_w;
+    reg          qk_done_pending_r;
+    reg          pv_done_pending_r;
+`ifndef SYNTHESIS
     wire [3:0]   result_row_idx_w;
+`endif
 
     integer qk_pack_col_idx;
     integer pv_pack_col_idx;
+    integer qk_block_word_idx;
+    integer pv_block_lane_idx;
     integer seq_col_idx;
     integer seq_global_col_idx;
-    integer pv_pack_global_col_idx;
 `ifndef SYNTHESIS
     integer wi;
 `endif
@@ -348,11 +337,9 @@ module FA_QK_PV_RESULT_PACKER (
         end
     endfunction
 
-    assign result_row_idx_w = {row_blk, gemm_group_idx[1:0]};
-    assign qk_result_row_rd_data = 512'd0;
-    assign pv_result_row_rd_data = 1024'd0;
-
 `ifndef SYNTHESIS
+    assign result_row_idx_w = {row_blk, gemm_group_idx[1:0]};
+
     generate
         genvar qgi;
         for (qgi = 0; qgi < 256; qgi = qgi + 1) begin : gen_qk_result_flat
@@ -369,14 +356,10 @@ module FA_QK_PV_RESULT_PACKER (
 `else
     wire unused_qk_result_flat_zero_w = (clk & 1'b0)
                                       | (rstn & 1'b0)
-                                      | (clear & 1'b0)
-                                      | (qk_result_row_rd_en & 1'b0)
-                                      | ((|qk_result_row_rd_addr) & 1'b0);
+                                      | (clear & 1'b0);
     wire unused_pv_result_flat_zero_w = (clk & 1'b0)
                                       | (rstn & 1'b0)
-                                      | (clear & 1'b0)
-                                      | (pv_result_row_rd_en & 1'b0)
-                                      | ((|pv_result_row_rd_addr) & 1'b0);
+                                      | (clear & 1'b0);
     assign qk_result_tile_flat = {8192{unused_qk_result_flat_zero_w}};
     assign pv_result_tile_flat = {16384{unused_pv_result_flat_zero_w}};
 `endif
@@ -391,27 +374,24 @@ module FA_QK_PV_RESULT_PACKER (
 
     always @(*) begin
         pv_result_wr_data_w = 1024'd0;
-        for (pv_pack_col_idx = 0; pv_pack_col_idx < 16; pv_pack_col_idx = pv_pack_col_idx + 1) begin
-            pv_pack_global_col_idx = (col_blk * 16) + pv_pack_col_idx;
-            pv_result_wr_data_w[(pv_pack_global_col_idx * 16) +: 16] =
-                q16_16_to_q88_sat128(gemm_group_data[(pv_pack_col_idx * 128) +: 128]);
+        for (pv_pack_col_idx = 0; pv_pack_col_idx < 64; pv_pack_col_idx = pv_pack_col_idx + 1) begin
+            if (col_blk == (pv_pack_col_idx / 16)) begin
+                pv_result_wr_data_w[(pv_pack_col_idx * 16) +: 16] =
+                    q16_16_to_q88_sat128(gemm_group_data[((pv_pack_col_idx % 16) * 128) +: 128]);
+            end
         end
     end
 
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
-            qk_resp_valid <= 1'b0;
-            pv_resp_valid <= 1'b0;
             qk_done_pulse <= 1'b0;
             pv_done_pulse <= 1'b0;
-            qk_result_row_rd_valid <= 1'b0;
-            pv_result_row_rd_valid <= 1'b0;
+            qk_done_pending_r <= 1'b0;
+            pv_done_pending_r <= 1'b0;
             qk_block_valid <= 1'b0;
             qk_block_row_base <= 4'd0;
-            qk_block_data <= 2048'd0;
             pv_block_valid <= 1'b0;
             pv_block_row_base <= 4'd0;
-            pv_block_data <= 4096'd0;
 `ifndef SYNTHESIS
             for (wi = 0; wi < 256; wi = wi + 1) begin
                 qk_result_words_r[wi] <= 32'd0;
@@ -421,18 +401,14 @@ module FA_QK_PV_RESULT_PACKER (
             end
 `endif
         end else if (clear) begin
-            qk_resp_valid <= 1'b0;
-            pv_resp_valid <= 1'b0;
             qk_done_pulse <= 1'b0;
             pv_done_pulse <= 1'b0;
-            qk_result_row_rd_valid <= 1'b0;
-            pv_result_row_rd_valid <= 1'b0;
+            qk_done_pending_r <= 1'b0;
+            pv_done_pending_r <= 1'b0;
             qk_block_valid <= 1'b0;
             qk_block_row_base <= 4'd0;
-            qk_block_data <= 2048'd0;
             pv_block_valid <= 1'b0;
             pv_block_row_base <= 4'd0;
-            pv_block_data <= 4096'd0;
 `ifndef SYNTHESIS
             for (wi = 0; wi < 256; wi = wi + 1) begin
                 qk_result_words_r[wi] <= 32'd0;
@@ -442,33 +418,22 @@ module FA_QK_PV_RESULT_PACKER (
             end
 `endif
         end else begin
-            qk_done_pulse <= 1'b0;
-            pv_done_pulse <= 1'b0;
-            qk_result_row_rd_valid <= qk_result_row_rd_en;
-            pv_result_row_rd_valid <= pv_result_row_rd_en;
+            qk_done_pulse <= qk_done_pending_r;
+            pv_done_pulse <= pv_done_pending_r;
+            qk_done_pending_r <= 1'b0;
+            pv_done_pending_r <= 1'b0;
 
             if (qk_block_valid && qk_block_ready) begin
                 qk_block_valid <= 1'b0;
-                qk_block_data <= 2048'd0;
             end
             if (pv_block_valid && pv_block_ready) begin
                 pv_block_valid <= 1'b0;
-                pv_block_data <= 4096'd0;
-            end
-
-            if (qk_resp_valid && qk_resp_ready) begin
-                qk_resp_valid <= 1'b0;
-                qk_done_pulse <= 1'b1;
-            end
-            if (pv_resp_valid && pv_resp_ready) begin
-                pv_resp_valid <= 1'b0;
-                pv_done_pulse <= 1'b1;
             end
 
             if (qk_req_fire) begin
+                qk_done_pending_r <= 1'b0;
                 qk_block_valid <= 1'b0;
                 qk_block_row_base <= 4'd0;
-                qk_block_data <= 2048'd0;
 `ifndef SYNTHESIS
                 for (wi = 0; wi < 256; wi = wi + 1) begin
                     qk_result_words_r[wi] <= 32'd0;
@@ -476,9 +441,9 @@ module FA_QK_PV_RESULT_PACKER (
 `endif
             end
             if (pv_req_fire) begin
+                pv_done_pending_r <= 1'b0;
                 pv_block_valid <= 1'b0;
                 pv_block_row_base <= 4'd0;
-                pv_block_data <= 4096'd0;
 `ifndef SYNTHESIS
                 for (wi = 0; wi < 512; wi = wi + 1) begin
                     pv_result_words_r[wi] <= 32'd0;
@@ -488,9 +453,11 @@ module FA_QK_PV_RESULT_PACKER (
 
             if (gemm_stream_fire) begin
                 if (mode == MODE_QK) begin
-                    for (seq_col_idx = 0; seq_col_idx < 16; seq_col_idx = seq_col_idx + 1) begin
-                        qk_block_data[((gemm_group_idx[1:0] * 16 + seq_col_idx) * 32) +: 32] <=
-                            qk_result_wr_data_w[(seq_col_idx * 32) +: 32];
+                    for (qk_block_word_idx = 0; qk_block_word_idx < 64; qk_block_word_idx = qk_block_word_idx + 1) begin
+                        if (gemm_group_idx[1:0] == (qk_block_word_idx / 16)) begin
+                            qk_block_data[(qk_block_word_idx * 32) +: 32] <=
+                                qk_result_wr_data_w[((qk_block_word_idx % 16) * 32) +: 32];
+                        end
                     end
                     if (gemm_last) begin
                         qk_block_valid <= 1'b1;
@@ -502,13 +469,16 @@ module FA_QK_PV_RESULT_PACKER (
                     end
 `endif
                     if (gemm_last && (row_blk == 2'd3)) begin
-                        qk_resp_valid <= 1'b1;
+                        qk_done_pending_r <= 1'b1;
                     end
                 end else begin
-                    for (seq_col_idx = 0; seq_col_idx < 16; seq_col_idx = seq_col_idx + 1) begin
-                        seq_global_col_idx = (col_blk * 16) + seq_col_idx;
-                        pv_block_data[(((gemm_group_idx[1:0] * 32) + (seq_global_col_idx >> 1)) * 32) + (((seq_global_col_idx & 1) * 16)) +: 16] <=
-                            pv_result_wr_data_w[(seq_global_col_idx * 16) +: 16];
+                    for (pv_block_lane_idx = 0; pv_block_lane_idx < 256; pv_block_lane_idx = pv_block_lane_idx + 1) begin
+                        if ((gemm_group_idx[1:0] == (pv_block_lane_idx / 64)) &&
+                            (col_blk == ((pv_block_lane_idx % 64) / 16))) begin
+                            pv_block_data[((((pv_block_lane_idx / 64) * 32) + ((pv_block_lane_idx % 64) / 2)) * 32) +
+                                          ((pv_block_lane_idx % 2) * 16) +: 16] <=
+                                pv_result_wr_data_w[((pv_block_lane_idx % 64) * 16) +: 16];
+                        end
                     end
                     if (gemm_last && (col_blk == 2'd3)) begin
                         pv_block_valid <= 1'b1;
@@ -521,7 +491,7 @@ module FA_QK_PV_RESULT_PACKER (
                     end
 `endif
                     if (gemm_last && (row_blk == 2'd3) && (col_blk == 2'd3)) begin
-                        pv_resp_valid <= 1'b1;
+                        pv_done_pending_r <= 1'b1;
                     end
                 end
             end
@@ -544,12 +514,6 @@ module FA_QK_PV_SHARED_CORE_REAL (
     output wire [4:0]    k_rd_addr,
     input  wire          k_rd_valid,
     input  wire [511:0]  k_rd_data,
-    output wire          qk_resp_valid,
-    input  wire          qk_resp_ready,
-    input  wire          qk_result_row_rd_en,
-    input  wire [3:0]    qk_result_row_rd_addr,
-    output wire          qk_result_row_rd_valid,
-    output wire [511:0]  qk_result_row_rd_data,
     output wire          qk_block_valid,
     input  wire          qk_block_ready,
     output wire [3:0]    qk_block_row_base,
@@ -565,12 +529,6 @@ module FA_QK_PV_SHARED_CORE_REAL (
     output wire [4:0]    v_rd_addr,
     input  wire          v_rd_valid,
     input  wire [511:0]  v_rd_data,
-    output wire          pv_resp_valid,
-    input  wire          pv_resp_ready,
-    input  wire          pv_result_row_rd_en,
-    input  wire [3:0]    pv_result_row_rd_addr,
-    output wire          pv_result_row_rd_valid,
-    output wire [1023:0] pv_result_row_rd_data,
     output wire          pv_block_valid,
     input  wire          pv_block_ready,
     output wire [3:0]    pv_block_row_base,
@@ -607,12 +565,10 @@ module FA_QK_PV_SHARED_CORE_REAL (
         .qk_req_valid(qk_req_valid),
         .qk_req_ready(qk_req_ready),
         .qk_req_fire(qk_req_fire_w),
-        .qk_resp_valid(qk_resp_valid),
         .qk_block_valid(qk_block_valid),
         .pv_req_valid(pv_req_valid),
         .pv_req_ready(pv_req_ready),
         .pv_req_fire(pv_req_fire_w),
-        .pv_resp_valid(pv_resp_valid),
         .pv_block_valid(pv_block_valid),
         .mode(mode_w),
         .row_blk(row_blk_w),
@@ -666,6 +622,7 @@ module FA_QK_PV_SHARED_CORE_REAL (
         .WIDTH(32),
         .ELEM_WIDTH(16),
         .PACK_LANES(2),
+        .ACC_WIDTH(64),
         .X_DIM(4),
         .Y_DIM(16),
         .OUTPUT_BY_ROW(1)
@@ -702,23 +659,11 @@ module FA_QK_PV_SHARED_CORE_REAL (
         .gemm_group_data(gemm_group_data_w),
         .gemm_group_idx(gemm_group_idx_w),
         .gemm_last(gemm_last_w),
-        .qk_resp_valid(qk_resp_valid),
-        .qk_resp_ready(qk_resp_ready),
-        .qk_result_row_rd_en(qk_result_row_rd_en),
-        .qk_result_row_rd_addr(qk_result_row_rd_addr),
-        .qk_result_row_rd_valid(qk_result_row_rd_valid),
-        .qk_result_row_rd_data(qk_result_row_rd_data),
         .qk_block_valid(qk_block_valid),
         .qk_block_ready(qk_block_ready),
         .qk_block_row_base(qk_block_row_base),
         .qk_block_data(qk_block_data),
         .qk_done_pulse(qk_done_pulse),
-        .pv_resp_valid(pv_resp_valid),
-        .pv_resp_ready(pv_resp_ready),
-        .pv_result_row_rd_en(pv_result_row_rd_en),
-        .pv_result_row_rd_addr(pv_result_row_rd_addr),
-        .pv_result_row_rd_valid(pv_result_row_rd_valid),
-        .pv_result_row_rd_data(pv_result_row_rd_data),
         .pv_block_valid(pv_block_valid),
         .pv_block_ready(pv_block_ready),
         .pv_block_row_base(pv_block_row_base),

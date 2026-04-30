@@ -1,7 +1,8 @@
 module GEMU_V3 #(
 	parameter WIDTH = 32,
 	parameter ELEM_WIDTH = 8,
-	parameter PACK_LANES = 4
+	parameter PACK_LANES = 4,
+	parameter ACC_WIDTH = 4 * WIDTH
 ) (
 	// clock, reset and soft reset
 	input  wire               clk    ,
@@ -28,14 +29,15 @@ module GEMU_V3 #(
 	localparam STATE_ACCM = 2'b01;
 
 
-	reg signed [4*WIDTH-1:0] accm                           ;
+	reg signed [ACC_WIDTH-1:0] accm                         ;
 	reg        [  WIDTH-1:0] acc_cnt                        ;
-	reg signed [4*WIDTH-1:0] m_data_r                       ;
+	reg signed [ACC_WIDTH-1:0] m_data_r                     ;
 	reg                      m_valid_r                      ;
 	reg [1:0] current_state, next_state;
 	wire                      in_accm = (current_state == STATE_ACCM);
 	wire                      acc_done = (acc_cnt == num_acc) && (num_acc != 0);
-	wire signed [4*WIDTH-1:0] mult_signed_ext  ;
+	wire signed [ACC_WIDTH-1:0] mult_signed_ext;
+	wire signed [4*WIDTH-1:0] m_data_ext;
 	wire                      pair_ready;
 	wire                      pair_fire;
 
@@ -50,15 +52,15 @@ module GEMU_V3 #(
 			wire signed [WIDTH-1:0] a_signed = a;
 			wire signed [WIDTH-1:0] b_signed = b;
 			wire signed [2*WIDTH-1:0] mult_signed = a_signed * b_signed;
-			assign mult_signed_ext = {{(2*WIDTH){mult_signed[2*WIDTH-1]}}, mult_signed};
+			assign mult_signed_ext = mult_signed;
 		end else begin : gen_packed_dot
-			wire signed [4*WIDTH-1:0] lane_sum_ext [0:PACK_LANES];
-			assign lane_sum_ext[0] = {4*WIDTH{1'b0}};
+			wire signed [ACC_WIDTH-1:0] lane_sum_ext [0:PACK_LANES];
+			assign lane_sum_ext[0] = {ACC_WIDTH{1'b0}};
 			for (li = 0; li < PACK_LANES; li = li + 1) begin : gen_lane
 				wire signed [ELEM_WIDTH-1:0] a_lane = a[(li*ELEM_WIDTH) +: ELEM_WIDTH];
 				wire signed [ELEM_WIDTH-1:0] b_lane = b[(li*ELEM_WIDTH) +: ELEM_WIDTH];
 				wire signed [(2*ELEM_WIDTH)-1:0] lane_mult = a_lane * b_lane;
-				wire signed [4*WIDTH-1:0] lane_mult_ext = {{(4*WIDTH-(2*ELEM_WIDTH)){lane_mult[(2*ELEM_WIDTH)-1]}}, lane_mult};
+				wire signed [ACC_WIDTH-1:0] lane_mult_ext = lane_mult;
 				assign lane_sum_ext[li+1] = lane_sum_ext[li] + lane_mult_ext;
 			end
 			assign mult_signed_ext = lane_sum_ext[PACK_LANES];
@@ -66,7 +68,8 @@ module GEMU_V3 #(
 	endgenerate
 	assign a_ready      = pair_ready;
 	assign b_ready      = pair_ready;
-	assign m            = m_valid ? m_data_r : {4*WIDTH{1'b0}};
+	assign m_data_ext   = m_data_r;
+	assign m            = m_valid ? m_data_ext : {4*WIDTH{1'b0}};
 	assign m_valid      = m_valid_r;
 	assign start_ready  = (current_state == STATE_IDLE) && !m_valid_r;
 	assign tile_done    = in_accm && acc_done && !m_valid_r;

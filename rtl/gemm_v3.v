@@ -2,6 +2,7 @@ module GEMM_V3 #(
 	parameter WIDTH         = 32,
 	parameter ELEM_WIDTH    = 8,
 	parameter PACK_LANES    = 4,
+	parameter ACC_WIDTH     = 4 * WIDTH,
 	parameter X_DIM         = 4 ,
 	parameter Y_DIM         = 4 ,
 	parameter OUTPUT_BY_ROW = 1
@@ -128,7 +129,8 @@ module GEMM_V3 #(
 				GEMU_V3 #(
 					.WIDTH(WIDTH),
 					.ELEM_WIDTH(ELEM_WIDTH),
-					.PACK_LANES(PACK_LANES)
+					.PACK_LANES(PACK_LANES),
+					.ACC_WIDTH(ACC_WIDTH)
 				) gemu_unit (
 					.clk    (clk                     ),
 					.rstn   (rstn                    ),

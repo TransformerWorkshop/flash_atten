@@ -49,16 +49,18 @@ module FA_QK_PV_SHARED_CORE_SIM #(
     output wire [16383:0] pv_result_tile_flat
 );
 
-    wire unused_qk_result_row_rd_valid_w;
-    wire [511:0] unused_qk_result_row_rd_data_w;
-    wire unused_pv_result_row_rd_valid_w;
-    wire [1023:0] unused_pv_result_row_rd_data_w;
     wire unused_qk_block_valid_w;
     wire [3:0] unused_qk_block_row_base_w;
     wire [2047:0] unused_qk_block_data_w;
     wire unused_pv_block_valid_w;
     wire [3:0] unused_pv_block_row_base_w;
     wire [4095:0] unused_pv_block_data_w;
+    wire qk_done_pulse_w;
+    wire pv_done_pulse_w;
+    reg  qk_resp_valid_r;
+    reg  pv_resp_valid_r;
+    reg  qk_done_pulse_r;
+    reg  pv_done_pulse_r;
     wire unused_params_w = (DATA_WIDTH == 0)
                          | (GEMM_X_DIM == 0)
                          | (GEMM_Y_DIM == 0)
@@ -71,8 +73,44 @@ module FA_QK_PV_SHARED_CORE_SIM #(
                          | (A_LOAD_LANES == 0)
                          | (B_LOAD_LANES == 0)
                          | (M_WRITE_LANES == 0)
-                         | (M_EXPORT_LANES == 0)
-                         | (M_PHYSICAL_COPIES == 0);
+	                         | (M_EXPORT_LANES == 0)
+	                         | (M_PHYSICAL_COPIES == 0);
+
+    assign qk_done_pulse = qk_done_pulse_r;
+    assign pv_done_pulse = pv_done_pulse_r;
+    assign qk_resp_valid = qk_resp_valid_r;
+    assign pv_resp_valid = pv_resp_valid_r;
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            qk_resp_valid_r <= 1'b0;
+            pv_resp_valid_r <= 1'b0;
+            qk_done_pulse_r <= 1'b0;
+            pv_done_pulse_r <= 1'b0;
+        end else if (clear) begin
+            qk_resp_valid_r <= 1'b0;
+            pv_resp_valid_r <= 1'b0;
+            qk_done_pulse_r <= 1'b0;
+            pv_done_pulse_r <= 1'b0;
+        end else begin
+            qk_done_pulse_r <= 1'b0;
+            pv_done_pulse_r <= 1'b0;
+            if (qk_resp_valid_r && qk_resp_ready) begin
+                qk_resp_valid_r <= 1'b0;
+                qk_done_pulse_r <= 1'b1;
+            end
+            if (pv_resp_valid_r && pv_resp_ready) begin
+                pv_resp_valid_r <= 1'b0;
+                pv_done_pulse_r <= 1'b1;
+            end
+            if (qk_done_pulse_w) begin
+                qk_resp_valid_r <= 1'b1;
+            end
+            if (pv_done_pulse_w) begin
+                pv_resp_valid_r <= 1'b1;
+            end
+        end
+    end
 
     FA_QK_PV_SHARED_CORE_REAL u_core (
         .clk(clk),
@@ -88,17 +126,11 @@ module FA_QK_PV_SHARED_CORE_SIM #(
         .k_rd_addr(k_rd_addr),
         .k_rd_valid(k_rd_valid),
         .k_rd_data(k_rd_data),
-        .qk_resp_valid(qk_resp_valid),
-        .qk_resp_ready(qk_resp_ready),
-        .qk_result_row_rd_en(1'b0),
-        .qk_result_row_rd_addr(4'd0),
-        .qk_result_row_rd_valid(unused_qk_result_row_rd_valid_w),
-        .qk_result_row_rd_data(unused_qk_result_row_rd_data_w),
         .qk_block_valid(unused_qk_block_valid_w),
         .qk_block_ready(1'b1),
         .qk_block_row_base(unused_qk_block_row_base_w),
         .qk_block_data(unused_qk_block_data_w),
-        .qk_done_pulse(qk_done_pulse),
+        .qk_done_pulse(qk_done_pulse_w),
         .pv_req_valid(pv_req_valid),
         .pv_req_ready(pv_req_ready),
         .p_rd_en(p_rd_en),
@@ -109,17 +141,11 @@ module FA_QK_PV_SHARED_CORE_SIM #(
         .v_rd_addr(v_rd_addr),
         .v_rd_valid(v_rd_valid),
         .v_rd_data(v_rd_data),
-        .pv_resp_valid(pv_resp_valid),
-        .pv_resp_ready(pv_resp_ready),
-        .pv_result_row_rd_en(1'b0),
-        .pv_result_row_rd_addr(4'd0),
-        .pv_result_row_rd_valid(unused_pv_result_row_rd_valid_w),
-        .pv_result_row_rd_data(unused_pv_result_row_rd_data_w),
         .pv_block_valid(unused_pv_block_valid_w),
         .pv_block_ready(1'b1),
         .pv_block_row_base(unused_pv_block_row_base_w),
         .pv_block_data(unused_pv_block_data_w),
-        .pv_done_pulse(pv_done_pulse),
+        .pv_done_pulse(pv_done_pulse_w),
         //debug
         .qk_result_tile_flat(qk_result_tile_flat),
         .pv_result_tile_flat(pv_result_tile_flat)

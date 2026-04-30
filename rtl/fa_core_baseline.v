@@ -77,7 +77,6 @@ module FA_CORE_BASELINE #(
     localparam [1:0] LOAD_KIND_Q = 2'd0;
     localparam [1:0] LOAD_KIND_K = 2'd1;
     localparam [1:0] LOAD_KIND_V = 2'd2;
-    localparam [16383:0] ZERO_TILE_16X64 = {16384{1'b0}};
 
     wire        run_active;
     wire        status_done;
@@ -102,7 +101,6 @@ module FA_CORE_BASELINE #(
     wire       qk_req_ready;
     wire       qk_core_req_ready_w;
     wire       qk_done_pulse;
-    wire       qk_resp_valid;
     wire       score_req_valid;
     wire       score_req_ready;
     wire       score_done_pulse;
@@ -131,19 +129,14 @@ module FA_CORE_BASELINE #(
     wire [3:0]  v_pv_src_word_mask;
     wire [127:0] v_pv_src_data;
     wire       rd_error_pulse;
-    wire       run_ctrl_busy_w;
 
     wire         score_resp_valid;
-    wire         row_resp_valid;
     wire [4095:0] row_p_tile_flat;
     wire [511:0] row_rescale_vec_flat;
     wire         row_proxy_ready_w;
-    wire         pv_resp_valid;
     wire         oacc_real_ready_w;
     wire         oacc_clear_req_ready_w;
     wire         oacc_clear_done_pulse_w;
-    wire         unused_oacc_load_ready_w;
-    wire         unused_oacc_load_done_pulse_w;
     wire         q_qk_rd_en;
     wire [4:0]   q_qk_rd_addr;
     wire         q_qk_rd_valid;
@@ -165,8 +158,6 @@ module FA_CORE_BASELINE #(
     wire         oacc_exp_rd_valid;
     wire [1023:0] oacc_exp_rd_data;
     wire         oacc_real_done_pulse;
-    wire         oacc_resp_valid_unused_w;
-    wire         wr_dma_error_unused_w;
     wire         qk_block_valid;
     wire         qk_block_ready;
     wire [3:0]   qk_block_row_base;
@@ -194,25 +185,8 @@ module FA_CORE_BASELINE #(
     wire         oacc_row_wr_en;
     wire [3:0]   oacc_row_wr_addr;
     wire [1023:0] oacc_row_wr_data;
-    wire         qk_result_row_rd_en;
-    wire [3:0]   qk_result_row_rd_addr;
-    wire         qk_result_row_rd_valid;
-    wire [511:0] qk_result_row_rd_data;
-    wire         pv_result_row_rd_en;
-    wire [3:0]   pv_result_row_rd_addr;
-    wire         pv_result_row_rd_valid;
-    wire [1023:0] pv_result_row_rd_data;
     reg [31:0]   rd_bytes_r;
     reg [31:0]   wr_bytes_r;
-    wire         core_unused_zero_w = (run_ctrl_busy_w & 1'b0)
-                                    | (unused_oacc_load_ready_w & 1'b0)
-                                    | (unused_oacc_load_done_pulse_w & 1'b0)
-                                    | (qk_resp_valid & 1'b0)
-                                    | (score_resp_valid & 1'b0)
-                                    | (row_resp_valid & 1'b0)
-                                    | (pv_resp_valid & 1'b0)
-                                    | (oacc_resp_valid_unused_w & 1'b0)
-                                    | (wr_dma_error_unused_w & 1'b0);
 
     wire runtime_clear = clear || soft_reset_pulse;
 
@@ -224,7 +198,7 @@ module FA_CORE_BASELINE #(
     assign wr_bytes = wr_bytes_r;
     assign irq = irq_en && (status_done || status_error);
     assign debug_store_req_valid = store_req_valid;
-    assign debug_store_done_pulse = store_done_pulse | core_unused_zero_w;
+    assign debug_store_done_pulse = store_done_pulse;
     assign score_req_ready = (score_block_done_count_r == 3'd4);
     assign score_done_pulse = score_sched_done_pulse_r;
     assign row_update_ready = (row_update_block_done_count_r == 3'd4);
@@ -241,7 +215,6 @@ module FA_CORE_BASELINE #(
         .run_complete_pulse(run_complete_pulse),
         .run_error_pulse(rd_error_pulse | ext_error_pulse),
         .run_active(run_active),
-        .busy(run_ctrl_busy_w),
         .done_sticky(status_done),
         .error_sticky(status_error),
         .cycles(status_cycles)
@@ -396,10 +369,6 @@ module FA_CORE_BASELINE #(
         .clear_req_valid(oacc_clear_valid),
         .clear_req_ready(oacc_clear_req_ready_w),
         .clear_done_pulse(oacc_clear_done_pulse_w),
-        .load_valid(1'b0),
-        .load_ready(unused_oacc_load_ready_w),
-        .tile_load_data(ZERO_TILE_16X64),
-        .load_done_pulse(unused_oacc_load_done_pulse_w),
         .row_rd_en(oacc_row_rd_en),
         .row_rd_addr(oacc_row_rd_addr),
         .row_rd_valid(oacc_row_rd_valid),
@@ -490,12 +459,6 @@ module FA_CORE_BASELINE #(
         .k_rd_addr(k_qk_rd_addr),
         .k_rd_valid(k_qk_rd_valid),
         .k_rd_data(k_qk_rd_data),
-        .qk_resp_valid(qk_resp_valid),
-        .qk_resp_ready(1'b1),
-        .qk_result_row_rd_en(qk_result_row_rd_en),
-        .qk_result_row_rd_addr(qk_result_row_rd_addr),
-        .qk_result_row_rd_valid(qk_result_row_rd_valid),
-        .qk_result_row_rd_data(qk_result_row_rd_data),
         .qk_block_valid(qk_block_valid),
         .qk_block_ready(qk_block_ready),
         .qk_block_row_base(qk_block_row_base),
@@ -511,12 +474,6 @@ module FA_CORE_BASELINE #(
         .v_rd_addr(v_pv_rd_addr),
         .v_rd_valid(v_pv_rd_valid),
         .v_rd_data(v_pv_rd_data),
-        .pv_resp_valid(pv_resp_valid),
-        .pv_resp_ready(1'b1),
-        .pv_result_row_rd_en(pv_result_row_rd_en),
-        .pv_result_row_rd_addr(pv_result_row_rd_addr),
-        .pv_result_row_rd_valid(pv_result_row_rd_valid),
-        .pv_result_row_rd_data(pv_result_row_rd_data),
         .pv_block_valid(pv_block_valid),
         .pv_block_ready(pv_block_ready),
         .pv_block_row_base(pv_block_row_base),
@@ -530,10 +487,7 @@ module FA_CORE_BASELINE #(
 
     assign qk_block_ready = score_stream_req_ready_w;
 
-    FA_SCORE_POST_REAL #(
-        .USE_SCORE_ROW_INPUT(0),
-        .USE_SCORE_BLOCK_INPUT(1)
-    ) u_score_post (
+    FA_SCORE_POST_REAL u_score_post (
         .clk(clk),
         .rstn(rstn),
         .clear(runtime_clear),
@@ -544,13 +498,8 @@ module FA_CORE_BASELINE #(
         .causal_en(causal_en),
         .scale_word(scale),
         .neg_large_word(neg_large),
-        .score_tile_flat(qk_result_tile_flat),
         .score_block_row_base(qk_block_row_base),
         .score_block_flat(qk_block_data),
-        .score_row_rd_en(qk_result_row_rd_en),
-        .score_row_rd_addr(qk_result_row_rd_addr),
-        .score_row_rd_valid(qk_result_row_rd_valid),
-        .score_row_rd_data(qk_result_row_rd_data),
         .resp_valid(score_resp_valid),
         .resp_ready(row_proxy_ready_w),
         .masked_block_row_base(score_masked_block_row_base),
@@ -561,10 +510,7 @@ module FA_CORE_BASELINE #(
         .masked_score_tile_flat(score_masked_tile_flat)
     );
 
-    FA_ROW_STATE_REAL #(
-        .USE_MASKED_BLOCK_INPUT(1),
-        .USE_VALID_MASK_INPUT(1)
-    ) u_row_state (
+    FA_ROW_STATE_REAL u_row_state (
         .clk(clk),
         .rstn(rstn),
         .clear(runtime_clear),
@@ -574,12 +520,9 @@ module FA_CORE_BASELINE #(
         .update_valid(score_resp_valid),
         .update_ready(row_proxy_ready_w),
         .neg_large_word(neg_large),
-        .masked_score_tile_flat(score_masked_tile_flat),
         .update_row_base(score_masked_block_row_base),
         .masked_score_block_valid(score_masked_block_valid),
         .masked_score_block_flat(score_masked_block_flat),
-        .resp_valid(row_resp_valid),
-        .resp_ready(1'b1),
         .p_tile_flat(row_p_tile_flat),
         .rescale_vec_flat(row_rescale_vec_flat),
         .done_pulse(row_stream_done_pulse_w),
@@ -604,23 +547,15 @@ module FA_CORE_BASELINE #(
 
     assign pv_block_ready = oacc_real_ready_w;
 
-    FA_OACC_UPDATE_REAL #(
-        .USE_PARTIAL_ROW_INPUT(0),
-        .USE_PARTIAL_BLOCK_INPUT(1)
-    ) u_oacc_update (
+    FA_OACC_UPDATE_REAL u_oacc_update (
         .clk(clk),
         .rstn(rstn),
         .clear(runtime_clear),
         .req_valid(pv_block_valid),
         .req_ready(oacc_real_ready_w),
         .rescale_vec_flat(row_rescale_vec_flat),
-        .partial_o_tile_flat(pv_result_tile_flat),
         .req_row_base(pv_block_row_base),
         .partial_o_block_flat(pv_block_data),
-        .partial_row_rd_en(pv_result_row_rd_en),
-        .partial_row_rd_addr(pv_result_row_rd_addr),
-        .partial_row_rd_valid(pv_result_row_rd_valid),
-        .partial_row_rd_data(pv_result_row_rd_data),
         .oacc_row_rd_en(oacc_row_rd_en),
         .oacc_row_rd_addr(oacc_row_rd_addr),
         .oacc_row_rd_valid(oacc_row_rd_valid),
@@ -628,8 +563,6 @@ module FA_CORE_BASELINE #(
         .oacc_row_wr_en(oacc_row_wr_en),
         .oacc_row_wr_addr(oacc_row_wr_addr),
         .oacc_row_wr_data(oacc_row_wr_data),
-        .resp_valid(oacc_resp_valid_unused_w),
-        .resp_ready(1'b1),
         .done_pulse(oacc_real_done_pulse)
     );
 
@@ -654,8 +587,7 @@ module FA_CORE_BASELINE #(
         .wr_data_ready(wr_data_ready),
         .wr_data(wr_data),
         .wr_data_last(wr_data_last),
-        .done_pulse(store_done_pulse),
-        .error_pulse(wr_dma_error_unused_w)
+        .done_pulse(store_done_pulse)
     );
 
     always @(posedge clk or negedge rstn) begin
