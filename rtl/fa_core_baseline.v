@@ -56,7 +56,9 @@ module FA_CORE_BASELINE #(
     output wire [31:0]  cycles,
     output wire [31:0]  rd_bytes,
     output wire [31:0]  wr_bytes,
-    output wire         irq,
+    output wire         irq
+`ifndef SYNTHESIS
+    ,
     //debug
     output wire [16383:0] q_tile_flat,
     output wire [16383:0] k_tile_flat,
@@ -72,6 +74,7 @@ module FA_CORE_BASELINE #(
     output wire [15:0]    row_debug_seen_flat,
     output wire           debug_store_req_valid,
     output wire           debug_store_done_pulse
+`endif
 );
 
     localparam [1:0] LOAD_KIND_Q = 2'd0;
@@ -197,8 +200,10 @@ module FA_CORE_BASELINE #(
     assign rd_bytes = rd_bytes_r;
     assign wr_bytes = wr_bytes_r;
     assign irq = irq_en && (status_done || status_error);
+`ifndef SYNTHESIS
     assign debug_store_req_valid = store_req_valid;
     assign debug_store_done_pulse = store_done_pulse;
+`endif
     assign score_req_ready = (score_block_done_count_r == 3'd4);
     assign score_done_pulse = score_sched_done_pulse_r;
     assign row_update_ready = (row_update_block_done_count_r == 3'd4);
@@ -311,9 +316,12 @@ module FA_CORE_BASELINE #(
         .qk_rd_en(q_qk_rd_en),
         .qk_rd_addr(q_qk_rd_addr),
         .qk_rd_valid(q_qk_rd_valid),
-        .qk_rd_data(q_qk_rd_data),
+        .qk_rd_data(q_qk_rd_data)
+`ifndef SYNTHESIS
+        ,
         //debug
         .tile_flat(q_tile_flat)
+`endif
     );
 
     FA_K_BUF_REAL u_k_buf (
@@ -328,9 +336,12 @@ module FA_CORE_BASELINE #(
         .qk_rd_en(k_qk_rd_en),
         .qk_rd_addr(k_qk_rd_addr),
         .qk_rd_valid(k_qk_rd_valid),
-        .qk_rd_data(k_qk_rd_data),
+        .qk_rd_data(k_qk_rd_data)
+`ifndef SYNTHESIS
+        ,
         //debug
         .tile_flat(k_tile_flat)
+`endif
     );
 
     FA_V_BUF_REAL u_v_buf (
@@ -341,9 +352,12 @@ module FA_CORE_BASELINE #(
         .beat_write_row_idx(qkv_wr_row_idx),
         .beat_write_local_addr(qkv_wr_local_addr),
         .beat_write_word_mask(qkv_wr_word_mask),
-        .beat_write_data(qkv_wr_data),
+        .beat_write_data(qkv_wr_data)
+`ifndef SYNTHESIS
+        ,
         //debug
         .tile_flat(v_tile_flat)
+`endif
     );
 
     FA_V_BUF_PV_REAL u_v_buf_pv (
@@ -357,9 +371,12 @@ module FA_CORE_BASELINE #(
         .rd_en(v_pv_rd_en),
         .rd_addr(v_pv_rd_addr),
         .rd_valid(v_pv_rd_valid),
-        .rd_data(v_pv_rd_data),
+        .rd_data(v_pv_rd_data)
+`ifndef SYNTHESIS
+        ,
         //debug
         .layout_flat(v_pv_layout_flat)
+`endif
     );
 
     FA_OACC_BUF_REAL u_oacc_buf (
@@ -379,9 +396,12 @@ module FA_CORE_BASELINE #(
         .exp_rd_en(oacc_exp_rd_en),
         .exp_rd_addr(oacc_exp_rd_row),
         .exp_rd_valid(oacc_exp_rd_valid),
-        .exp_rd_data(oacc_exp_rd_data),
+        .exp_rd_data(oacc_exp_rd_data)
+`ifndef SYNTHESIS
+        ,
         //debug
         .tile_flat(oacc_tile_flat)
+`endif
     );
 
     assign oacc_clear_ready = oacc_clear_req_ready_w;
@@ -478,10 +498,13 @@ module FA_CORE_BASELINE #(
         .pv_block_ready(pv_block_ready),
         .pv_block_row_base(pv_block_row_base),
         .pv_block_data(pv_block_data),
-        .pv_done_pulse(pv_done_pulse),
+        .pv_done_pulse(pv_done_pulse)
+`ifndef SYNTHESIS
+        ,
         //debug
         .qk_result_tile_flat(qk_result_tile_flat),
         .pv_result_tile_flat(pv_result_tile_flat)
+`endif
     );
     assign qk_req_ready = qk_core_req_ready_w;
 
@@ -505,9 +528,12 @@ module FA_CORE_BASELINE #(
         .masked_block_row_base(score_masked_block_row_base),
         .masked_score_block_valid(score_masked_block_valid),
         .masked_score_block_flat(score_masked_block_flat),
-        .done_pulse(score_stream_done_pulse_w),
+        .done_pulse(score_stream_done_pulse_w)
+`ifndef SYNTHESIS
+        ,
         //debug
         .masked_score_tile_flat(score_masked_tile_flat)
+`endif
     );
 
     FA_ROW_STATE_REAL u_row_state (
@@ -525,14 +551,19 @@ module FA_CORE_BASELINE #(
         .masked_score_block_flat(score_masked_block_flat),
         .p_tile_flat(row_p_tile_flat),
         .rescale_vec_flat(row_rescale_vec_flat),
-        .done_pulse(row_stream_done_pulse_w),
+        .done_pulse(row_stream_done_pulse_w)
+`ifndef SYNTHESIS
+        ,
         //debug
         .debug_m_state_flat(row_debug_m_state_flat),
         .debug_l_state_flat(row_debug_l_state_flat),
         .debug_row_seen(row_debug_seen_flat)
+`endif
     );
 
+`ifndef SYNTHESIS
     assign p_tile_flat = row_p_tile_flat;
+`endif
 
     FA_P_BYPASS_REAL u_p_bypass (
         .clk(clk),

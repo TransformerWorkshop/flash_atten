@@ -72,6 +72,8 @@ module FA_TOP_BASELINE_SIM #(
     wire [31:0] csr_stride_bytes;
     wire [31:0] csr_neg_large;
     wire [31:0] csr_scale;
+    wire [2:0]  s_axil_awprot_tieoff = 3'b000;
+    wire [2:0]  s_axil_arprot_tieoff = 3'b000;
 
     wire        status_busy;
     wire        status_done;
@@ -80,6 +82,10 @@ module FA_TOP_BASELINE_SIM #(
     wire [31:0] status_rd_bytes;
     wire [31:0] status_wr_bytes;
 
+    wire        csr_level_unused_zero_w = (csr_start_level & 1'b0)
+                                        | (csr_soft_reset_level & 1'b0);
+    wire        core_irq;
+`ifndef SYNTHESIS
     //debug
     wire [16383:0] q_tile_flat;
     wire [16383:0] k_tile_flat;
@@ -95,23 +101,24 @@ module FA_TOP_BASELINE_SIM #(
     wire [15:0]    row_debug_seen_flat;
     wire           store_req_valid;
     wire           store_done_pulse;
-    wire           core_irq;
-    wire           sim_unused_zero_w = (csr_start_level & 1'b0)
-                                     | (csr_soft_reset_level & 1'b0)
-                                     | (q_tile_flat[0] & 1'b0)
-                                     | (k_tile_flat[0] & 1'b0)
-                                     | (v_tile_flat[0] & 1'b0)
-                                     | (v_pv_layout_flat[0] & 1'b0)
-                                     | (p_tile_flat[0] & 1'b0)
-                                     | (oacc_tile_flat[0] & 1'b0)
-                                     | (qk_result_tile_flat[0] & 1'b0)
-                                     | (score_masked_tile_flat[0] & 1'b0)
-                                     | (pv_result_tile_flat[0] & 1'b0)
-                                     | (row_debug_m_state_flat[0] & 1'b0)
-                                     | (row_debug_l_state_flat[0] & 1'b0)
-                                     | (row_debug_seen_flat[0] & 1'b0)
-                                     | (store_req_valid & 1'b0)
-                                     | (store_done_pulse & 1'b0);
+    wire           sim_debug_unused_zero_w = (q_tile_flat[0] & 1'b0)
+                                           | (k_tile_flat[0] & 1'b0)
+                                           | (v_tile_flat[0] & 1'b0)
+                                           | (v_pv_layout_flat[0] & 1'b0)
+                                           | (p_tile_flat[0] & 1'b0)
+                                           | (oacc_tile_flat[0] & 1'b0)
+                                           | (qk_result_tile_flat[0] & 1'b0)
+                                           | (score_masked_tile_flat[0] & 1'b0)
+                                           | (pv_result_tile_flat[0] & 1'b0)
+                                           | (row_debug_m_state_flat[0] & 1'b0)
+                                           | (row_debug_l_state_flat[0] & 1'b0)
+                                           | (row_debug_seen_flat[0] & 1'b0)
+                                           | (store_req_valid & 1'b0)
+                                           | (store_done_pulse & 1'b0);
+`else
+    wire           sim_debug_unused_zero_w = 1'b0;
+`endif
+    wire           sim_unused_zero_w = csr_level_unused_zero_w | sim_debug_unused_zero_w;
 
     wire status_error = status_error_core | csr_config_error | sim_unused_zero_w;
 
@@ -120,7 +127,7 @@ module FA_TOP_BASELINE_SIM #(
         .aresetn(rstn),
         .clear(clear),
         .s_axi_awaddr(s_axil_awaddr),
-        .s_axi_awprot(3'b000),
+        .s_axi_awprot(s_axil_awprot_tieoff),
         .s_axi_awvalid(s_axil_awvalid),
         .s_axi_awready(s_axil_awready),
         .s_axi_wdata(s_axil_wdata),
@@ -131,7 +138,7 @@ module FA_TOP_BASELINE_SIM #(
         .s_axi_bvalid(s_axil_bvalid),
         .s_axi_bready(s_axil_bready),
         .s_axi_araddr(s_axil_araddr),
-        .s_axi_arprot(3'b000),
+        .s_axi_arprot(s_axil_arprot_tieoff),
         .s_axi_arvalid(s_axil_arvalid),
         .s_axi_arready(s_axil_arready),
         .s_axi_rdata(s_axil_rdata),
@@ -218,7 +225,9 @@ module FA_TOP_BASELINE_SIM #(
         .cycles(status_cycles),
         .rd_bytes(status_rd_bytes),
         .wr_bytes(status_wr_bytes),
-        .irq(core_irq),
+        .irq(core_irq)
+`ifndef SYNTHESIS
+        ,
         //debug
         .q_tile_flat(q_tile_flat),
         .k_tile_flat(k_tile_flat),
@@ -234,6 +243,7 @@ module FA_TOP_BASELINE_SIM #(
         .row_debug_seen_flat(row_debug_seen_flat),
         .debug_store_req_valid(store_req_valid),
         .debug_store_done_pulse(store_done_pulse)
+`endif
     );
 
     assign irq = core_irq | sim_unused_zero_w;

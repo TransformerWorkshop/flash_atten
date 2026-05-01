@@ -79,6 +79,8 @@ module FA_TOP_BASELINE #(
     wire [31:0] csr_stride_bytes;
     wire [31:0] csr_neg_large;
     wire [31:0] csr_scale;
+    wire [2:0]  s_axil_awprot_tieoff = 3'b000;
+    wire [2:0]  s_axil_arprot_tieoff = 3'b000;
 
     wire        core_busy;
     wire        core_done;
@@ -108,6 +110,9 @@ module FA_TOP_BASELINE #(
     wire        wr_data_last;
     wire        rd_axi_error_pulse;
     wire        wr_axi_error_pulse;
+    wire        csr_level_unused_zero_w = (csr_start_level & 1'b0)
+                                        | (csr_soft_reset_level & 1'b0);
+`ifndef SYNTHESIS
     //debug
     wire [16383:0] q_tile_flat_unused;
     wire [16383:0] k_tile_flat_unused;
@@ -123,22 +128,24 @@ module FA_TOP_BASELINE #(
     wire [15:0]    row_debug_seen_flat_unused;
     wire           debug_store_req_valid_unused;
     wire           debug_store_done_pulse_unused;
-    wire           top_unused_zero_w = (csr_start_level & 1'b0)
-                                     | (csr_soft_reset_level & 1'b0)
-                                     | (q_tile_flat_unused[0] & 1'b0)
-                                     | (k_tile_flat_unused[0] & 1'b0)
-                                     | (v_tile_flat_unused[0] & 1'b0)
-                                     | (v_pv_layout_flat_unused[0] & 1'b0)
-                                     | (p_tile_flat_unused[0] & 1'b0)
-                                     | (oacc_tile_flat_unused[0] & 1'b0)
-                                     | (qk_result_tile_flat_unused[0] & 1'b0)
-                                     | (score_masked_tile_flat_unused[0] & 1'b0)
-                                     | (pv_result_tile_flat_unused[0] & 1'b0)
-                                     | (row_debug_m_state_flat_unused[0] & 1'b0)
-                                     | (row_debug_l_state_flat_unused[0] & 1'b0)
-                                     | (row_debug_seen_flat_unused[0] & 1'b0)
-                                     | (debug_store_req_valid_unused & 1'b0)
-                                     | (debug_store_done_pulse_unused & 1'b0);
+    wire           top_debug_unused_zero_w = (q_tile_flat_unused[0] & 1'b0)
+                                           | (k_tile_flat_unused[0] & 1'b0)
+                                           | (v_tile_flat_unused[0] & 1'b0)
+                                           | (v_pv_layout_flat_unused[0] & 1'b0)
+                                           | (p_tile_flat_unused[0] & 1'b0)
+                                           | (oacc_tile_flat_unused[0] & 1'b0)
+                                           | (qk_result_tile_flat_unused[0] & 1'b0)
+                                           | (score_masked_tile_flat_unused[0] & 1'b0)
+                                           | (pv_result_tile_flat_unused[0] & 1'b0)
+                                           | (row_debug_m_state_flat_unused[0] & 1'b0)
+                                           | (row_debug_l_state_flat_unused[0] & 1'b0)
+                                           | (row_debug_seen_flat_unused[0] & 1'b0)
+                                           | (debug_store_req_valid_unused & 1'b0)
+                                           | (debug_store_done_pulse_unused & 1'b0);
+`else
+    wire           top_debug_unused_zero_w = 1'b0;
+`endif
+    wire           top_unused_zero_w = csr_level_unused_zero_w | top_debug_unused_zero_w;
 
     reg axi_error_sticky_r;
     wire status_error = core_error | axi_error_sticky_r | csr_config_error | top_unused_zero_w;
@@ -148,7 +155,7 @@ module FA_TOP_BASELINE #(
         .aresetn(rstn),
         .clear(clear),
         .s_axi_awaddr(s_axil_awaddr),
-        .s_axi_awprot(3'b000),
+        .s_axi_awprot(s_axil_awprot_tieoff),
         .s_axi_awvalid(s_axil_awvalid),
         .s_axi_awready(s_axil_awready),
         .s_axi_wdata(s_axil_wdata),
@@ -159,7 +166,7 @@ module FA_TOP_BASELINE #(
         .s_axi_bvalid(s_axil_bvalid),
         .s_axi_bready(s_axil_bready),
         .s_axi_araddr(s_axil_araddr),
-        .s_axi_arprot(3'b000),
+        .s_axi_arprot(s_axil_arprot_tieoff),
         .s_axi_arvalid(s_axil_arvalid),
         .s_axi_arready(s_axil_arready),
         .s_axi_rdata(s_axil_rdata),
@@ -246,7 +253,9 @@ module FA_TOP_BASELINE #(
         .cycles(core_cycles),
         .rd_bytes(core_rd_bytes),
         .wr_bytes(core_wr_bytes),
-        .irq(core_irq),
+        .irq(core_irq)
+`ifndef SYNTHESIS
+        ,
         //debug
         .q_tile_flat(q_tile_flat_unused),
         .k_tile_flat(k_tile_flat_unused),
@@ -262,6 +271,7 @@ module FA_TOP_BASELINE #(
         .row_debug_seen_flat(row_debug_seen_flat_unused),
         .debug_store_req_valid(debug_store_req_valid_unused),
         .debug_store_done_pulse(debug_store_done_pulse_unused)
+`endif
     );
 
     FA_AXI_RD_MASTER u_axi_rd (

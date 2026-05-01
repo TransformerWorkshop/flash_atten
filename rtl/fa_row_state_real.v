@@ -13,11 +13,14 @@ module FA_ROW_STATE_REAL (
     input  wire [2047:0] masked_score_block_flat,
     output reg  [4095:0] p_tile_flat,
     output reg  [511:0]  rescale_vec_flat,
-    output reg           done_pulse,
+    output reg           done_pulse
+`ifndef SYNTHESIS
+    ,
     //debug
     output wire [511:0]  debug_m_state_flat,
     output wire [511:0]  debug_l_state_flat,
     output wire [15:0]   debug_row_seen
+`endif
 );
 
     localparam [2:0] ST_IDLE        = 3'd0;
@@ -34,8 +37,8 @@ module FA_ROW_STATE_REAL (
 
     reg [2:0] state_r;
     reg [2:0] state_n;
-    reg [3:0] row_idx_r;
-    reg [3:0] row_idx_n;
+    reg [1:0] row_idx_r;
+    reg [1:0] row_idx_n;
     reg [31:0] neg_large_word_r;
     reg [3:0] update_row_base_r;
     reg [63:0] masked_score_block_valid_r;
@@ -209,6 +212,7 @@ module FA_ROW_STATE_REAL (
         end
     endfunction
 
+`ifndef SYNTHESIS
     //debug
     generate
         genvar gi;
@@ -218,10 +222,11 @@ module FA_ROW_STATE_REAL (
             assign debug_row_seen[gi] = row_seen_r[gi];
         end
     endgenerate
+`endif
 
     assign init_ready = (state_r == ST_IDLE) && !resp_valid;
     assign update_ready = ((state_r == ST_IDLE) && !resp_valid) || rowstate_unused_zero_w;
-    assign actual_row_idx_w = update_row_base_r + row_idx_r;
+    assign actual_row_idx_w = update_row_base_r + {2'b00, row_idx_r};
     assign row_has_valid_commit_g0_w = row_has_valid_r;
     assign row_has_valid_commit_g1_w = row_has_valid_r;
     assign row_has_valid_commit_g2_w = row_has_valid_r;
@@ -249,7 +254,7 @@ module FA_ROW_STATE_REAL (
                     state_n = ST_INIT;
                 end else if (update_valid && update_ready) begin
                     state_n = ST_ROW_PREP;
-                    row_idx_n = 4'd0;
+                    row_idx_n = 2'd0;
                 end
             end
             ST_INIT: begin
@@ -273,7 +278,7 @@ module FA_ROW_STATE_REAL (
                 end
             end
             ST_ROW_COMMIT: begin
-                if (row_idx_r == 4'd3) begin
+                if (row_idx_r == 2'd3) begin
                     state_n = ST_DONE;
                 end else begin
                     row_idx_n = row_idx_r + 1'b1;
@@ -284,7 +289,7 @@ module FA_ROW_STATE_REAL (
             end
             default: begin
                 state_n = ST_IDLE;
-                row_idx_n = 4'd0;
+                row_idx_n = 2'd0;
             end
         endcase
     end
@@ -292,10 +297,10 @@ module FA_ROW_STATE_REAL (
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
             state_r <= ST_IDLE;
-            row_idx_r <= 4'd0;
+            row_idx_r <= 2'd0;
         end else if (clear) begin
             state_r <= ST_IDLE;
-            row_idx_r <= 4'd0;
+            row_idx_r <= 2'd0;
         end else begin
             state_r <= state_n;
             row_idx_r <= row_idx_n;
@@ -575,7 +580,7 @@ module FA_ROW_STATE_REAL (
                         end
                     end
 
-                    if (row_idx_r == 4'd3) begin
+                    if (row_idx_r == 2'd3) begin
                         resp_valid <= 1'b1;
                     end
                 end

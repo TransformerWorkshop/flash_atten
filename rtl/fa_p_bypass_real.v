@@ -52,7 +52,7 @@ module FA_P_BYPASS_REAL #(
             if (rd_en) begin
                 for (row_i = 0; row_i < 16; row_i = row_i + 1) begin
                     rd_data[(row_i * 32) +: 32] <=
-                        row_p_tile_flat[(((row_i * 8) + rd_addr) * 32) +: 32];
+                        row_p_tile_flat[(((row_i * 8) + {29'd0, rd_addr}) * 32) +: 32];
                 end
             end
         end

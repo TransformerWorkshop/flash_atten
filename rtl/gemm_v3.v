@@ -54,6 +54,7 @@ module GEMM_V3 #(
 	reg [4*WIDTH-1:0] group_word[0:GROUP_SIZE-1];
 
 	integer q;
+	integer pe_read_idx;
 
 	assign a_ready = &row_a_ready;
 	assign b_ready = &row_b_ready;
@@ -155,6 +156,7 @@ module GEMM_V3 #(
 
 	// Read PE output FIFOs directly for the current group
 	always @(*) begin
+		pe_read_idx = 0;
 		for (q = 0; q < GROUP_SIZE; q = q + 1) begin
 			group_word[q] = {4*WIDTH{1'b0}};
 		end
@@ -162,9 +164,12 @@ module GEMM_V3 #(
 		if (stream_active) begin
 			for (q = 0; q < GROUP_SIZE; q = q + 1) begin
 				if (OUTPUT_BY_ROW != 0) begin
-					group_word[q] = pe_m_data[stream_idx * Y_DIM + q];
+					pe_read_idx = (stream_idx * Y_DIM) + q;
 				end else begin
-					group_word[q] = pe_m_data[q * Y_DIM + stream_idx];
+					pe_read_idx = (q * Y_DIM) + stream_idx;
+				end
+				if ((pe_read_idx >= 0) && (pe_read_idx < TOTAL_PE)) begin
+					group_word[q] = pe_m_data[pe_read_idx];
 				end
 			end
 		end

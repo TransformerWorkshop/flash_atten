@@ -25,8 +25,8 @@ module FA_OACC_UPDATE_REAL (
 
     reg [2:0]   state_r;
     reg [2:0]   state_n;
-    reg [3:0]   row_idx_r;
-    reg [3:0]   row_idx_n;
+    reg [1:0]   row_idx_r;
+    reg [1:0]   row_idx_n;
     reg [3:0]   req_row_base_r;
     reg [4095:0] partial_o_block_flat_r;
     reg [1023:0] row_new_data_w;
@@ -176,7 +176,7 @@ module FA_OACC_UPDATE_REAL (
     endfunction
 
     assign req_ready = (state_r == ST_IDLE);
-    assign actual_row_idx_w = req_row_base_r + row_idx_r;
+    assign actual_row_idx_w = req_row_base_r + {2'b00, row_idx_r};
 
     always @(*) begin
         state_n = next_state_fn(
@@ -184,7 +184,7 @@ module FA_OACC_UPDATE_REAL (
             req_valid,
             req_ready,
             oacc_row_rd_valid,
-            row_idx_r == 4'd3
+            row_idx_r == 2'd3
         );
         row_idx_n = row_idx_r;
         oacc_row_rd_en_n = 1'b0;
@@ -201,7 +201,7 @@ module FA_OACC_UPDATE_REAL (
         case (state_r)
             ST_IDLE: begin
                 if (req_valid && req_ready) begin
-                    row_idx_n = 4'd0;
+                    row_idx_n = 2'd0;
                 end
             end
             ST_ROW_REQ: begin
@@ -216,7 +216,7 @@ module FA_OACC_UPDATE_REAL (
             end
             ST_ROW_WRITE: begin
                 oacc_row_wr_en_n = 1'b1;
-                if (row_idx_r != 4'd3) begin
+                if (row_idx_r != 2'd3) begin
                     row_idx_n = row_idx_r + 1'b1;
                 end
             end
@@ -231,7 +231,7 @@ module FA_OACC_UPDATE_REAL (
         row_new_data_w = 1024'd0;
         scale_raw_s = rescale_vec_flat[(actual_row_idx_w * 32) +: 32];
         for (elem_i = 0; elem_i < 64; elem_i = elem_i + 1) begin
-            case (row_idx_r[1:0])
+            case (row_idx_r)
                 2'd0: partial_q88_s = partial_o_block_flat_r[((elem_i >> 1) * 32) + ((elem_i & 1) * 16) +: 16];
                 2'd1: partial_q88_s = partial_o_block_flat_r[1024 + ((elem_i >> 1) * 32) + ((elem_i & 1) * 16) +: 16];
                 2'd2: partial_q88_s = partial_o_block_flat_r[2048 + ((elem_i >> 1) * 32) + ((elem_i & 1) * 16) +: 16];
@@ -249,7 +249,7 @@ module FA_OACC_UPDATE_REAL (
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
             state_r <= ST_IDLE;
-            row_idx_r <= 4'd0;
+            row_idx_r <= 2'd0;
             req_row_base_r <= 4'd0;
             partial_o_block_flat_r <= 4096'd0;
             oacc_row_rd_en <= 1'b0;
@@ -262,7 +262,7 @@ module FA_OACC_UPDATE_REAL (
             done_pulse <= 1'b0;
         end else if (clear) begin
             state_r <= ST_IDLE;
-            row_idx_r <= 4'd0;
+            row_idx_r <= 2'd0;
             req_row_base_r <= 4'd0;
             partial_o_block_flat_r <= 4096'd0;
             oacc_row_rd_en <= 1'b0;

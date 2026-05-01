@@ -10,9 +10,12 @@ module FA_BANKED_TILE_BUF_REAL (
     input  wire           rd_en,
     input  wire [4:0]     rd_addr,
     output reg            rd_valid,
-    output reg  [511:0]   rd_data,
+    output reg  [511:0]   rd_data
+`ifndef SYNTHESIS
+    ,
     //debug
     output wire [16383:0] tile_flat
+`endif
 );
 
     wire [511:0] bank_rd_data_w [0:3];
@@ -32,16 +35,6 @@ module FA_BANKED_TILE_BUF_REAL (
             assign tile_flat[(gi * 32) +: 32] = shadow_words_r[gi];
         end
     endgenerate
-`else
-    wire unused_tile_flat_zero_w = (clk & 1'b0)
-                                 | (rstn & 1'b0)
-                                 | (clear & 1'b0)
-                                 | (beat_write_valid & 1'b0)
-                                 | ((|beat_write_row_idx) & 1'b0)
-                                 | ((|beat_write_local_addr) & 1'b0)
-                                 | ((|beat_write_word_mask) & 1'b0)
-                                 | ((|beat_write_data) & 1'b0);
-    assign tile_flat = {16384{unused_tile_flat_zero_w}};
 `endif
 
     generate
@@ -128,9 +121,12 @@ module FA_REG_TILE_BUF_REAL (
     input  wire           rd_en,
     input  wire [4:0]     rd_addr,
     output reg            rd_valid,
-    output reg  [511:0]   rd_data,
+    output reg  [511:0]   rd_data
+`ifndef SYNTHESIS
+    ,
     //debug
     output wire [16383:0] tile_flat
+`endif
 );
 
     reg [31:0] word_mem_r [0:511];
@@ -151,16 +147,6 @@ module FA_REG_TILE_BUF_REAL (
             assign tile_flat[(gi * 32) +: 32] = word_mem_r[gi];
         end
     endgenerate
-`else
-    wire unused_tile_flat_zero_w = (clk & 1'b0)
-                                 | (rstn & 1'b0)
-                                 | (clear & 1'b0)
-                                 | (beat_write_valid & 1'b0)
-                                 | ((|beat_write_row_idx) & 1'b0)
-                                 | ((|beat_write_local_addr) & 1'b0)
-                                 | ((|beat_write_word_mask) & 1'b0)
-                                 | ((|beat_write_data) & 1'b0);
-    assign tile_flat = {16384{unused_tile_flat_zero_w}};
 `endif
 
     always @(posedge clk or negedge rstn) begin
@@ -212,9 +198,12 @@ module FA_BANKED_REG_TILE_BUF_REAL (
     input  wire           rd_en,
     input  wire [4:0]     rd_addr,
     output reg            rd_valid,
-    output reg  [511:0]   rd_data,
+    output reg  [511:0]   rd_data
+`ifndef SYNTHESIS
+    ,
     //debug
     output wire [16383:0] tile_flat
+`endif
 );
 
     wire [511:0] bank_rd_data_w [0:3];
@@ -234,16 +223,6 @@ module FA_BANKED_REG_TILE_BUF_REAL (
             assign tile_flat[(gi * 32) +: 32] = shadow_words_r[gi];
         end
     endgenerate
-`else
-    wire unused_tile_flat_zero_w = (clk & 1'b0)
-                                 | (rstn & 1'b0)
-                                 | (clear & 1'b0)
-                                 | (beat_write_valid & 1'b0)
-                                 | ((|beat_write_row_idx) & 1'b0)
-                                 | ((|beat_write_local_addr) & 1'b0)
-                                 | ((|beat_write_word_mask) & 1'b0)
-                                 | ((|beat_write_data) & 1'b0);
-    assign tile_flat = {16384{unused_tile_flat_zero_w}};
 `endif
 
     generate
@@ -332,9 +311,12 @@ module FA_Q_BUF_REAL (
     input  wire           qk_rd_en,
     input  wire [4:0]     qk_rd_addr,
     output wire           qk_rd_valid,
-    output wire [511:0]   qk_rd_data,
+    output wire [511:0]   qk_rd_data
+`ifndef SYNTHESIS
+    ,
     //debug
     output wire [16383:0] tile_flat
+`endif
 );
 
     FA_BANKED_REG_TILE_BUF_REAL u_reg_buf (
@@ -349,9 +331,12 @@ module FA_Q_BUF_REAL (
         .rd_en(qk_rd_en),
         .rd_addr(qk_rd_addr),
         .rd_valid(qk_rd_valid),
-        .rd_data(qk_rd_data),
+        .rd_data(qk_rd_data)
+`ifndef SYNTHESIS
+        ,
         //debug
         .tile_flat(tile_flat)
+`endif
     );
 
 endmodule
@@ -368,9 +353,12 @@ module FA_K_BUF_REAL (
     input  wire           qk_rd_en,
     input  wire [4:0]     qk_rd_addr,
     output wire           qk_rd_valid,
-    output wire [511:0]   qk_rd_data,
+    output wire [511:0]   qk_rd_data
+`ifndef SYNTHESIS
+    ,
     //debug
     output wire [16383:0] tile_flat
+`endif
 );
 
     FA_BANKED_REG_TILE_BUF_REAL u_reg_buf (
@@ -385,9 +373,12 @@ module FA_K_BUF_REAL (
         .rd_en(qk_rd_en),
         .rd_addr(qk_rd_addr),
         .rd_valid(qk_rd_valid),
-        .rd_data(qk_rd_data),
+        .rd_data(qk_rd_data)
+`ifndef SYNTHESIS
+        ,
         //debug
         .tile_flat(tile_flat)
+`endif
     );
 
 endmodule
@@ -400,9 +391,12 @@ module FA_V_BUF_REAL (
     input  wire [3:0]     beat_write_row_idx,
     input  wire [2:0]     beat_write_local_addr,
     input  wire [3:0]     beat_write_word_mask,
-    input  wire [127:0]   beat_write_data,
+    input  wire [127:0]   beat_write_data
+`ifndef SYNTHESIS
+    ,
     //debug
     output wire [16383:0] tile_flat
+`endif
 );
 
 `ifndef SYNTHESIS
@@ -437,16 +431,6 @@ module FA_V_BUF_REAL (
             end
         end
     end
-`else
-    wire unused_v_buf_zero_w = (clk & 1'b0)
-                             | (rstn & 1'b0)
-                             | (clear & 1'b0)
-                             | (beat_write_valid & 1'b0)
-                             | ((|beat_write_row_idx) & 1'b0)
-                             | ((|beat_write_local_addr) & 1'b0)
-                             | ((|beat_write_word_mask) & 1'b0)
-                             | ((|beat_write_data) & 1'b0);
-    assign tile_flat = {16384{unused_v_buf_zero_w}};
 `endif
 
 endmodule
@@ -462,9 +446,12 @@ module FA_V_BUF_PV_REAL (
     input  wire            rd_en,
     input  wire [4:0]      rd_addr,
     output reg             rd_valid,
-    output wire [511:0]    rd_data,
+    output wire [511:0]    rd_data
+`ifndef SYNTHESIS
+    ,
     //debug
     output wire [16383:0]  layout_flat
+`endif
 );
 
     reg [511:0] bank_wr_data_r;
@@ -493,15 +480,6 @@ module FA_V_BUF_PV_REAL (
             end
         end
     endgenerate
-`else
-    wire unused_layout_zero_w = (clk & 1'b0)
-                              | (rstn & 1'b0)
-                              | (clear & 1'b0)
-                              | (src_wr_valid & 1'b0)
-                              | ((|src_word_idx_base) & 1'b0)
-                              | ((|src_word_mask) & 1'b0)
-                              | ((|src_data) & 1'b0);
-    assign layout_flat = {16384{unused_layout_zero_w}};
 `endif
 
     FA_MASKED_ROWBUF_REG_REAL #(
@@ -529,7 +507,7 @@ module FA_V_BUF_PV_REAL (
         hi_half_r = 1'b0;
         for (src_i = 0; src_i < 4; src_i = src_i + 1) begin
             if (src_word_mask[src_i]) begin
-                src_word_idx_r = src_word_idx_base + src_i;
+                src_word_idx_r = src_word_idx_base + src_i[8:0];
                 src_word_r = src_data[(src_i * 32) +: 32];
                 lane_lo_idx_r = {src_word_idx_r[2:0], 1'b0};
                 lane_hi_idx_r = {src_word_idx_r[2:0], 1'b1};
@@ -597,9 +575,12 @@ module FA_P_BUF_REAL (
     input  wire           pv_rd_en,
     input  wire [2:0]     pv_rd_addr,
     output reg            pv_rd_valid,
-    output wire [511:0]   pv_rd_data,
+    output wire [511:0]   pv_rd_data
+`ifndef SYNTHESIS
+    ,
     //debug
     output wire [4095:0]  tile_flat
+`endif
 );
 
     reg [1:0] state_r;
@@ -664,15 +645,6 @@ module FA_P_BUF_REAL (
             assign tile_flat[(gi * 32) +: 32] = shadow_words_r[gi];
         end
     endgenerate
-`else
-    wire unused_p_tile_flat_zero_w = (clk & 1'b0)
-                                   | (rstn & 1'b0)
-                                   | (clear & 1'b0)
-                                   | (load_valid & 1'b0)
-                                   | ((|tile_load_data) & 1'b0)
-                                   | (pv_rd_en & 1'b0)
-                                   | ((|pv_rd_addr) & 1'b0);
-    assign tile_flat = {4096{unused_p_tile_flat_zero_w}};
 `endif
 
     FA_MASKED_ROWBUF_REAL #(
@@ -753,9 +725,12 @@ module FA_OACC_BUF_REAL (
     input  wire            exp_rd_en,
     input  wire [3:0]      exp_rd_addr,
     output reg             exp_rd_valid,
-    output wire [1023:0]   exp_rd_data,
+    output wire [1023:0]   exp_rd_data
+`ifndef SYNTHESIS
+    ,
     //debug
     output wire [16383:0]  tile_flat
+`endif
 );
 
     localparam [1:0] ST_IDLE = 2'd0;
@@ -864,19 +839,6 @@ module FA_OACC_BUF_REAL (
             );
         end
     endgenerate
-`else
-    wire unused_oacc_tile_flat_zero_w = (clk & 1'b0)
-                                      | (rstn & 1'b0)
-                                      | (clear & 1'b0)
-                                      | (clear_req_valid & 1'b0)
-                                      | (row_rd_en & 1'b0)
-                                      | ((|row_rd_addr) & 1'b0)
-                                      | (row_wr_en & 1'b0)
-                                      | ((|row_wr_addr) & 1'b0)
-                                      | ((|row_wr_data) & 1'b0)
-                                      | (exp_rd_en & 1'b0)
-                                      | ((|exp_rd_addr) & 1'b0);
-    assign tile_flat = {16384{unused_oacc_tile_flat_zero_w}};
 `endif
 
     assign mem_rd_en_w = row_rd_en || exp_rd_en;

@@ -16,9 +16,12 @@ module FA_SCORE_POST_REAL (
     output reg  [3:0]    masked_block_row_base,
     output reg  [63:0]   masked_score_block_valid,
     output reg  [2047:0] masked_score_block_flat,
-    output reg           done_pulse,
+    output reg           done_pulse
+`ifndef SYNTHESIS
+    ,
     //debug
     output wire [8191:0] masked_score_tile_flat
+`endif
 );
 
     localparam [2:0] ST_IDLE     = 3'd0;
@@ -110,19 +113,6 @@ module FA_SCORE_POST_REAL (
     assign req_ready = (state_r == ST_IDLE) && !resp_valid;
 `ifndef SYNTHESIS
     assign masked_score_tile_flat = masked_score_tile_flat_r;
-`else
-    wire score_post_debug_zero_w = (clk & 1'b0)
-                                 | (rstn & 1'b0)
-                                 | (clear & 1'b0)
-                                 | (req_valid & 1'b0)
-                                 | ((|q_blk_idx) & 1'b0)
-                                 | ((|kv_blk_idx) & 1'b0)
-                                 | (causal_en & 1'b0)
-                                 | ((|scale_word) & 1'b0)
-                                 | ((|neg_large_word) & 1'b0)
-                                 | ((|score_block_row_base) & 1'b0)
-                                 | ((|score_block_flat) & 1'b0);
-    assign masked_score_tile_flat = {8192{score_post_debug_zero_w}};
 `endif
 
     always @(*) begin
@@ -232,7 +222,7 @@ module FA_SCORE_POST_REAL (
                 end
                 ST_RUN: begin
                     for (col_idx = 0; col_idx < 4; col_idx = col_idx + 1) begin
-                        global_k_idx = kv_global_base_g0_w + col_idx;
+                        global_k_idx = {24'd0, kv_global_base_g0_w} + col_idx;
                         score_word_s = score_block_flat_r[((row_idx_r * 16) + col_idx) * 32 +: 32];
                         scaled_q16_16 = q16_mul_rn_sat(score_word_s, scale_word_g0_w);
                         if (causal_g0_w && (global_k_idx > global_q_idx_g0_w)) begin
@@ -250,7 +240,7 @@ module FA_SCORE_POST_REAL (
                         end
                     end
                     for (col_idx = 4; col_idx < 8; col_idx = col_idx + 1) begin
-                        global_k_idx = kv_global_base_g1_w + col_idx;
+                        global_k_idx = {24'd0, kv_global_base_g1_w} + col_idx;
                         score_word_s = score_block_flat_r[((row_idx_r * 16) + col_idx) * 32 +: 32];
                         scaled_q16_16 = q16_mul_rn_sat(score_word_s, scale_word_g1_w);
                         if (causal_g1_w && (global_k_idx > global_q_idx_g1_w)) begin
@@ -268,7 +258,7 @@ module FA_SCORE_POST_REAL (
                         end
                     end
                     for (col_idx = 8; col_idx < 12; col_idx = col_idx + 1) begin
-                        global_k_idx = kv_global_base_g2_w + col_idx;
+                        global_k_idx = {24'd0, kv_global_base_g2_w} + col_idx;
                         score_word_s = score_block_flat_r[((row_idx_r * 16) + col_idx) * 32 +: 32];
                         scaled_q16_16 = q16_mul_rn_sat(score_word_s, scale_word_g2_w);
                         if (causal_g2_w && (global_k_idx > global_q_idx_g2_w)) begin
@@ -286,7 +276,7 @@ module FA_SCORE_POST_REAL (
                         end
                     end
                     for (col_idx = 12; col_idx < 16; col_idx = col_idx + 1) begin
-                        global_k_idx = kv_global_base_g3_w + col_idx;
+                        global_k_idx = {24'd0, kv_global_base_g3_w} + col_idx;
                         score_word_s = score_block_flat_r[((row_idx_r * 16) + col_idx) * 32 +: 32];
                         scaled_q16_16 = q16_mul_rn_sat(score_word_s, scale_word_g3_w);
                         if (causal_g3_w && (global_k_idx > global_q_idx_g3_w)) begin
