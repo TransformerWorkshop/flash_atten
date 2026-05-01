@@ -93,7 +93,6 @@ pv_block_valid/ready/data/row_base
 已覆盖：
 
 ```text
-iverilog FA_TOP_BASELINE_SIM
 iverilog FA_TOP_BASELINE
 fa_shared_gemm focused tests
 fa_baseline QK/score/row/PV focused tests

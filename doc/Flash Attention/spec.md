@@ -644,14 +644,14 @@ cocotb testbench 包含：
 
 ```bash
 python3 -m py_compile sim/cocotb/tests/test_fa_baseline.py scripts/fa_precision_analysis.py scripts/fa_baseline_profile.py
-iverilog -g2012 -I rtl -s FA_TOP_BASELINE_SIM -o /tmp/fa_top_baseline_sim_check.out rtl/*.v
+iverilog -g2012 -I rtl -s FA_TOP_BASELINE -o /tmp/fa_top_baseline_check.out rtl/*.v
 iverilog -g2012 -DSYNTHESIS -I rtl -s FA_TOP_BASELINE -o /tmp/fa_top_baseline_synth_check.out rtl/*.v
 ```
 
 关键端到端回归：
 
 ```bash
-python3 sim/cocotb/run.py fa_full --testcase test_fa_baseline_full_causal_end_to_end,test_fa_baseline_full_noncausal_and_soft_reset --rebuild
+python3 sim/cocotb/run.py fa_full_axi --testcase test_fa_baseline_axi_full_causal_end_to_end,test_fa_baseline_axi_full_noncausal_end_to_end --rebuild
 python3 sim/cocotb/run.py fa_baseline --testcase test_fa_numeric_single_q_single_kv_noncausal,test_fa_numeric_single_q_full_kv_causal --rebuild
 ```
 

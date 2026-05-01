@@ -250,7 +250,9 @@ module FA_QK_PV_STREAM_CTRL (
 
 endmodule
 
-module FA_QK_PV_RESULT_PACKER (
+module FA_QK_PV_RESULT_PACKER #(
+    parameter integer GEMM_ACC_WIDTH = 64
+) (
     input  wire           clk,
     input  wire           rstn,
     input  wire           clear,
@@ -260,7 +262,7 @@ module FA_QK_PV_RESULT_PACKER (
     input  wire [1:0]     row_blk,
     input  wire [1:0]     col_blk,
     input  wire           gemm_stream_fire,
-    input  wire [2047:0]  gemm_group_data,
+    input  wire [(16*GEMM_ACC_WIDTH)-1:0] gemm_group_data,
     input  wire [31:0]    gemm_group_idx,
     input  wire           gemm_last,
     output reg            qk_block_valid,
@@ -283,6 +285,11 @@ module FA_QK_PV_RESULT_PACKER (
 
     localparam MODE_QK = 1'b0;
     localparam MODE_PV = 1'b1;
+    localparam signed [GEMM_ACC_WIDTH-1:0] ACC_Q16_MAX = {{(GEMM_ACC_WIDTH-32){1'b0}}, 32'h7FFF_FFFF};
+    localparam signed [GEMM_ACC_WIDTH-1:0] ACC_Q16_MIN = {{(GEMM_ACC_WIDTH-32){1'b1}}, 32'h8000_0000};
+    localparam signed [GEMM_ACC_WIDTH-1:0] ACC_Q88_MAX = {{(GEMM_ACC_WIDTH-16){1'b0}}, 16'h7FFF};
+    localparam signed [GEMM_ACC_WIDTH-1:0] ACC_Q88_MIN = {{(GEMM_ACC_WIDTH-16){1'b1}}, 16'h8000};
+    localparam signed [GEMM_ACC_WIDTH-1:0] ACC_Q88_RND = {{(GEMM_ACC_WIDTH-9){1'b0}}, 9'sd128};
 
 `ifndef SYNTHESIS
     reg [31:0] qk_result_words_r [0:255];
@@ -310,36 +317,36 @@ module FA_QK_PV_RESULT_PACKER (
     integer wi;
 `endif
 
-    function automatic signed [31:0] clamp_q16_16_from_acc128;
-        input signed [127:0] value;
+    function automatic signed [31:0] clamp_q16_16_from_acc;
+        input signed [GEMM_ACC_WIDTH-1:0] value;
         begin
-            if (value > 128'sh0000000000000000000000007FFF_FFFF) begin
-                clamp_q16_16_from_acc128 = 32'sh7FFF_FFFF;
-            end else if (value < -128'sh0000000000000000000000008000_0000) begin
-                clamp_q16_16_from_acc128 = -32'sh8000_0000;
+            if (value > ACC_Q16_MAX) begin
+                clamp_q16_16_from_acc = 32'sh7FFF_FFFF;
+            end else if (value < ACC_Q16_MIN) begin
+                clamp_q16_16_from_acc = -32'sh8000_0000;
             end else begin
-                clamp_q16_16_from_acc128 = value[31:0];
+                clamp_q16_16_from_acc = value[31:0];
             end
         end
     endfunction
 
-    function automatic signed [15:0] q16_16_to_q88_sat128;
-        input signed [127:0] value;
-        reg signed [127:0] rounded;
-        reg signed [127:0] shifted;
+    function automatic signed [15:0] q16_16_to_q88_sat_acc;
+        input signed [GEMM_ACC_WIDTH-1:0] value;
+        reg signed [GEMM_ACC_WIDTH-1:0] rounded;
+        reg signed [GEMM_ACC_WIDTH-1:0] shifted;
         begin
             if (value >= 0) begin
-                rounded = value + 128'sd128;
+                rounded = value + ACC_Q88_RND;
             end else begin
-                rounded = value - 128'sd128;
+                rounded = value - ACC_Q88_RND;
             end
             shifted = rounded >>> 8;
-            if (shifted > 128'sd32767) begin
-                q16_16_to_q88_sat128 = 16'sh7FFF;
-            end else if (shifted < -128'sd32768) begin
-                q16_16_to_q88_sat128 = -16'sh8000;
+            if (shifted > ACC_Q88_MAX) begin
+                q16_16_to_q88_sat_acc = 16'sh7FFF;
+            end else if (shifted < ACC_Q88_MIN) begin
+                q16_16_to_q88_sat_acc = -16'sh8000;
             end else begin
-                q16_16_to_q88_sat128 = shifted[15:0];
+                q16_16_to_q88_sat_acc = shifted[15:0];
             end
         end
     endfunction
@@ -366,7 +373,7 @@ module FA_QK_PV_RESULT_PACKER (
         qk_result_wr_data_w = 512'd0;
         for (qk_pack_col_idx = 0; qk_pack_col_idx < 16; qk_pack_col_idx = qk_pack_col_idx + 1) begin
             qk_result_wr_data_w[(qk_pack_col_idx * 32) +: 32] =
-                clamp_q16_16_from_acc128(gemm_group_data[(qk_pack_col_idx * 128) +: 128]);
+                clamp_q16_16_from_acc(gemm_group_data[(qk_pack_col_idx * GEMM_ACC_WIDTH) +: GEMM_ACC_WIDTH]);
         end
     end
 
@@ -377,7 +384,7 @@ module FA_QK_PV_RESULT_PACKER (
             pv_pack_col_blk_s = pv_pack_col_idx[5:4];
             if (col_blk == pv_pack_col_blk_s) begin
                 pv_result_wr_data_w[(pv_pack_col_idx * 16) +: 16] =
-                    q16_16_to_q88_sat128(gemm_group_data[((pv_pack_col_idx % 16) * 128) +: 128]);
+                    q16_16_to_q88_sat_acc(gemm_group_data[((pv_pack_col_idx % 16) * GEMM_ACC_WIDTH) +: GEMM_ACC_WIDTH]);
             end
         end
     end
@@ -545,6 +552,9 @@ module FA_QK_PV_SHARED_CORE_REAL (
 `endif
 );
 
+    localparam integer GEMM_ACC_WIDTH = 64;
+    localparam integer GEMM_GROUP_SIZE = 16;
+
     wire         stream_idle_w;
     wire         mode_w;
     wire [1:0]   row_blk_w;
@@ -554,7 +564,7 @@ module FA_QK_PV_SHARED_CORE_REAL (
     wire         gemm_a_ready_w;
     wire         gemm_b_ready_w;
     wire         gemm_start_ready_w;
-    wire [2047:0] gemm_group_data_w;
+    wire [(GEMM_GROUP_SIZE*GEMM_ACC_WIDTH)-1:0] gemm_group_data_w;
     wire         gemm_group_valid_w;
     wire [31:0]  gemm_group_idx_w;
     wire         gemm_last_w;
@@ -652,7 +662,9 @@ module FA_QK_PV_SHARED_CORE_REAL (
         .m_last(gemm_last_w)
     );
 
-    FA_QK_PV_RESULT_PACKER u_result_packer (
+    FA_QK_PV_RESULT_PACKER #(
+        .GEMM_ACC_WIDTH(GEMM_ACC_WIDTH)
+    ) u_result_packer (
         .clk(clk),
         .rstn(rstn),
         .clear(clear),

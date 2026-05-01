@@ -14,7 +14,6 @@
 | `FA_AXI_WR_MASTER` | [fa_axi_wr_master.md](fa_axi_wr_master.md) | [`rtl/fa_axi_rd_master.v`](../../../rtl/fa_axi_rd_master.v) |
 | `FA_Q_BUF_REAL` | [fa_q_buf_real.md](fa_q_buf_real.md) | [`rtl/fa_buffers_real.v`](../../../rtl/fa_buffers_real.v) |
 | `FA_K_BUF_REAL` | [fa_k_buf_real.md](fa_k_buf_real.md) | [`rtl/fa_buffers_real.v`](../../../rtl/fa_buffers_real.v) |
-| `FA_V_BUF_REAL` | [fa_v_buf_real.md](fa_v_buf_real.md) | [`rtl/fa_buffers_real.v`](../../../rtl/fa_buffers_real.v) |
 | `FA_V_BUF_PV_REAL` | [fa_v_buf_pv_real.md](fa_v_buf_pv_real.md) | [`rtl/fa_buffers_real.v`](../../../rtl/fa_buffers_real.v) |
 | `GEMM_V3` | [gemm_v3.md](gemm_v3.md) | [`rtl/gemm_v3.v`](../../../rtl/gemm_v3.v) |
 | `FA_QK_PV_SHARED_CORE_REAL` | [fa_qk_pv_shared_core_real.md](fa_qk_pv_shared_core_real.md) | [`rtl/fa_cores_real.v`](../../../rtl/fa_cores_real.v) |

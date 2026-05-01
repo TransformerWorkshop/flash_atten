@@ -6,6 +6,10 @@ from cocotb.triggers import RisingEdge, Timer
 
 from tests.fa_functional_coverage import record_module_hits
 
+ROWS_PER_BLOCK = 4
+WORDS_PER_ROW = 32
+WORDS_PER_BLOCK = ROWS_PER_BLOCK * WORDS_PER_ROW
+
 
 def s32(raw: int) -> int:
     raw &= 0xFFFF_FFFF
@@ -96,11 +100,11 @@ async def reset_dut(dut) -> None:
     dut.rstn.value = 0
     dut.clear.value = 0
     dut.req_valid.value = 0
+    dut.req_row_base.value = 0
     dut.rescale_vec_flat.value = 0
-    dut.partial_o_tile_flat.value = 0
+    dut.partial_o_block_flat.value = 0
     dut.oacc_row_rd_valid.value = 0
     dut.oacc_row_rd_data.value = 0
-    dut.resp_ready.value = 1
     for _ in range(3):
         await RisingEdge(dut.clk)
     dut.rstn.value = 1
@@ -135,6 +139,23 @@ async def wait_signal_high(dut, signal, timeout_cycles: int = 512) -> None:
         if int(signal.value):
             return
     raise AssertionError("signal did not assert before timeout")
+
+
+async def run_oacc_block(dut, row_base: int, partial_words: list[int]) -> None:
+    await wait_signal_high(dut, dut.req_ready)
+    dut.req_row_base.value = row_base
+    dut.partial_o_block_flat.value = pack_words_to_int(partial_words)
+    dut.req_valid.value = 1
+    await RisingEdge(dut.clk)
+    dut.req_valid.value = 0
+    await wait_done_pulse(dut)
+
+
+async def run_oacc_tile(dut, partial_words: list[int]) -> None:
+    for block_idx in range(4):
+        start = block_idx * WORDS_PER_BLOCK
+        end = start + WORDS_PER_BLOCK
+        await run_oacc_block(dut, block_idx * ROWS_PER_BLOCK, partial_words[start:end])
 
 
 @cocotb.test()
@@ -202,11 +223,7 @@ async def test_fa_oacc_update_q412_rounding_saturation_boundaries(dut) -> None:
     memory_task = cocotb.start_soon(row_memory_agent(dut, old_rows, writes))
     try:
         dut.rescale_vec_flat.value = pack_words_to_int(rescale_words)
-        dut.partial_o_tile_flat.value = pack_words_to_int(partial_words)
-        dut.req_valid.value = 1
-        await RisingEdge(dut.clk)
-        dut.req_valid.value = 0
-        await wait_done_pulse(dut)
+        await run_oacc_tile(dut, partial_words)
         await Timer(1, unit="ps")
 
         assert sorted(writes) == list(range(16))
@@ -221,7 +238,7 @@ async def test_fa_oacc_update_q412_rounding_saturation_boundaries(dut) -> None:
 
 
 @cocotb.test()
-async def test_fa_oacc_update_clear_resp_stall_and_extreme_saturation(dut) -> None:
+async def test_fa_oacc_update_clear_and_extreme_saturation(dut) -> None:
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     await reset_dut(dut)
 
@@ -244,18 +261,8 @@ async def test_fa_oacc_update_clear_resp_stall_and_extreme_saturation(dut) -> No
     writes: dict[int, list[int]] = {}
     memory_task = cocotb.start_soon(row_memory_agent(dut, old_rows, writes))
     try:
-        dut.resp_ready.value = 0
         dut.rescale_vec_flat.value = pack_words_to_int(rescale_words)
-        dut.partial_o_tile_flat.value = pack_words_to_int(partial_words)
-        dut.req_valid.value = 1
-        await RisingEdge(dut.clk)
-        dut.req_valid.value = 0
-
-        await wait_signal_high(dut, dut.resp_valid, timeout_cycles=1024)
-        await RisingEdge(dut.clk)
-        assert int(dut.done_pulse.value) == 0
-        dut.resp_ready.value = 1
-        await wait_done_pulse(dut, timeout_cycles=16)
+        await run_oacc_tile(dut, partial_words)
         await Timer(1, unit="ps")
 
         assert sorted(writes) == list(range(16))
@@ -265,7 +272,6 @@ async def test_fa_oacc_update_clear_resp_stall_and_extreme_saturation(dut) -> No
         record_module_hits(
             ("module.oacc_update", "module.oacc_rounding", "module.oacc_saturation"),
             rows_written=len(writes),
-            resp_stall=True,
             extreme_saturation=True,
         )
     finally:

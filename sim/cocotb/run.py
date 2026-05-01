@@ -54,7 +54,7 @@ class RunConfig:
     x_dim: int
     y_dim: int
     test_modules: List[str]
-    hdl_toplevel: str = "FA_TOP_BASELINE_SIM"
+    hdl_toplevel: str = "FA_TOP_BASELINE"
     build_name: Optional[str] = None
     seeds: Optional[List[int]] = None
     extra_env: Optional[Mapping[str, str]] = None
@@ -125,7 +125,13 @@ def resolve_test_selection(test_filter: Optional[str], testcase: Optional[str]) 
 def hdl_toplevel_supports_stream_params(hdl_toplevel: str) -> bool:
     return hdl_toplevel in {
         "FA_TOP_BASELINE",
-        "FA_TOP_BASELINE_SIM",
+    }
+
+
+def hdl_toplevel_supports_default_params(hdl_toplevel: str) -> bool:
+    return hdl_toplevel in {
+        "FA_TOP_BASELINE",
+        "FA_P_BYPASS_REAL",
     }
 
 
@@ -435,44 +441,24 @@ def suite_configs(suite: str, seed_override: Optional[int], _target: str = APP_T
     if suite == "fa_baseline":
         return [
             RunConfig(
-                name="fa_baseline_sim",
-                build_name="fa_baseline_sim",
+                name="fa_baseline_axi_direct",
+                build_name="fa_baseline_axi",
                 x_dim=16,
                 y_dim=16,
-                test_modules=[
-                    "tests.test_fa_baseline_smoke_cases",
-                    "tests.test_fa_baseline_numeric_cases",
-                    "tests.test_fa_baseline_csr_cases",
-                    "tests.test_fa_baseline_protocol_cases",
-                    "tests.test_fa_baseline_protocol_edge_cases",
-                    "tests.test_fa_baseline_state_cases",
-                    "tests.test_fa_baseline_backpressure_cases",
-                    "tests.test_fa_baseline",
-                ],
-                hdl_toplevel="FA_TOP_BASELINE_SIM",
+                test_modules=["tests.test_fa_baseline_axi"],
+                hdl_toplevel="FA_TOP_BASELINE",
                 seeds=[default_seed],
             )
         ]
     if suite == "fa_full":
         return [
             RunConfig(
-                name="fa_full_sim",
-                build_name="fa_baseline_sim",
+                name="fa_full_axi_direct",
+                build_name="fa_baseline_axi",
                 x_dim=16,
                 y_dim=16,
-                test_modules=[
-                    "tests.test_fa_baseline_smoke_cases",
-                    "tests.test_fa_baseline_numeric_cases",
-                    "tests.test_fa_baseline_full_numeric_cases",
-                    "tests.test_fa_baseline_csr_cases",
-                    "tests.test_fa_baseline_protocol_cases",
-                    "tests.test_fa_baseline_protocol_edge_cases",
-                    "tests.test_fa_baseline_state_cases",
-                    "tests.test_fa_baseline_backpressure_cases",
-                    "tests.test_fa_baseline",
-                    "tests.test_fa_baseline_full_cases",
-                ],
-                hdl_toplevel="FA_TOP_BASELINE_SIM",
+                test_modules=["tests.test_fa_baseline_axi", "tests.test_fa_baseline_axi_full_cases"],
+                hdl_toplevel="FA_TOP_BASELINE",
                 seeds=[default_seed],
             )
         ]
@@ -520,7 +506,7 @@ def suite_configs(suite: str, seed_override: Optional[int], _target: str = APP_T
                 x_dim=16,
                 y_dim=16,
                 test_modules=["tests.test_fa_shared_gemm"],
-                hdl_toplevel="FA_QK_PV_SHARED_CORE_SIM",
+                hdl_toplevel="FA_QK_PV_SHARED_CORE_REAL",
                 seeds=[default_seed],
             )
         ]
@@ -532,7 +518,7 @@ def suite_configs(suite: str, seed_override: Optional[int], _target: str = APP_T
                 x_dim=16,
                 y_dim=16,
                 test_modules=["tests.test_fa_oacc_update"],
-                hdl_toplevel="FA_OACC_UPDATE_SIM",
+                hdl_toplevel="FA_OACC_UPDATE_REAL",
                 seeds=[default_seed],
             )
         ]
@@ -544,7 +530,7 @@ def suite_configs(suite: str, seed_override: Optional[int], _target: str = APP_T
                 x_dim=16,
                 y_dim=16,
                 test_modules=["tests.test_fa_baseline_perf_rowstate"],
-                hdl_toplevel="FA_ROW_STATE_PROFILE_SIM",
+                hdl_toplevel="FA_ROW_STATE_REAL",
                 seeds=[default_seed],
             )
         ]
@@ -552,11 +538,11 @@ def suite_configs(suite: str, seed_override: Optional[int], _target: str = APP_T
         return [
             RunConfig(
                 name="fa_extreme_precision",
-                build_name="fa_baseline_sim",
+                build_name="fa_baseline_axi",
                 x_dim=16,
                 y_dim=16,
                 test_modules=["tests.test_fa_extreme_precision"],
-                hdl_toplevel="FA_TOP_BASELINE_SIM",
+                hdl_toplevel="FA_TOP_BASELINE",
                 seeds=[default_seed],
             )
         ]
@@ -603,7 +589,7 @@ def run_case(
             f"Import error: {IMPORT_ERROR}."
         )
 
-    params = {
+    default_params = {
         "DATA_WIDTH": 32,
         "GEMM_X_DIM": config.x_dim,
         "GEMM_Y_DIM": config.y_dim,
@@ -619,6 +605,7 @@ def run_case(
         "M_EXPORT_LANES": 1,
         "M_PHYSICAL_COPIES": 3,
     }
+    params = dict(default_params) if hdl_toplevel_supports_default_params(config.hdl_toplevel) else {}
     if config.rtl_params:
         params.update(config.rtl_params)
     if hdl_toplevel_supports_stream_params(config.hdl_toplevel):

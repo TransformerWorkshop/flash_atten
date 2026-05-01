@@ -203,6 +203,7 @@ module FA_CORE_BASELINE #(
 `ifndef SYNTHESIS
     assign debug_store_req_valid = store_req_valid;
     assign debug_store_done_pulse = store_done_pulse;
+    assign v_tile_flat = v_pv_layout_flat;
 `endif
     assign score_req_ready = (score_block_done_count_r == 3'd4);
     assign score_done_pulse = score_sched_done_pulse_r;
@@ -341,22 +342,6 @@ module FA_CORE_BASELINE #(
         ,
         //debug
         .tile_flat(k_tile_flat)
-`endif
-    );
-
-    FA_V_BUF_REAL u_v_buf (
-        .clk(clk),
-        .rstn(rstn),
-        .clear(runtime_clear),
-        .beat_write_valid(qkv_wr_valid && (qkv_wr_kind == LOAD_KIND_V)),
-        .beat_write_row_idx(qkv_wr_row_idx),
-        .beat_write_local_addr(qkv_wr_local_addr),
-        .beat_write_word_mask(qkv_wr_word_mask),
-        .beat_write_data(qkv_wr_data)
-`ifndef SYNTHESIS
-        ,
-        //debug
-        .tile_flat(v_tile_flat)
 `endif
     );
 

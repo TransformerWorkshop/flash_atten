@@ -134,7 +134,7 @@ async def run_qk_transaction(dut, q_word: int, k_word: int) -> int:
     dut.k_rd_data.value = pack_words_to_int([k_word for _ in range(16)])
     dut.q_rd_valid.value = 1
     dut.k_rd_valid.value = 1
-    dut.qk_resp_ready.value = 1
+    dut.qk_block_ready.value = 1
     dut.qk_req_valid.value = 1
     await RisingEdge(dut.clk)
     dut.qk_req_valid.value = 0
@@ -151,7 +151,7 @@ async def run_pv_transaction(dut, p_word: int, v_word: int) -> int:
     dut.v_rd_data.value = pack_words_to_int([v_word for _ in range(16)])
     dut.p_rd_valid.value = 1
     dut.v_rd_valid.value = 1
-    dut.pv_resp_ready.value = 1
+    dut.pv_block_ready.value = 1
     dut.pv_req_valid.value = 1
     await RisingEdge(dut.clk)
     dut.pv_req_valid.value = 0
@@ -176,8 +176,8 @@ async def reset_dut(dut) -> None:
     dut.k_rd_data.value = 0
     dut.p_rd_data.value = 0
     dut.v_rd_data.value = 0
-    dut.qk_resp_ready.value = 1
-    dut.pv_resp_ready.value = 1
+    dut.qk_block_ready.value = 1
+    dut.pv_block_ready.value = 1
     for _ in range(3):
         await RisingEdge(dut.clk)
     dut.rstn.value = 1
@@ -239,17 +239,15 @@ async def test_fa_shared_gemm_qk_and_pv_complete_streams(dut) -> None:
     dut.k_rd_data.value = source_tile
     dut.q_rd_valid.value = 1
     dut.k_rd_valid.value = 1
-    dut.qk_resp_ready.value = 0
+    dut.qk_block_ready.value = 1
     dut.qk_req_valid.value = 1
     await RisingEdge(dut.clk)
     dut.qk_req_valid.value = 0
 
-    await wait_signal_high(dut, dut.qk_resp_valid)
+    await wait_signal_high(dut, dut.qk_block_valid)
     await Timer(1, unit="ps")
     assert int(dut.qk_result_tile_flat.value) != 0
-    assert int(dut.qk_done_pulse.value) == 0
 
-    dut.qk_resp_ready.value = 1
     await wait_signal_high(dut, dut.qk_done_pulse)
     dut.q_rd_valid.value = 0
     dut.k_rd_valid.value = 0
@@ -258,17 +256,15 @@ async def test_fa_shared_gemm_qk_and_pv_complete_streams(dut) -> None:
     dut.v_rd_data.value = source_tile
     dut.p_rd_valid.value = 1
     dut.v_rd_valid.value = 1
-    dut.pv_resp_ready.value = 0
+    dut.pv_block_ready.value = 1
     dut.pv_req_valid.value = 1
     await RisingEdge(dut.clk)
     dut.pv_req_valid.value = 0
 
-    await wait_signal_high(dut, dut.pv_resp_valid)
+    await wait_signal_high(dut, dut.pv_block_valid)
     await Timer(1, unit="ps")
     assert int(dut.pv_result_tile_flat.value) != 0
-    assert int(dut.pv_done_pulse.value) == 0
 
-    dut.pv_resp_ready.value = 1
     await wait_signal_high(dut, dut.pv_done_pulse)
     dut.p_rd_valid.value = 0
     dut.v_rd_valid.value = 0
@@ -287,7 +283,7 @@ async def test_fa_shared_gemm_input_arbiter_selects_qk_and_pv_sources(dut) -> No
 
     driver_task = cocotb.start_soon(patterned_read_driver(dut, q_matrix, k_matrix, p_matrix, v_matrix))
     try:
-        dut.qk_resp_ready.value = 1
+        dut.qk_block_ready.value = 1
         dut.qk_req_valid.value = 1
         await RisingEdge(dut.clk)
         dut.qk_req_valid.value = 0
@@ -296,7 +292,7 @@ async def test_fa_shared_gemm_input_arbiter_selects_qk_and_pv_sources(dut) -> No
         assert flat_words(int(dut.qk_result_tile_flat.value), 16 * 16) == expected_qk_words(q_matrix, k_matrix)
 
         await RisingEdge(dut.clk)
-        dut.pv_resp_ready.value = 1
+        dut.pv_block_ready.value = 1
         dut.pv_req_valid.value = 1
         await RisingEdge(dut.clk)
         dut.pv_req_valid.value = 0

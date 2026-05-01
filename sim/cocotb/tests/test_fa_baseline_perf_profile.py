@@ -8,7 +8,8 @@ from typing import Any
 import cocotb
 from cocotb.triggers import RisingEdge
 
-from tests.fa_baseline_env import HEAD_DIM, SEQ_LEN, create_env, random_q88_matrix
+from tests.fa_baseline_axi_env import create_env
+from tests.fa_baseline_env import HEAD_DIM, SEQ_LEN, random_q88_matrix
 
 
 FULL_RUN_COUNTS = {

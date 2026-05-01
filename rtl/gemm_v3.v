@@ -19,7 +19,7 @@ module GEMM_V3 #(
 	output wire                   b_ready              ,
 	input  wire [Y_DIM*WIDTH-1:0] b                    ,
 	output wire                   start_ready          ,
-	output                        wire [((OUTPUT_BY_ROW  != 0) ? Y_DIM : X_DIM)*4*WIDTH-1:0] m_group_data,
+	output wire [((OUTPUT_BY_ROW != 0) ? Y_DIM : X_DIM)*ACC_WIDTH-1:0] m_group_data,
 	output wire                   m_group_valid        ,
 	input  wire                   m_group_ready        ,
 	output wire [           31:0] m_group_idx          ,
@@ -38,7 +38,7 @@ module GEMM_V3 #(
 	wire [TOTAL_PE-1:0] pe_b_ready              ;
 	wire [TOTAL_PE-1:0] pe_m_valid              ;
 	wire [TOTAL_PE-1:0] pe_m_ready              ;
-	wire [ 4*WIDTH-1:0] pe_m_data [0:TOTAL_PE-1];
+	wire [ACC_WIDTH-1:0] pe_m_data [0:TOTAL_PE-1];
 	wire [TOTAL_PE-1:0] pe_start_ready          ;
 	wire [TOTAL_PE-1:0] pe_tile_done            ;
 	wire [X_DIM-1:0]    row_a_ready             ;
@@ -51,7 +51,7 @@ module GEMM_V3 #(
 	wire               cur_group_valid;
 	wire               stream_fire    ;
 
-	reg [4*WIDTH-1:0] group_word[0:GROUP_SIZE-1];
+	reg [ACC_WIDTH-1:0] group_word[0:GROUP_SIZE-1];
 
 	integer q;
 	integer pe_read_idx;
@@ -104,8 +104,8 @@ module GEMM_V3 #(
 	generate
 		genvar gw;
 		for (gw = 0; gw < GROUP_SIZE; gw = gw + 1) begin : gen_group_data
-			assign m_group_data[(gw+1)*4*WIDTH-1:gw*4*WIDTH] =
-				m_group_valid ? group_word[gw] : {4*WIDTH{1'b0}};
+			assign m_group_data[(gw+1)*ACC_WIDTH-1:gw*ACC_WIDTH] =
+				m_group_valid ? group_word[gw] : {ACC_WIDTH{1'b0}};
 		end
 	endgenerate
 
@@ -158,7 +158,7 @@ module GEMM_V3 #(
 	always @(*) begin
 		pe_read_idx = 0;
 		for (q = 0; q < GROUP_SIZE; q = q + 1) begin
-			group_word[q] = {4*WIDTH{1'b0}};
+			group_word[q] = {ACC_WIDTH{1'b0}};
 		end
 
 		if (stream_active) begin

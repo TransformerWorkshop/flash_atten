@@ -174,8 +174,8 @@ python3 -m py_compile \
   scripts/fa_precision_analysis.py \
   scripts/fa_baseline_profile.py
 
-iverilog -g2012 -I rtl -s FA_TOP_BASELINE_SIM \
-  -o /tmp/fa_top_baseline_sim_check.out rtl/*.v
+iverilog -g2012 -I rtl -s FA_TOP_BASELINE \
+  -o /tmp/fa_top_baseline_check.out rtl/*.v
 
 iverilog -g2012 -DSYNTHESIS -I rtl -s FA_TOP_BASELINE \
   -o /tmp/fa_top_baseline_synth_check.out rtl/*.v

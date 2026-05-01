@@ -94,11 +94,10 @@ fa_ci:
 	$(RUNNER) fa_shared_gemm $(SIM_ARG) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG) $(KEEP_BUILD_ARG) $(REBUILD_ARG)
 	$(RUNNER) fa_oacc_update $(SIM_ARG) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG) $(KEEP_BUILD_ARG) $(REBUILD_ARG)
 	$(RUNNER) fa_rowstate_profile $(SIM_ARG) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG) $(KEEP_BUILD_ARG) $(REBUILD_ARG)
-	$(RUNNER) fa_baseline $(SIM_ARG) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG) --testcase test_fa_baseline_v_buf_banked_write_mapping,test_fa_baseline_vbuf_pv_source_beat_layout_mapping,test_fa_baseline_row_state_real_init $(KEEP_BUILD_ARG) $(REBUILD_ARG)
-	$(RUNNER) fa_baseline $(SIM_ARG) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG) --testcase test_fa_numeric_single_q_full_kv_causal,test_fa_backpressure_combined_single_q_full_kv_causal $(KEEP_BUILD_ARG) $(REBUILD_ARG)
-	$(RUNNER) fa_full $(SIM_ARG) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG) --testcase test_fa_baseline_full_causal_end_to_end,test_fa_baseline_full_noncausal_and_soft_reset $(KEEP_BUILD_ARG) $(REBUILD_ARG)
+	$(RUNNER) fa_baseline_axi $(SIM_ARG) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG) --testcase test_fa_baseline_axi_smoke,test_fa_baseline_axi_backpressure $(KEEP_BUILD_ARG) $(REBUILD_ARG)
+	$(RUNNER) fa_full_axi $(SIM_ARG) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG) --testcase test_fa_baseline_axi_full_causal_end_to_end,test_fa_baseline_axi_full_noncausal_end_to_end $(KEEP_BUILD_ARG) $(REBUILD_ARG)
 	$(RUNNER) fa_full_axi $(SIM_ARG) $(SEED_ARG) $(WAVES_ARG) $(VERBOSE_ARG) --testcase test_fa_baseline_axi_full_noncausal_end_to_end,test_fa_baseline_axi_full_backpressure_numeric $(KEEP_BUILD_ARG) $(REBUILD_ARG)
-	FA_FAST_WAIT=0 $(RUNNER) fa_baseline $(SIM_ARG) $(SEED_ARG) $(VERBOSE_ARG) --testcase test_fa_smoke_basic_run_and_counters $(KEEP_BUILD_ARG)
+	FA_FAST_WAIT=0 $(RUNNER) fa_baseline_axi $(SIM_ARG) $(SEED_ARG) $(VERBOSE_ARG) --testcase test_fa_baseline_axi_smoke $(KEEP_BUILD_ARG)
 
 fa_code_coverage:
 	@for suite in $(CODE_COVERAGE_SUITES); do \

@@ -144,8 +144,8 @@ python3 -m py_compile \
   scripts/fa_precision_analysis.py \
   scripts/fa_extreme_precision_analysis.py
 
-iverilog -g2012 -I rtl -s FA_TOP_BASELINE_SIM \
-  -o /tmp/fa_top_baseline_sim_consistency.out rtl/*.v
+iverilog -g2012 -I rtl -s FA_TOP_BASELINE \
+  -o /tmp/fa_top_baseline_consistency.out rtl/*.v
 
 iverilog -g2012 -DSYNTHESIS -I rtl -s FA_TOP_BASELINE \
   -o /tmp/fa_top_baseline_synth_consistency.out rtl/*.v

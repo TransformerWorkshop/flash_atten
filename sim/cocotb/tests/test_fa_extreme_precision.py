@@ -15,7 +15,8 @@ from scripts.fa_extreme_precision_analysis import (
     deterministic_case_by_name,
     rtl_like_output_for_case,
 )
-from tests.fa_baseline_env import create_env, matrix_error
+from tests.fa_baseline_axi_env import create_env
+from tests.fa_baseline_env import matrix_error
 
 
 @cocotb.test()

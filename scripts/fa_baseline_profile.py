@@ -52,7 +52,7 @@ def render_report(report: dict[str, Any]) -> str:
     lines.append("# FA Baseline RTL Profiling")
     lines.append("")
     lines.append(f"- Date: `{date.today().isoformat()}`")
-    lines.append("- Top: `FA_TOP_BASELINE_SIM`")
+    lines.append("- Top: `FA_TOP_BASELINE`")
     lines.append("- Method: sample per-stage RTL latency on early tiles, then extrapolate with deterministic scheduler invocation counts")
     lines.append("- Row-update correction: override scheduler sampling with direct `FA_ROW_STATE_REAL` microbench for `masked` vs `valid` tiles")
     lines.append("- P-load: bypassed in the main path, modeled as `0` cycles")
@@ -135,7 +135,7 @@ def run_profile(sim_name: str, waves: bool, verbose: bool, output_dir: Path) -> 
         x_dim=16,
         y_dim=16,
         test_modules=["tests.test_fa_baseline_perf_profile"],
-        hdl_toplevel="FA_TOP_BASELINE_SIM",
+        hdl_toplevel="FA_TOP_BASELINE",
         seeds=[cocotb_run.DEFAULT_SEED],
         extra_env={
             "FA_PROFILE_JSON": str(json_path),
@@ -156,7 +156,7 @@ def run_rowstate_profile(sim_name: str, waves: bool, verbose: bool, output_dir: 
         x_dim=16,
         y_dim=16,
         test_modules=["tests.test_fa_baseline_perf_rowstate"],
-        hdl_toplevel="FA_ROW_STATE_PROFILE_SIM",
+        hdl_toplevel="FA_ROW_STATE_REAL",
         seeds=[cocotb_run.DEFAULT_SEED],
         extra_env={
             "FA_ROWSTATE_PROFILE_JSON": str(json_path),

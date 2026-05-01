@@ -383,58 +383,6 @@ module FA_K_BUF_REAL (
 
 endmodule
 
-module FA_V_BUF_REAL (
-    input  wire           clk,
-    input  wire           rstn,
-    input  wire           clear,
-    input  wire           beat_write_valid,
-    input  wire [3:0]     beat_write_row_idx,
-    input  wire [2:0]     beat_write_local_addr,
-    input  wire [3:0]     beat_write_word_mask,
-    input  wire [127:0]   beat_write_data
-`ifndef SYNTHESIS
-    ,
-    //debug
-    output wire [16383:0] tile_flat
-`endif
-);
-
-`ifndef SYNTHESIS
-    // The real datapath consumes V through FA_V_BUF_PV_REAL. Keep only a
-    // simulation-visible shadow here so directed tests can still inspect
-    // write mapping without paying for a redundant synthesized SRAM.
-    reg [31:0] shadow_words_r [0:511];
-    integer wi;
-    integer bi;
-
-    generate
-        genvar gi;
-        for (gi = 0; gi < 512; gi = gi + 1) begin : gen_flat
-            assign tile_flat[(gi * 32) +: 32] = shadow_words_r[gi];
-        end
-    endgenerate
-
-    always @(posedge clk or negedge rstn) begin
-        if (!rstn) begin
-            for (wi = 0; wi < 512; wi = wi + 1) begin
-                shadow_words_r[wi] <= 32'd0;
-            end
-        end else if (clear) begin
-            for (wi = 0; wi < 512; wi = wi + 1) begin
-                shadow_words_r[wi] <= 32'd0;
-            end
-        end else if (beat_write_valid) begin
-            for (bi = 0; bi < 4; bi = bi + 1) begin
-                if (beat_write_word_mask[bi]) begin
-                    shadow_words_r[(beat_write_row_idx * 32) + (beat_write_local_addr * 4) + bi] <= beat_write_data[(bi * 32) +: 32];
-                end
-            end
-        end
-    end
-`endif
-
-endmodule
-
 module FA_V_BUF_PV_REAL (
     input  wire            clk,
     input  wire            rstn,
