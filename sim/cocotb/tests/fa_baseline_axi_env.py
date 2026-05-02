@@ -139,6 +139,8 @@ class FABaselineAxiEnv:
         self._awready_pattern = ConstantPattern(1)
         self._wready_pattern = ConstantPattern(1)
         self._bvalid_pattern = ConstantPattern(1)
+        self._read_fault_early_last_beat: int | None = None
+        self._read_fault_suppress_final_last = False
 
     async def start(self) -> None:
         if self._started:
@@ -220,6 +222,23 @@ class FABaselineAxiEnv:
             self._bvalid_pattern = bvalid
             if pattern_has_stall(bvalid):
                 self.coverage.hit("axi.response_backpressure", channel="bvalid", pattern=pattern_values(bvalid))
+
+    def set_read_faults(
+        self,
+        *,
+        early_last_beat: int | None = None,
+        suppress_final_last: bool = False,
+    ) -> None:
+        self._read_fault_early_last_beat = early_last_beat
+        self._read_fault_suppress_final_last = bool(suppress_final_last)
+        if early_last_beat is not None:
+            self.coverage.hit("axi.read_fault_early_last", early_last_beat=early_last_beat)
+        if suppress_final_last:
+            self.coverage.hit("axi.read_fault_missing_final_last")
+
+    def clear_read_faults(self) -> None:
+        self._read_fault_early_last_beat = None
+        self._read_fault_suppress_final_last = False
 
     def load_qkv(self, q_matrix, k_matrix, v_matrix) -> None:
         self.q_words = make_full_memory_words(q_matrix)
@@ -320,6 +339,15 @@ class FABaselineAxiEnv:
                 return status
             await RisingEdge(self.dut.clk)
         raise AssertionError("run timeout")
+
+    async def wait_busy(self, expected: bool, timeout_cycles: int = 4000) -> None:
+        for _ in range(timeout_cycles):
+            self._raise_agent_error_if_any()
+            status = await self.axil_read(ADDR_STATUS)
+            if bool(status & STATUS_BUSY) == expected:
+                return
+            await RisingEdge(self.dut.clk)
+        raise AssertionError(f"busy did not become {expected}")
 
     def read_output_matrix(self):
         return unpack_q88_row_major_words(self.o_words, SEQ_LEN, HEAD_DIM)
@@ -425,9 +453,16 @@ class FABaselineAxiEnv:
                     beat_data = 0
                     for lane in range(AXI_WORDS_PER_BEAT):
                         beat_data |= (mem[word_base + (beat_idx * AXI_WORDS_PER_BEAT) + lane] & 0xFFFF_FFFF) << (lane * 32)
+                    normal_last = (beat_idx + 1) == beats
+                    fault_early_last = (
+                        self._read_fault_early_last_beat is not None
+                        and beat_idx == self._read_fault_early_last_beat
+                        and not normal_last
+                    )
+                    fault_missing_last = self._read_fault_suppress_final_last and normal_last
                     self.dut.m_axi_rdata.value = beat_data
                     self.dut.m_axi_rresp.value = 0
-                    self.dut.m_axi_rlast.value = int((beat_idx + 1) == beats)
+                    self.dut.m_axi_rlast.value = int((normal_last and not fault_missing_last) or fault_early_last)
                     self.dut.m_axi_rvalid.value = 1
                     beat_valid = True
                 elif active is not None and not beat_valid:

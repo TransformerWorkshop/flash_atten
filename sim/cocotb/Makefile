@@ -8,7 +8,7 @@ KEEP_BUILD ?= 0
 REBUILD ?= 0
 COVERAGE_MODE ?= full
 CODE_COVERAGE_SUITES ?= fa_full fa_full_axi fa_p_bypass fa_shared_gemm fa_oacc_update fa_rowstate_profile
-FUNCTIONAL_COVERAGE_SUITES ?= fa_full fa_full_axi fa_p_bypass fa_shared_gemm fa_oacc_update fa_rowstate_profile
+FUNCTIONAL_COVERAGE_SUITES ?= fa_full_axi fa_p_bypass fa_shared_gemm fa_oacc_update fa_rowstate_profile
 FUNC_COV_DIR ?= $(abspath coverage/functional/raw)
 
 PYTHON ?= python3

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -18,9 +18,10 @@ class CoverageBin:
     bin_id: str
     category: str
     description: str
+    active: bool = True
 
 
-COVERAGE_BINS: tuple[CoverageBin, ...] = (
+ACTIVE_COVERAGE_BINS: tuple[CoverageBin, ...] = (
     CoverageBin("mode.causal", "Core mode", "Causal attention run completed or started."),
     CoverageBin("mode.noncausal", "Core mode", "Non-causal attention run completed or started."),
     CoverageBin("shape.single_tile", "Numeric shape", "Single Q/K/V tile scenario exercised."),
@@ -30,22 +31,10 @@ COVERAGE_BINS: tuple[CoverageBin, ...] = (
     CoverageBin("shape.q_row.last", "Numeric shape", "Q row window at the end of the sequence exercised."),
     CoverageBin("mask.causal_boundary", "Numeric shape", "Causal mask boundary exercised."),
     CoverageBin("csr.programming.basic", "CSR", "Common CSR programming sequence exercised."),
-    CoverageBin("csr.alignment_error", "CSR", "Misaligned configuration blocks start and raises error."),
     CoverageBin("csr.start_done", "CSR", "Start-to-done status path exercised."),
     CoverageBin("csr.byte_counters_exact", "CSR", "Read/write byte counters checked exactly."),
     CoverageBin("csr.soft_reset", "CSR", "Soft reset path exercised."),
     CoverageBin("csr.start_while_busy", "CSR", "Start command while busy is ignored."),
-    CoverageBin("dma.descriptor_counts_exact", "DMA protocol", "DMA descriptor counts checked exactly."),
-    CoverageBin("dma.descriptor_order_qkv", "DMA protocol", "Q/K/V descriptor ordering checked."),
-    CoverageBin("protocol.no_extra_dma_after_done", "DMA protocol", "No extra DMA traffic after done."),
-    CoverageBin("protocol.read_fault_early_last", "DMA protocol", "Early read-last fault reports error."),
-    CoverageBin("protocol.read_fault_missing_final_last", "DMA protocol", "Missing final read-last fault reports error."),
-    CoverageBin("stream.constant_ready", "Stream flow", "All stream ready/valid paths run without injected backpressure."),
-    CoverageBin("stream.read_desc_backpressure", "Stream flow", "Read descriptor ready backpressure exercised."),
-    CoverageBin("stream.read_data_backpressure", "Stream flow", "Read data valid backpressure exercised."),
-    CoverageBin("stream.write_desc_backpressure", "Stream flow", "Write descriptor ready backpressure exercised."),
-    CoverageBin("stream.write_data_backpressure", "Stream flow", "Write data ready backpressure exercised."),
-    CoverageBin("stream.valid_hold", "Stream flow", "Valid/data hold over stalled cycles exercised."),
     CoverageBin("axi.read_burst", "AXI", "AXI read burst path exercised."),
     CoverageBin("axi.write_burst", "AXI", "AXI write burst path exercised."),
     CoverageBin("axi.max_read_burst", "AXI", "Maximum-length AXI read burst exercised."),
@@ -56,6 +45,9 @@ COVERAGE_BINS: tuple[CoverageBin, ...] = (
     CoverageBin("axi.alignment_error", "AXI", "AXI top alignment error path exercised."),
     CoverageBin("axi.soft_reset_mid_transfer", "AXI", "AXI top soft reset during transfer exercised."),
     CoverageBin("axi.full_sequence", "AXI", "AXI full-sequence numeric path exercised."),
+    CoverageBin("axi.no_extra_after_done", "AXI", "No extra AXI traffic or byte-counter change after done."),
+    CoverageBin("axi.read_fault_early_last", "AXI", "Early AXI RLAST fault reports error."),
+    CoverageBin("axi.read_fault_missing_final_last", "AXI", "Missing final AXI RLAST fault reports error."),
     CoverageBin("row_state.init", "Row-state", "Row-state init path exercised."),
     CoverageBin("row_state.valid_row", "Row-state", "Valid row update path exercised."),
     CoverageBin("row_state.masked_row", "Row-state", "Fully masked row update path exercised."),
@@ -69,7 +61,25 @@ COVERAGE_BINS: tuple[CoverageBin, ...] = (
     CoverageBin("module.oacc_saturation", "Submodule", "OACC saturation boundaries exercised."),
 )
 
+LEGACY_COVERAGE_BINS: tuple[CoverageBin, ...] = (
+    CoverageBin("csr.alignment_error", "Legacy CSR", "Legacy duplicate of current AXI-top alignment error bin.", active=False),
+    CoverageBin("dma.descriptor_counts_exact", "Legacy descriptor DMA", "Descriptor count check for removed descriptor-level harness.", active=False),
+    CoverageBin("dma.descriptor_order_qkv", "Legacy descriptor DMA", "Q/K/V descriptor order check for removed descriptor-level harness.", active=False),
+    CoverageBin("protocol.no_extra_dma_after_done", "Legacy descriptor DMA", "Legacy descriptor-level no-extra-DMA-after-done bin.", active=False),
+    CoverageBin("protocol.read_fault_early_last", "Legacy descriptor DMA", "Legacy descriptor-level early read-last fault bin.", active=False),
+    CoverageBin("protocol.read_fault_missing_final_last", "Legacy descriptor DMA", "Legacy descriptor-level missing final read-last fault bin.", active=False),
+    CoverageBin("stream.constant_ready", "Legacy stream flow", "Removed stream-ready harness bin.", active=False),
+    CoverageBin("stream.read_desc_backpressure", "Legacy stream flow", "Removed read descriptor ready backpressure bin.", active=False),
+    CoverageBin("stream.read_data_backpressure", "Legacy stream flow", "Removed read data valid backpressure bin.", active=False),
+    CoverageBin("stream.write_desc_backpressure", "Legacy stream flow", "Removed write descriptor ready backpressure bin.", active=False),
+    CoverageBin("stream.write_data_backpressure", "Legacy stream flow", "Removed write data ready backpressure bin.", active=False),
+    CoverageBin("stream.valid_hold", "Legacy stream flow", "Removed stream valid/data hold bin.", active=False),
+)
+
+COVERAGE_BINS: tuple[CoverageBin, ...] = ACTIVE_COVERAGE_BINS + LEGACY_COVERAGE_BINS
+ACTIVE_COVERAGE_MODEL: dict[str, CoverageBin] = {coverage_bin.bin_id: coverage_bin for coverage_bin in ACTIVE_COVERAGE_BINS}
 COVERAGE_MODEL: dict[str, CoverageBin] = {coverage_bin.bin_id: coverage_bin for coverage_bin in COVERAGE_BINS}
+LEGACY_COVERAGE_MODEL: dict[str, CoverageBin] = {coverage_bin.bin_id: coverage_bin for coverage_bin in LEGACY_COVERAGE_BINS}
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -186,9 +196,10 @@ def merge_raw_reports(raw_dir: Path) -> dict[str, Any]:
             "hit": False,
             "hits": [],
         }
-        for bin_id, coverage_bin in sorted(COVERAGE_MODEL.items())
+        for bin_id, coverage_bin in sorted(ACTIVE_COVERAGE_MODEL.items())
     }
     unknown_hits: list[dict[str, Any]] = []
+    legacy_hits: list[dict[str, Any]] = []
     for report in reports:
         context = {
             "suite": report.get("suite"),
@@ -203,6 +214,8 @@ def merge_raw_reports(raw_dir: Path) -> dict[str, Any]:
             if bin_id in bins:
                 bins[bin_id]["hit"] = True
                 bins[bin_id]["hits"].append(record)
+            elif bin_id in LEGACY_COVERAGE_MODEL:
+                legacy_hits.append({"bin_id": bin_id, **record})
             else:
                 unknown_hits.append({"bin_id": bin_id, **record})
 
@@ -222,9 +235,15 @@ def merge_raw_reports(raw_dir: Path) -> dict[str, Any]:
             "percent": percent,
             "raw_reports": len(reports),
             "unknown_hits": len(unknown_hits),
+            "legacy_hits": len(legacy_hits),
+        },
+        "coverage_model": {
+            "active_bins": len(ACTIVE_COVERAGE_MODEL),
+            "legacy_bins": len(LEGACY_COVERAGE_MODEL),
         },
         "hit_bins": hit_bins,
         "missing_bins": missing_bins,
+        "legacy_hits": legacy_hits,
         "unknown_hits": unknown_hits,
         "bins": bins,
     }
@@ -239,6 +258,7 @@ def markdown_report(report: Mapping[str, Any]) -> str:
         f"- Raw reports: {totals['raw_reports']}",
         f"- Coverage: {totals['hit']}/{totals['bins']} bins ({totals['percent']:.2f}%)",
         f"- Missing bins: {totals['missing']}",
+        f"- Legacy hits excluded from denominator: {totals['legacy_hits']}",
         "",
     ]
 
@@ -263,6 +283,11 @@ def markdown_report(report: Mapping[str, Any]) -> str:
         for hit in report["unknown_hits"]:
             lines.append(f"| `{hit.get('bin_id')}` | {hit.get('case')} | {hit.get('path')} |")
         lines.append("")
+    if report["legacy_hits"]:
+        lines.extend(["## Legacy Hits", "", "These bins are accepted for old raw reports but excluded from the active coverage denominator.", "", "| Bin | Case | Path |", "| --- | --- | --- |"])
+        for hit in report["legacy_hits"]:
+            lines.append(f"| `{hit.get('bin_id')}` | {hit.get('case')} | {hit.get('path')} |")
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -279,3 +304,7 @@ def write_reports(raw_dir: Path, out_dir: Path) -> tuple[Path, Path, dict[str, A
 def validate_model() -> None:
     if len(COVERAGE_MODEL) != len(COVERAGE_BINS):
         raise SystemExit("functional coverage model contains duplicate bin IDs")
+    if any(not coverage_bin.active for coverage_bin in ACTIVE_COVERAGE_BINS):
+        raise SystemExit("active functional coverage model contains inactive bins")
+    if any(coverage_bin.active for coverage_bin in LEGACY_COVERAGE_BINS):
+        raise SystemExit("legacy functional coverage model contains active bins")
