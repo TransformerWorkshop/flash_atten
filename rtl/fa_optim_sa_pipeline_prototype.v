@@ -7,7 +7,8 @@ module FA_OPTIM_SA_PIPELINE_PROTOTYPE #(
     parameter integer PV_FEED_CYCLES = 0,
     parameter integer PV_CYCLES = 32,
     parameter integer OACC_CYCLES = 16,
-    parameter integer ROW_UPDATE_CYCLES = 1
+    parameter integer ROW_UPDATE_CYCLES = 1,
+    parameter integer SRAM_BANK_COUNT = 21
 ) (
     input  wire        clk,
     input  wire        rstn,
@@ -35,8 +36,6 @@ module FA_OPTIM_SA_PIPELINE_PROTOTYPE #(
     output reg  [31:0] active4_count,
     output wire [63:0] buffer_probe_data
 );
-
-    localparam integer SRAM_BANK_COUNT = 21;
 
     localparam [1:0] TASK_IDLE = 2'd0;
     localparam [1:0] TASK_QK   = 2'd1;
@@ -485,5 +484,84 @@ module FA_OPTIM_SA_PIPELINE_PROTOTYPE #(
     endgenerate
 
     assign buffer_probe_data = probe_chain_w[SRAM_BANK_COUNT];
+
+endmodule
+
+module FA_OPTIM_SA_PIPELINE_PACKED_PROTOTYPE #(
+    parameter integer TILE_COUNT = 136,
+    parameter integer CLUSTER_COUNT = 4,
+    parameter integer MAX_INFLIGHT_TILES = 32,
+    parameter integer QK_FEED_CYCLES = 16,
+    parameter integer QK_CYCLES = 16,
+    parameter integer PV_FEED_CYCLES = 0,
+    parameter integer PV_CYCLES = 32,
+    parameter integer OACC_CYCLES = 16,
+    parameter integer ROW_UPDATE_CYCLES = 1
+) (
+    input  wire        clk,
+    input  wire        rstn,
+    input  wire        clear,
+    input  wire        start,
+    output wire        busy,
+    output wire        done,
+    output wire [31:0] cycles,
+    output wire [31:0] sa_busy_cycles,
+    output wire [31:0] feeder_busy_cycles,
+    output wire [31:0] row_state_busy_cycles,
+    output wire [31:0] qk_task_count,
+    output wire [31:0] pv_task_count,
+    output wire [31:0] oacc_task_count,
+    output wire [31:0] row_update_task_count,
+    output wire [31:0] qk_feed_count,
+    output wire [31:0] pv_feed_count,
+    output wire [31:0] cluster_wait_task_count,
+    output wire [31:0] feeder_wait_slot_count,
+    output wire [31:0] pv_wait_row_update_count,
+    output wire [31:0] active0_count,
+    output wire [31:0] active1_count,
+    output wire [31:0] active2_count,
+    output wire [31:0] active3_count,
+    output wire [31:0] active4_count,
+    output wire [63:0] packed_buffer_probe_data
+);
+
+    FA_OPTIM_SA_PIPELINE_PROTOTYPE #(
+        .TILE_COUNT(TILE_COUNT),
+        .CLUSTER_COUNT(CLUSTER_COUNT),
+        .MAX_INFLIGHT_TILES(MAX_INFLIGHT_TILES),
+        .QK_FEED_CYCLES(QK_FEED_CYCLES),
+        .QK_CYCLES(QK_CYCLES),
+        .PV_FEED_CYCLES(PV_FEED_CYCLES),
+        .PV_CYCLES(PV_CYCLES),
+        .OACC_CYCLES(OACC_CYCLES),
+        .ROW_UPDATE_CYCLES(ROW_UPDATE_CYCLES),
+        .SRAM_BANK_COUNT(9)
+    ) u_packed_scheduler (
+        .clk(clk),
+        .rstn(rstn),
+        .clear(clear),
+        .start(start),
+        .busy(busy),
+        .done(done),
+        .cycles(cycles),
+        .sa_busy_cycles(sa_busy_cycles),
+        .feeder_busy_cycles(feeder_busy_cycles),
+        .row_state_busy_cycles(row_state_busy_cycles),
+        .qk_task_count(qk_task_count),
+        .pv_task_count(pv_task_count),
+        .oacc_task_count(oacc_task_count),
+        .row_update_task_count(row_update_task_count),
+        .qk_feed_count(qk_feed_count),
+        .pv_feed_count(pv_feed_count),
+        .cluster_wait_task_count(cluster_wait_task_count),
+        .feeder_wait_slot_count(feeder_wait_slot_count),
+        .pv_wait_row_update_count(pv_wait_row_update_count),
+        .active0_count(active0_count),
+        .active1_count(active1_count),
+        .active2_count(active2_count),
+        .active3_count(active3_count),
+        .active4_count(active4_count),
+        .buffer_probe_data(packed_buffer_probe_data)
+    );
 
 endmodule

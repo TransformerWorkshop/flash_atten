@@ -61,8 +61,15 @@ class FaSramRtlStaticTest(unittest.TestCase):
         ):
             self.assertIn(port_name, text)
 
-        self.assertIn("localparam integer SRAM_BANK_COUNT = 21", text)
+        self.assertIn("parameter integer SRAM_BANK_COUNT = 21", text)
         self.assertRegex(text, r"FA_LOCAL_TILE_SRAM_16X64X16\s+u_bank")
+
+    def test_optim_packed_pipeline_prototype_reuses_scheduler_with_nine_banks(self):
+        text = read_rtl("fa_optim_sa_pipeline_prototype.v")
+
+        self.assertRegex(text, r"module\s+FA_OPTIM_SA_PIPELINE_PACKED_PROTOTYPE\b")
+        self.assertRegex(text, r"\.SRAM_BANK_COUNT\s*\(\s*9\s*\)")
+        self.assertIn("packed_buffer_probe_data", text)
 
 
 if __name__ == "__main__":
