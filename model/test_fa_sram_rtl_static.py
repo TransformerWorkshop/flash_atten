@@ -5,10 +5,15 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RTL_DIR = REPO_ROOT / "rtl"
+RTL_SMOKE_DIR = REPO_ROOT / "sim" / "rtl_smoke"
 
 
 def read_rtl(name: str) -> str:
     return (RTL_DIR / name).read_text(encoding="utf-8")
+
+
+def read_rtl_smoke(name: str) -> str:
+    return (RTL_SMOKE_DIR / name).read_text(encoding="utf-8")
 
 
 class FaSramRtlStaticTest(unittest.TestCase):
@@ -70,6 +75,37 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertRegex(text, r"module\s+FA_OPTIM_SA_PIPELINE_PACKED_PROTOTYPE\b")
         self.assertRegex(text, r"\.SRAM_BANK_COUNT\s*\(\s*9\s*\)")
         self.assertIn("packed_buffer_probe_data", text)
+
+    def test_optim_packed_top_wraps_csr_and_packed_pipeline(self):
+        text = read_rtl("fa_top_optim_packed.v")
+
+        self.assertRegex(text, r"module\s+FA_TOP_OPTIM_PACKED\b")
+        self.assertIn("FA_CSR u_fa_csr", text)
+        self.assertIn("FA_OPTIM_SA_PIPELINE_PACKED_PROTOTYPE u_packed_core", text)
+        self.assertIn("assign m_axi_arvalid = 1'b0", text)
+        self.assertIn("assign m_axi_awvalid = 1'b0", text)
+        self.assertIn("assign m_axi_wvalid = 1'b0", text)
+
+    def test_optim_packed_top_smoke_checks_csr_cycles(self):
+        text = read_rtl_smoke("fa_top_optim_packed_tb.v")
+
+        self.assertRegex(text, r"module\s+fa_top_optim_packed_tb\b")
+        self.assertIn("FA_TOP_OPTIM_PACKED dut", text)
+        self.assertIn("axil_write(7'h00, 32'h0000_0001)", text)
+        self.assertIn("axil_read(7'h40, read_data)", text)
+        self.assertIn("32'd2242", text)
+
+    def test_full_compute_smoke_uses_fixed_baseline_shape(self):
+        text = read_rtl_smoke("fa_top_baseline_full_compute_tb.v")
+
+        self.assertRegex(text, r"module\s+fa_top_baseline_full_compute_tb\b")
+        self.assertIn("FA_TOP_BASELINE_SIM dut", text)
+        self.assertIn("localparam integer SEQ_LEN = 256", text)
+        self.assertIn("localparam integer HEAD_DIM = 64", text)
+        self.assertIn("PASS: fa_top_baseline_full_compute_tb", text)
+        self.assertIn("format=Q8.8", text)
+        self.assertIn("rd_bytes=%0d", text)
+        self.assertIn("wr_bytes=%0d", text)
 
 
 if __name__ == "__main__":
