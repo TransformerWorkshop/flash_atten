@@ -96,6 +96,192 @@ module FA_SRAM64X64 #(
 
 endmodule
 
+module FA_SRAM256X64_1RW (
+    input  wire        clk,
+    input  wire        en,
+    input  wire        we,
+    input  wire [7:0]  addr,
+    input  wire [63:0] din,
+    input  wire [63:0] bweb,
+    output reg  [63:0] dout
+);
+
+`ifdef SYNTHESIS
+    wire [63:0] macro_q;
+    wire        macro_ceb = ~en;
+    wire        macro_web = ~we;
+    wire [63:0] macro_bweb = we ? bweb : {64{1'b1}};
+
+    TEM5N28HPCPLVTA256X64M4SWSO u_tsmc_sram (
+        .SLP (1'b0       ),
+        .SD  (1'b0       ),
+        .A   (addr       ),
+        .D   (din        ),
+        .BWEB(macro_bweb ),
+        .Q   (macro_q    ),
+        .WEB (macro_web  ),
+        .CEB (macro_ceb  ),
+        .CLK (clk        )
+    );
+
+    always @(*) begin
+        if (en && !we) begin
+            dout = macro_q;
+        end else begin
+            dout = 64'd0;
+        end
+    end
+`endif
+
+`ifndef SYNTHESIS
+    reg [63:0] mem [0:255];
+    integer bi;
+    reg [63:0] merged_word_r;
+
+    initial begin
+        for (bi = 0; bi < 256; bi = bi + 1) begin
+            mem[bi] = 64'd0;
+        end
+        dout = 64'd0;
+    end
+
+    always @(posedge clk) begin
+        if (en) begin
+            if (we) begin
+                merged_word_r = mem[addr];
+                for (bi = 0; bi < 64; bi = bi + 1) begin
+                    if (!bweb[bi]) begin
+                        merged_word_r[bi] = din[bi];
+                    end
+                end
+                mem[addr] <= merged_word_r;
+                dout <= 64'd0;
+            end else begin
+                dout <= mem[addr];
+            end
+        end else begin
+            dout <= 64'd0;
+        end
+    end
+`endif
+
+endmodule
+
+module FA_SRAM256X32_1RW (
+    input  wire        clk,
+    input  wire        en,
+    input  wire        we,
+    input  wire [7:0]  addr,
+    input  wire [31:0] din,
+    input  wire [31:0] bweb,
+    output reg  [31:0] dout
+);
+
+`ifdef SYNTHESIS
+    wire [31:0] macro_q;
+    wire        macro_ceb = ~en;
+    wire        macro_web = ~we;
+    wire [31:0] macro_bweb = we ? bweb : {32{1'b1}};
+
+    TEM5N28HPCPLVTA256X32M4SWSO u_tsmc_sram (
+        .SLP (1'b0       ),
+        .SD  (1'b0       ),
+        .A   (addr       ),
+        .D   (din        ),
+        .BWEB(macro_bweb ),
+        .Q   (macro_q    ),
+        .WEB (macro_web  ),
+        .CEB (macro_ceb  ),
+        .CLK (clk        )
+    );
+
+    always @(*) begin
+        if (en && !we) begin
+            dout = macro_q;
+        end else begin
+            dout = 32'd0;
+        end
+    end
+`endif
+
+`ifndef SYNTHESIS
+    reg [31:0] mem [0:255];
+    integer bi;
+    reg [31:0] merged_word_r;
+
+    initial begin
+        for (bi = 0; bi < 256; bi = bi + 1) begin
+            mem[bi] = 32'd0;
+        end
+        dout = 32'd0;
+    end
+
+    always @(posedge clk) begin
+        if (en) begin
+            if (we) begin
+                merged_word_r = mem[addr];
+                for (bi = 0; bi < 32; bi = bi + 1) begin
+                    if (!bweb[bi]) begin
+                        merged_word_r[bi] = din[bi];
+                    end
+                end
+                mem[addr] <= merged_word_r;
+                dout <= 32'd0;
+            end else begin
+                dout <= mem[addr];
+            end
+        end else begin
+            dout <= 32'd0;
+        end
+    end
+`endif
+
+endmodule
+
+module FA_SKY130_SRAM_256X64_1RW (
+    input  wire        clk,
+    input  wire        en,
+    input  wire        we,
+    input  wire [7:0]  addr,
+    input  wire [63:0] din,
+    input  wire [63:0] bweb,
+    output wire [63:0] dout
+);
+
+    FA_SRAM256X64_1RW u_sram (
+        .clk(clk),
+        .en(en),
+        .we(we),
+        .addr(addr),
+        .din(din),
+        .bweb(bweb),
+        .dout(dout)
+    );
+
+endmodule
+
+module FA_SKY130_SRAM_256X32_1RW (
+    input  wire        clk,
+    input  wire        en,
+    input  wire        we,
+    input  wire [7:0]  addr,
+    input  wire [31:0] din,
+    input  wire [31:0] bweb,
+    output wire [31:0] dout
+);
+
+    FA_SRAM256X32_1RW u_sram (
+        .clk(clk),
+        .en(en),
+        .we(we),
+        .addr(addr),
+        .din(din),
+        .bweb(bweb),
+        .dout(dout)
+    );
+
+endmodule
+
 module FA_MASKED_ROWBUF_REG_REAL #(
     parameter integer ROW_WIDTH = 512,
     parameter integer DEPTH = 16,

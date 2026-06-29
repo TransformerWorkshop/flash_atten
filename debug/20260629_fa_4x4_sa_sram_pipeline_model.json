@@ -1,0 +1,414 @@
+{
+  "buffer_estimate": {
+    "all_clusters_local_bytes": 10560,
+    "config": {
+      "cluster_count": 4,
+      "element_bits": 16,
+      "feeder_count": 1,
+      "head_dim": 64,
+      "kv_cols_per_cluster": 4,
+      "max_inflight_tiles": 32,
+      "oacc_cycles": 0,
+      "pv_cycles": 0,
+      "pv_feed_cycles": 0,
+      "q_rows_per_cluster": 4,
+      "qk_cycles": 16,
+      "qk_feed_cycles": 16,
+      "row_scale_bits": 32,
+      "row_state_pipe_count": 1,
+      "row_update_cycles": 0,
+      "task_descriptor_bits": 128,
+      "task_queue_depth": 32,
+      "tile_count": 136
+    },
+    "per_cluster_bytes": {
+      "k_operand_buffer": 512,
+      "oacc_new_buffer": 512,
+      "oacc_old_buffer": 512,
+      "p_tile_buffer": 32,
+      "pv_partial_buffer": 512,
+      "row_scale_buffer": 48,
+      "v_operand_buffer": 512
+    },
+    "per_cluster_total_bytes": 2640,
+    "shared_bytes": {
+      "q_operand_buffer": 512
+    },
+    "shared_total_bytes": 512,
+    "task_queue_bytes": 512,
+    "total_estimated_bytes": 11584
+  },
+  "scenarios": {
+    "pv_uses_same_feeder": {
+      "active_cluster_histogram": {
+        "0": 18,
+        "1": 1536,
+        "2": 1424,
+        "3": 1440,
+        "4": 0
+      },
+      "average_active_clusters": 1.9701222272521504,
+      "config": {
+        "cluster_count": 4,
+        "element_bits": 16,
+        "feeder_count": 1,
+        "head_dim": 64,
+        "kv_cols_per_cluster": 4,
+        "max_inflight_tiles": 32,
+        "oacc_cycles": 16,
+        "pv_cycles": 32,
+        "pv_feed_cycles": 16,
+        "q_rows_per_cluster": 4,
+        "qk_cycles": 16,
+        "qk_feed_cycles": 16,
+        "row_scale_bits": 32,
+        "row_state_pipe_count": 1,
+        "row_update_cycles": 1,
+        "task_descriptor_bits": 128,
+        "task_queue_depth": 32,
+        "tile_count": 136
+      },
+      "cycles": 4418,
+      "feed_counts": {
+        "pv": 136,
+        "qk": 136
+      },
+      "feeder_busy_cycles": 4352,
+      "feeder_utilization": 0.9850611136260752,
+      "max_active_clusters": 3,
+      "row_state_busy_cycles": 136,
+      "row_state_utilization": 0.03078315980081485,
+      "sa_busy_cycles": 8704,
+      "sa_utilization": 0.4925305568130376,
+      "stall_counts": {
+        "cluster_wait_task": 8968,
+        "feeder_wait_slot": 66,
+        "pv_wait_row_update": 136
+      },
+      "task_counts": {
+        "oacc": 136,
+        "pv": 136,
+        "qk": 136,
+        "row_update": 136
+      }
+    },
+    "qk_only_1_feeder": {
+      "active_cluster_histogram": {
+        "0": 17,
+        "1": 2176,
+        "2": 0,
+        "3": 0,
+        "4": 0
+      },
+      "average_active_clusters": 0.9922480620155039,
+      "config": {
+        "cluster_count": 4,
+        "element_bits": 16,
+        "feeder_count": 1,
+        "head_dim": 64,
+        "kv_cols_per_cluster": 4,
+        "max_inflight_tiles": 32,
+        "oacc_cycles": 0,
+        "pv_cycles": 0,
+        "pv_feed_cycles": 0,
+        "q_rows_per_cluster": 4,
+        "qk_cycles": 16,
+        "qk_feed_cycles": 16,
+        "row_scale_bits": 32,
+        "row_state_pipe_count": 1,
+        "row_update_cycles": 0,
+        "task_descriptor_bits": 128,
+        "task_queue_depth": 32,
+        "tile_count": 136
+      },
+      "cycles": 2193,
+      "feed_counts": {
+        "pv": 0,
+        "qk": 136
+      },
+      "feeder_busy_cycles": 2176,
+      "feeder_utilization": 0.9922480620155039,
+      "max_active_clusters": 1,
+      "row_state_busy_cycles": 0,
+      "row_state_utilization": 0.0,
+      "sa_busy_cycles": 2176,
+      "sa_utilization": 0.24806201550387597,
+      "stall_counts": {
+        "cluster_wait_task": 6596,
+        "feeder_wait_slot": 17,
+        "pv_wait_row_update": 0
+      },
+      "task_counts": {
+        "oacc": 0,
+        "pv": 0,
+        "qk": 136,
+        "row_update": 0
+      }
+    },
+    "qk_pv_oacc_48_local_cycles": {
+      "active_cluster_histogram": {
+        "0": 17,
+        "1": 33,
+        "2": 32,
+        "3": 33,
+        "4": 2127
+      },
+      "average_active_clusters": 3.8822479928635145,
+      "config": {
+        "cluster_count": 4,
+        "element_bits": 16,
+        "feeder_count": 1,
+        "head_dim": 64,
+        "kv_cols_per_cluster": 4,
+        "max_inflight_tiles": 32,
+        "oacc_cycles": 16,
+        "pv_cycles": 32,
+        "pv_feed_cycles": 0,
+        "q_rows_per_cluster": 4,
+        "qk_cycles": 16,
+        "qk_feed_cycles": 16,
+        "row_scale_bits": 32,
+        "row_state_pipe_count": 1,
+        "row_update_cycles": 1,
+        "task_descriptor_bits": 128,
+        "task_queue_depth": 32,
+        "tile_count": 136
+      },
+      "cycles": 2242,
+      "feed_counts": {
+        "pv": 0,
+        "qk": 136
+      },
+      "feeder_busy_cycles": 2176,
+      "feeder_utilization": 0.9705619982158786,
+      "max_active_clusters": 4,
+      "row_state_busy_cycles": 136,
+      "row_state_utilization": 0.060660124888492414,
+      "sa_busy_cycles": 8704,
+      "sa_utilization": 0.9705619982158786,
+      "stall_counts": {
+        "cluster_wait_task": 264,
+        "feeder_wait_slot": 66,
+        "pv_wait_row_update": 0
+      },
+      "task_counts": {
+        "oacc": 136,
+        "pv": 136,
+        "qk": 136,
+        "row_update": 136
+      }
+    },
+    "qk_pv_oacc_64_local_cycles": {
+      "active_cluster_histogram": {
+        "0": 17,
+        "1": 33,
+        "2": 34,
+        "3": 33,
+        "4": 2670
+      },
+      "average_active_clusters": 3.90383925367779,
+      "config": {
+        "cluster_count": 4,
+        "element_bits": 16,
+        "feeder_count": 1,
+        "head_dim": 64,
+        "kv_cols_per_cluster": 4,
+        "max_inflight_tiles": 32,
+        "oacc_cycles": 16,
+        "pv_cycles": 48,
+        "pv_feed_cycles": 0,
+        "q_rows_per_cluster": 4,
+        "qk_cycles": 16,
+        "qk_feed_cycles": 16,
+        "row_scale_bits": 32,
+        "row_state_pipe_count": 1,
+        "row_update_cycles": 1,
+        "task_descriptor_bits": 128,
+        "task_queue_depth": 32,
+        "tile_count": 136
+      },
+      "cycles": 2787,
+      "feed_counts": {
+        "pv": 0,
+        "qk": 136
+      },
+      "feeder_busy_cycles": 2176,
+      "feeder_utilization": 0.780767850735558,
+      "max_active_clusters": 4,
+      "row_state_busy_cycles": 136,
+      "row_state_utilization": 0.048797990670972374,
+      "sa_busy_cycles": 10880,
+      "sa_utilization": 0.9759598134194475,
+      "stall_counts": {
+        "cluster_wait_task": 268,
+        "feeder_wait_slot": 611,
+        "pv_wait_row_update": 0
+      },
+      "task_counts": {
+        "oacc": 136,
+        "pv": 136,
+        "qk": 136,
+        "row_update": 136
+      }
+    },
+    "shared_row_state_32cy": {
+      "active_cluster_histogram": {
+        "0": 17,
+        "1": 1808,
+        "2": 928,
+        "3": 1680,
+        "4": 0
+      },
+      "average_active_clusters": 1.96345589893977,
+      "config": {
+        "cluster_count": 4,
+        "element_bits": 16,
+        "feeder_count": 1,
+        "head_dim": 64,
+        "kv_cols_per_cluster": 4,
+        "max_inflight_tiles": 32,
+        "oacc_cycles": 16,
+        "pv_cycles": 32,
+        "pv_feed_cycles": 0,
+        "q_rows_per_cluster": 4,
+        "qk_cycles": 16,
+        "qk_feed_cycles": 16,
+        "row_scale_bits": 32,
+        "row_state_pipe_count": 1,
+        "row_update_cycles": 32,
+        "task_descriptor_bits": 128,
+        "task_queue_depth": 32,
+        "tile_count": 136
+      },
+      "cycles": 4433,
+      "feed_counts": {
+        "pv": 0,
+        "qk": 136
+      },
+      "feeder_busy_cycles": 2176,
+      "feeder_utilization": 0.4908639747349425,
+      "max_active_clusters": 3,
+      "row_state_busy_cycles": 4352,
+      "row_state_utilization": 0.981727949469885,
+      "sa_busy_cycles": 8704,
+      "sa_utilization": 0.4908639747349425,
+      "stall_counts": {
+        "cluster_wait_task": 9028,
+        "feeder_wait_slot": 2257,
+        "pv_wait_row_update": 0
+      },
+      "task_counts": {
+        "oacc": 136,
+        "pv": 136,
+        "qk": 136,
+        "row_update": 136
+      }
+    },
+    "shared_row_state_4cy": {
+      "active_cluster_histogram": {
+        "0": 17,
+        "1": 36,
+        "2": 32,
+        "3": 36,
+        "4": 2124
+      },
+      "average_active_clusters": 3.8770601336302897,
+      "config": {
+        "cluster_count": 4,
+        "element_bits": 16,
+        "feeder_count": 1,
+        "head_dim": 64,
+        "kv_cols_per_cluster": 4,
+        "max_inflight_tiles": 32,
+        "oacc_cycles": 16,
+        "pv_cycles": 32,
+        "pv_feed_cycles": 0,
+        "q_rows_per_cluster": 4,
+        "qk_cycles": 16,
+        "qk_feed_cycles": 16,
+        "row_scale_bits": 32,
+        "row_state_pipe_count": 1,
+        "row_update_cycles": 4,
+        "task_descriptor_bits": 128,
+        "task_queue_depth": 32,
+        "tile_count": 136
+      },
+      "cycles": 2245,
+      "feed_counts": {
+        "pv": 0,
+        "qk": 136
+      },
+      "feeder_busy_cycles": 2176,
+      "feeder_utilization": 0.9692650334075724,
+      "max_active_clusters": 4,
+      "row_state_busy_cycles": 544,
+      "row_state_utilization": 0.2423162583518931,
+      "sa_busy_cycles": 8704,
+      "sa_utilization": 0.9692650334075724,
+      "stall_counts": {
+        "cluster_wait_task": 276,
+        "feeder_wait_slot": 69,
+        "pv_wait_row_update": 0
+      },
+      "task_counts": {
+        "oacc": 136,
+        "pv": 136,
+        "qk": 136,
+        "row_update": 136
+      }
+    },
+    "two_feeders_local_post_gemm": {
+      "active_cluster_histogram": {
+        "0": 17,
+        "1": 1,
+        "2": 33,
+        "3": 3,
+        "4": 2157
+      },
+      "average_active_clusters": 3.9366802351876977,
+      "config": {
+        "cluster_count": 4,
+        "element_bits": 16,
+        "feeder_count": 2,
+        "head_dim": 64,
+        "kv_cols_per_cluster": 4,
+        "max_inflight_tiles": 32,
+        "oacc_cycles": 16,
+        "pv_cycles": 32,
+        "pv_feed_cycles": 0,
+        "q_rows_per_cluster": 4,
+        "qk_cycles": 16,
+        "qk_feed_cycles": 16,
+        "row_scale_bits": 32,
+        "row_state_pipe_count": 1,
+        "row_update_cycles": 1,
+        "task_descriptor_bits": 128,
+        "task_queue_depth": 32,
+        "tile_count": 136
+      },
+      "cycles": 2211,
+      "feed_counts": {
+        "pv": 0,
+        "qk": 136
+      },
+      "feeder_busy_cycles": 2176,
+      "feeder_utilization": 0.4920850293984622,
+      "max_active_clusters": 4,
+      "row_state_busy_cycles": 136,
+      "row_state_utilization": 0.06151062867480778,
+      "sa_busy_cycles": 8704,
+      "sa_utilization": 0.9841700587969244,
+      "stall_counts": {
+        "cluster_wait_task": 140,
+        "feeder_wait_slot": 2246,
+        "pv_wait_row_update": 0
+      },
+      "task_counts": {
+        "oacc": 136,
+        "pv": 136,
+        "qk": 136,
+        "row_update": 136
+      }
+    }
+  }
+}
