@@ -95,6 +95,16 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("axil_read(7'h40, read_data)", text)
         self.assertIn("32'd2242", text)
 
+    def test_optim_packed_negative_smoke_covers_pv_feeder_reuse(self):
+        text = read_rtl_smoke("fa_optim_sa_pipeline_packed_negative_tb.v")
+
+        self.assertRegex(text, r"module\s+fa_optim_sa_pipeline_packed_negative_tb\b")
+        self.assertRegex(text, r"\.PV_FEED_CYCLES\s*\(\s*16\s*\)")
+        self.assertIn("32'd4418", text)
+        self.assertIn("expect32(pv_feed_count, 32'd136", text)
+        self.assertIn("expect32(feeder_busy_cycles, 32'd4352", text)
+        self.assertIn("PASS: fa_optim_sa_pipeline_packed_negative_tb", text)
+
     def test_full_compute_smoke_uses_fixed_baseline_shape(self):
         text = read_rtl_smoke("fa_top_baseline_full_compute_tb.v")
 

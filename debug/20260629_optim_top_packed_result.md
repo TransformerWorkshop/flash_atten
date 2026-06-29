@@ -129,6 +129,53 @@ Schedule counters inherited from the packed pipeline:
 | Feeder busy cycles | 2176 |
 | Row-state busy cycles | 136 |
 
+## VCS Packed Negative-Control Smoke
+
+Command shape:
+
+```sh
+vcs -full64 -sverilog -timescale=1ns/1ps +v2k +incdir+rtl \
+  sim/rtl_smoke/fa_optim_sa_pipeline_packed_negative_tb.v \
+  rtl/tsmc_sram_macros.v rtl/fa_sram_hard.v rtl/fa_sram_tile_buffers.v \
+  rtl/fa_optim_sa_pipeline_prototype.v \
+  -top fa_optim_sa_pipeline_packed_negative_tb \
+  -o remote_reports/vcs_packed_negative/simv
+./remote_reports/vcs_packed_negative/simv
+```
+
+This test is a negative control for the packed architecture contract. It uses the same
+9-bank packed scheduler but overrides `PV_FEED_CYCLES=16`, modeling the bad case where
+PV also has to consume the same external SRAM feeder instead of using local buffered
+operands.
+
+Result:
+
+- PASS marker:
+  `PASS: fa_optim_sa_pipeline_packed_negative_tb cycles=4418 sa_busy=8704 feeder_busy=4352 pv_feeds=136`
+- Simulation time: `44216000 ps`
+
+Counter comparison:
+
+| Metric | Buffered PV/OACC target | PV reuses feeder |
+|---|---:|---:|
+| Cycles | 2242 | 4418 |
+| SA busy cycles | 8704 | 8704 |
+| 4-cluster utilization | 97.1% | 49.3% |
+| Feeder busy cycles | 2176 | 4352 |
+| Feeder utilization | 97.1% | 98.5% |
+| PV feed count | 0 | 136 |
+| 4-active cycles | 2127 | 0 |
+
+Interpretation:
+
+- The negative control validates the earlier model conclusion in RTL: if PV is allowed
+  to re-read through the same feeder, the feeder becomes the dominant serialized
+  resource and the four 4x4-SA clusters are never all active.
+- The packed direction therefore requires local PV/OACC operand buffering and state
+  reuse. Otherwise the area-saving 4x4-SA organization keeps the same compute count but
+  loses about half of the schedule-level throughput.
+- This is still a scheduler/prototype smoke, not a complete numerical FA latency.
+
 ## DC Setup
 
 - DC: `/usr/Synopsys/syn/T-2022.03-SP2/bin/dc_shell`
@@ -238,6 +285,9 @@ This result gives the first top-boundary schedule/area evidence for the packed d
 - CSR-compatible start/done/schedule-cycle behavior works through VCS.
 - The measured schedule still keeps four 4x4-SA clusters nearly full in the target
   model/prototype contract.
+- The packed negative-control VCS run proves the main architectural hazard: PV must
+  use local buffered operands. Reusing the feeder increases schedule cycles from
+  `2242` to `4418` and drops 4-cluster utilization from `97.1%` to `49.3%`.
 - The remaining work is not area math; it is functional integration of real operand
   lifetimes, bank arbitration, numerical datapath, and DMA.
 
@@ -269,6 +319,8 @@ Remote artifacts:
 - VCS run log: `/home/host/codex_runs/fa_top_optim_packed_20260629_171208/remote_reports/vcs_top/run.log`
 - Full-compute VCS compile log: `/home/host/codex_runs/fa_full_compute_baseline_20260629_173040/remote_reports/vcs_full_compute/compile.log`
 - Full-compute VCS run log: `/home/host/codex_runs/fa_full_compute_baseline_20260629_173040/remote_reports/vcs_full_compute/run.log`
+- Packed negative-control VCS compile log: `/home/host/codex_runs/fa_packed_negative_20260629_174607/remote_reports/vcs_packed_negative/compile.log`
+- Packed negative-control VCS run log: `/home/host/codex_runs/fa_packed_negative_20260629_174607/remote_reports/vcs_packed_negative/run.log`
 - LC log: `/home/host/codex_runs/fa_top_optim_packed_20260629_171208/remote_reports/libs/lc_compile.log`
 - NAND2 query log: `/home/host/codex_runs/fa_top_optim_packed_20260629_171208/remote_reports/dc_top/nand2_area.log`
 - DC QoR: `/home/host/codex_runs/fa_top_optim_packed_20260629_171208/remote_reports/dc_top/qor.rpt`
