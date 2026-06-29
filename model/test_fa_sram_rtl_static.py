@@ -76,6 +76,38 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertRegex(text, r"\.SRAM_BANK_COUNT\s*\(\s*9\s*\)")
         self.assertIn("packed_buffer_probe_data", text)
 
+    def test_optim_4x4_micro_pipeline_uses_real_functional_blocks(self):
+        text = read_rtl("fa_optim_4x4_micro_pipeline.v")
+
+        self.assertRegex(text, r"module\s+FA_OPTIM_4X4_MICRO_PIPELINE\b")
+        self.assertIn("GEMM_V3", text)
+        self.assertRegex(text, r"\.X_DIM\s*\(\s*4\s*\)")
+        self.assertRegex(text, r"\.Y_DIM\s*\(\s*4\s*\)")
+        self.assertRegex(text, r"FA_SCORE_POST_REAL\s*#\s*\([\s\S]*?\)\s*u_score_post")
+        self.assertRegex(text, r"FA_ROW_STATE_REAL\s*#\s*\([\s\S]*?\)\s*u_row_state")
+        self.assertIn("FA_P_BYPASS_REAL u_p_bypass", text)
+        self.assertRegex(text, r"FA_OACC_UPDATE_REAL\s*#\s*\([\s\S]*?\)\s*u_oacc_update")
+        self.assertIn("o_tile_flat", text)
+
+    def test_optim_4x4_micro_pipeline_keeps_qk_single_lane_and_pv_buffered(self):
+        text = read_rtl("fa_optim_4x4_micro_pipeline.v")
+
+        self.assertIn("qk_key_group_r", text)
+        self.assertIn("gemm_valid_r[0] = 1'b1", text)
+        self.assertIn("qk_task_count <= qk_task_count + 32'd1", text)
+        self.assertIn("ST_PV_WAIT", text)
+        self.assertIn("p_feed_data_r <= p_rd_data_w", text)
+        self.assertIn("gemm_valid_r = 4'hf", text)
+        self.assertIn("pv_task_count <= pv_task_count + 32'd4", text)
+
+    def test_optim_4x4_micro_pipeline_smoke_checks_output(self):
+        text = read_rtl_smoke("fa_optim_4x4_micro_pipeline_tb.v")
+
+        self.assertRegex(text, r"module\s+fa_optim_4x4_micro_pipeline_tb\b")
+        self.assertIn("FA_OPTIM_4X4_MICRO_PIPELINE dut", text)
+        self.assertIn("expect_o_word", text)
+        self.assertIn("PASS: fa_optim_4x4_micro_pipeline_tb", text)
+
     def test_optim_packed_top_wraps_csr_and_packed_pipeline(self):
         text = read_rtl("fa_top_optim_packed.v")
 
