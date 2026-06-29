@@ -21,6 +21,7 @@ set clock_period_ns [getenv_default FA_CLOCK_PERIOD_NS 5.0]
 set std_db [getenv_default FA_STD_DB /mnt/hgfs/TSMC28/logic/tcbn28hpcplusbwp7t40p140_180b/AN61001_20180509/TSMCHOME/digital/Front_End/timing_power_noise/CCS/tcbn28hpcplusbwp7t40p140_180a/tcbn28hpcplusbwp7t40p140ffg0p99v0c_ccs.db]
 set sram_db_list [getenv_default FA_SRAM_DB_LIST ""]
 set analyze_tsmc_stubs [getenv_default FA_ANALYZE_TSMC_STUBS 0]
+set extra_rtl_files [getenv_default FA_EXTRA_RTL_FILES ""]
 
 file mkdir $report_dir
 file mkdir $result_dir
@@ -44,6 +45,9 @@ set rtl_files [list \
 ]
 if {$analyze_tsmc_stubs} {
     set rtl_files [linsert $rtl_files 0 [file join $repo_root rtl tsmc_sram_macros.v]]
+}
+foreach extra_rtl_file $extra_rtl_files {
+    lappend rtl_files $extra_rtl_file
 }
 foreach rtl_file $rtl_files {
     require_file $rtl_file "RTL"

@@ -46,6 +46,24 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertRegex(text, r"input\s+wire\s+\[63:0\]\s+wr_data")
         self.assertRegex(text, r"FA_SKY130_SRAM_256X64_1RW\s+u_sram")
 
+    def test_optim_pipeline_prototype_has_rtl_counters_and_local_sram_banks(self):
+        text = read_rtl("fa_optim_sa_pipeline_prototype.v")
+
+        self.assertRegex(text, r"module\s+FA_OPTIM_SA_PIPELINE_PROTOTYPE\b")
+        for port_name in (
+            "cycles",
+            "sa_busy_cycles",
+            "feeder_busy_cycles",
+            "row_state_busy_cycles",
+            "qk_task_count",
+            "pv_task_count",
+            "oacc_task_count",
+        ):
+            self.assertIn(port_name, text)
+
+        self.assertIn("localparam integer SRAM_BANK_COUNT = 21", text)
+        self.assertRegex(text, r"FA_LOCAL_TILE_SRAM_16X64X16\s+u_bank")
+
 
 if __name__ == "__main__":
     unittest.main()
