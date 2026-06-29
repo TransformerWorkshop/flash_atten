@@ -3,6 +3,7 @@ module FA_OPTIM_4X4_MICRO_PIPELINE (
     input  wire          rstn,
     input  wire          clear,
     input  wire          start,
+    input  wire          first_kv_tile,
     input  wire [4095:0] q_block_flat,
     input  wire [16383:0] k_tile_flat,
     input  wire [16383:0] v_tile_flat,
@@ -367,7 +368,7 @@ module FA_OPTIM_4X4_MICRO_PIPELINE (
             oacc_row_rd_data_r <= 1024'd0;
         end else begin
             oacc_row_rd_valid_r <= oacc_row_rd_en_w;
-            oacc_row_rd_data_r <= 1024'd0;
+            oacc_row_rd_data_r <= o_tile_flat[(oacc_row_rd_addr_w[1:0] * 1024) +: 1024];
         end
     end
 
@@ -427,7 +428,9 @@ module FA_OPTIM_4X4_MICRO_PIPELINE (
                         busy <= 1'b1;
                         cycles <= 32'd0;
                         error <= 1'b0;
-                        o_tile_flat <= 4096'd0;
+                        if (first_kv_tile) begin
+                            o_tile_flat <= 4096'd0;
+                        end
                         qk_task_count <= 32'd0;
                         score_task_count <= 32'd0;
                         row_state_task_count <= 32'd0;
@@ -438,9 +441,14 @@ module FA_OPTIM_4X4_MICRO_PIPELINE (
                         pv_wave_r <= 2'd0;
                         score_block_flat_r <= 2048'd0;
                         partial_o_block_flat_r <= 4096'd0;
-                        row_init_valid_r <= 1'b1;
                         oacc_req_issued_r <= 1'b0;
-                        state_r <= ST_ROW_INIT;
+                        if (first_kv_tile) begin
+                            row_init_valid_r <= 1'b1;
+                            state_r <= ST_ROW_INIT;
+                        end else begin
+                            row_init_valid_r <= 1'b0;
+                            state_r <= ST_QK_FEED;
+                        end
                     end
                 end
                 ST_ROW_INIT: begin

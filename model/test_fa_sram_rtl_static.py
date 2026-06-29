@@ -99,13 +99,18 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("p_feed_data_r <= p_rd_data_w", text)
         self.assertIn("gemm_valid_r = 4'hf", text)
         self.assertIn("pv_task_count <= pv_task_count + 32'd4", text)
+        self.assertIn("first_kv_tile", text)
+        self.assertIn("oacc_row_rd_data_r <= o_tile_flat", text)
 
     def test_optim_4x4_micro_pipeline_smoke_checks_output(self):
         text = read_rtl_smoke("fa_optim_4x4_micro_pipeline_tb.v")
 
         self.assertRegex(text, r"module\s+fa_optim_4x4_micro_pipeline_tb\b")
         self.assertIn("FA_OPTIM_4X4_MICRO_PIPELINE dut", text)
+        self.assertIn(".first_kv_tile(first_kv_tile)", text)
         self.assertIn("expect_o_word", text)
+        self.assertIn("expect_o_word_two_tiles", text)
+        self.assertIn("run_tile(1'b0", text)
         self.assertIn("PASS: fa_optim_4x4_micro_pipeline_tb", text)
 
     def test_optim_packed_top_wraps_csr_and_packed_pipeline(self):
