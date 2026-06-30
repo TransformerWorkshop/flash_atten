@@ -210,6 +210,60 @@ delta versus the `FA_OPTIM_4X4_WINDOWED_LOOP` direct-feed dense anchor
 (`154245` cycles) is `11264` cycles. This is a measured current-RTL cost, not a
 model rejection.
 
+## Causal Product-Top Correctness Anchor
+
+`csr_causal_en` is now functionally wired through the active product path:
+
+```text
+FA_TOP_OPTIM_WINDOWED.csr_causal_en
+  -> FA_OPTIM_4X4_WINDOWED_LOOP.causal_en
+  -> FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE.causal_en
+  -> FA_SCORE_POST_REAL.causal_en
+```
+
+The q4 tile index is also carried into the score-post path. The global query row
+used by causal masking is reconstructed as:
+
+```text
+q_blk_idx             = q_tile_idx[5:2]
+score_block_row_base = {q_tile_idx[1:0], 2'b00}
+global_q             = q_blk_idx * 16 + score_block_row_base + local_row
+                     = q_tile_idx * 4 + local_row
+```
+
+Important local-row invariant: `score_block_row_base` is used only inside
+`FA_SCORE_POST_REAL` for the causal compare. `FA_ROW_STATE_REAL` still receives
+`update_row_base=4'd0`, because the staggered core stores and consumes only the
+local q4 rows `0..3` in `slot_p_block_flat_r`, `slot_rescale_block_flat_r`, and
+OACC. Letting the global row base flow into row-state/OACC would make q tiles
+with `q_tile_idx[1:0] != 0` write P/rescale into rows `4/8/12` and then read the
+wrong low 4 rows.
+
+The product-top smoke now has a parameterized `CAUSAL_MODE`. It writes CSR
+`ADDR_CFG=7'h08` bit0 before `START`, expands the expected-O cache from 4
+periodic q tiles to all 64 q tiles, and masks expected scores using
+`global_k <= global_q`.
+
+```text
+RUN=/home/host/codex_runs/fa_top_optim_windowed_causal_20260630_161107
+
+Non-causal:
+VCS compile: CODEX_VCS_COMPILE_STATUS=0
+VCS run: CODEX_VCS_RUN_STATUS=0
+PASS: fa_top_optim_windowed_tb numeric=dense_qk_reference causal=0 cycles=165509 rd_bytes=393216 wr_bytes=32768 ar_count=1536 r_beat_count=24576 aw_count=128 w_beat_count=2048
+
+Causal:
+VCS compile: CODEX_VCS_COMPILE_STATUS=0
+VCS run: CODEX_VCS_RUN_STATUS=0
+PASS: fa_top_optim_windowed_tb numeric=dense_qk_reference causal=1 cycles=165509 rd_bytes=393216 wr_bytes=32768 ar_count=1536 r_beat_count=24576 aw_count=128 w_beat_count=2048
+```
+
+The causal run is a functional correctness anchor, not a causal performance
+optimization. The current RTL still schedules all KV tiles and masks future
+keys in score-post, so cycles and AXI traffic match the non-causal run. The
+model-level opportunity remains to skip fully future KV tiles/windows; that is
+the next performance lever after this correctness landing.
+
 TABLE I
 Module Parameters
 
@@ -270,10 +324,10 @@ anchor.
 
 Remaining RTL landing items:
 
-1. Add randomized/causal numerical coverage around
-   `FA_OPTIM_4X4_WINDOWED_LOOP`. The current directed bench proves one
-   nonzero-Q/K dense-reference fixed-point case, but not arbitrary score
-   distributions.
+1. Add randomized numerical coverage around `FA_OPTIM_4X4_WINDOWED_LOOP`. The
+   current directed benches prove one nonzero-Q/K dense-reference fixed-point
+   stream in both non-causal and causal product-top modes, but not arbitrary
+   score distributions.
 2. Convert score post and OACC update to the sliced widths used by the contract.
 3. Decide whether the q4 snapshot table remains flops for the first functional
    anchor or is moved into small SRAM/RF storage before area work.

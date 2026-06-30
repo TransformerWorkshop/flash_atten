@@ -4,6 +4,8 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
     input  wire          clear,
     input  wire          start,
     input  wire [4095:0] q_block_flat,
+    input  wire          causal_en,
+    input  wire [5:0]    q_tile_idx,
     input  wire [4:0]    kv_base_idx,
     input  wire [4:0]    kv_count,
     input  wire          first_kv_window,
@@ -110,6 +112,8 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
     reg [511:0] gemm_b_data_r;
 
     reg row_init_valid_r;
+    wire [3:0] q_blk_idx_w = q_tile_idx[5:2];
+    wire [3:0] q_score_block_row_base_w = {q_tile_idx[1:0], 2'b00};
 
     wire [3:0] gemm_a_ready_w;
     wire [3:0] gemm_b_ready_w;
@@ -189,7 +193,7 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
     wire score_req_ready_w;
     wire score_resp_valid_w;
     wire score_done_pulse_w;
-    wire [3:0] masked_block_row_base_w;
+    wire [3:0] unused_masked_block_row_base_w;
     wire [63:0] masked_score_block_valid_w;
     wire [2047:0] masked_score_block_flat_w;
     wire [8191:0] unused_masked_score_tile_flat_w;
@@ -475,13 +479,13 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
         .clear(clear),
         .req_valid(score_req_valid_w),
         .req_ready(score_req_ready_w),
-        .q_blk_idx(4'd0),
+        .q_blk_idx(q_blk_idx_w),
         .kv_blk_idx(slot_kv_idx_r[score_issue_slot_w][3:0]),
-        .causal_en(1'b0),
+        .causal_en(causal_en),
         .scale_word(32'h0001_0000),
         .neg_large_word(32'hffc0_0000),
         .score_tile_flat(8192'd0),
-        .score_block_row_base(4'd0),
+        .score_block_row_base(q_score_block_row_base_w),
         .score_block_flat(slot_score_block_flat_r[score_issue_slot_w]),
         .score_row_rd_en(unused_score_row_rd_en_w),
         .score_row_rd_addr(unused_score_row_rd_addr_w),
@@ -489,7 +493,7 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
         .score_row_rd_data(512'd0),
         .resp_valid(score_resp_valid_w),
         .resp_ready(row_update_ready_w),
-        .masked_block_row_base(masked_block_row_base_w),
+        .masked_block_row_base(unused_masked_block_row_base_w),
         .masked_score_block_valid(masked_score_block_valid_w),
         .masked_score_block_flat(masked_score_block_flat_w),
         .done_pulse(score_done_pulse_w),
@@ -510,7 +514,7 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
         .update_ready(row_update_ready_w),
         .neg_large_word(32'hffc0_0000),
         .masked_score_tile_flat(8192'd0),
-        .update_row_base(masked_block_row_base_w),
+        .update_row_base(4'd0),
         .masked_score_block_valid(masked_score_block_valid_w),
         .masked_score_block_flat(masked_score_block_flat_w),
         .resp_valid(row_resp_valid_w),

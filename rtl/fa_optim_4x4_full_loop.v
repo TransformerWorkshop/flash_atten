@@ -207,6 +207,8 @@ module FA_OPTIM_4X4_FULL_LOOP (
         .clear(clear),
         .start(core_start_r),
         .q_block_flat(q_block_flat_r),
+        .causal_en(1'b0),
+        .q_tile_idx(q_tile_count_r[5:0]),
         .kv_base_idx(5'd0),
         .kv_count(5'd0),
         .first_kv_window(1'b1),

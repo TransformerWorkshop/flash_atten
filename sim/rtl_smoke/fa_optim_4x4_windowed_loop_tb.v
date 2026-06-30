@@ -91,6 +91,7 @@ module fa_optim_4x4_windowed_loop_tb;
         .rstn(rstn),
         .clear(clear),
         .start(start),
+        .causal_en(1'b0),
         .q_tile_req_valid(q_tile_req_valid),
         .q_tile_req_ready(q_tile_req_ready),
         .q_tile_req_q_idx(q_tile_req_q_idx),

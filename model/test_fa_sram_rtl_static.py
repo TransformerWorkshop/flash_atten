@@ -247,6 +247,23 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("oacc_next_kv_idx_r <= kv_base_idx_w", text)
         self.assertIn("if (oacc_next_kv_idx_r == (kv_end_idx_w - 5'd1))", text)
 
+    def test_optim_4x4_q_tile_staggered_core_wires_causal_global_rows(self):
+        text = read_rtl("fa_optim_4x4_q_tile_staggered_core.v")
+
+        self.assertIn("input  wire          causal_en", text)
+        self.assertIn("input  wire [5:0]    q_tile_idx", text)
+        self.assertIn("wire [3:0] q_blk_idx_w = q_tile_idx[5:2]", text)
+        self.assertIn("wire [3:0] q_score_block_row_base_w = {q_tile_idx[1:0], 2'b00}", text)
+        self.assertIn(".q_blk_idx(q_blk_idx_w)", text)
+        self.assertIn(".causal_en(causal_en)", text)
+        self.assertIn(".score_block_row_base(q_score_block_row_base_w)", text)
+        self.assertIn(".masked_block_row_base(unused_masked_block_row_base_w)", text)
+        self.assertIn(".update_row_base(4'd0)", text)
+        self.assertNotIn(".q_blk_idx(4'd0)", text)
+        self.assertNotIn(".causal_en(1'b0)", text)
+        self.assertNotIn(".score_block_row_base(4'd0)", text)
+        self.assertNotIn(".update_row_base(masked_block_row_base_w)", text)
+
     def test_optim_windowed_scheduler_contract_exists(self):
         rtl_path = RTL_DIR / "fa_optim_windowed_sched_contract.v"
         self.assertTrue(rtl_path.exists(), "windowed scheduler contract RTL must exist")
@@ -317,9 +334,12 @@ class FaSramRtlStaticTest(unittest.TestCase):
         text = rtl_path.read_text(encoding="utf-8")
 
         self.assertRegex(text, r"module\s+FA_OPTIM_4X4_WINDOWED_LOOP\b")
+        self.assertIn("input  wire         causal_en", text)
         self.assertIn("localparam integer Q_GROUP_ROWS = 64", text)
         self.assertIn("localparam integer KV_WINDOW_TILES = 4", text)
         self.assertIn("FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE u_q_tile_core", text)
+        self.assertIn(".causal_en(causal_en)", text)
+        self.assertIn(".q_tile_idx(q_current_tile_idx_w)", text)
         self.assertIn(".kv_base_idx(core_kv_base_idx_w)", text)
         self.assertIn(".kv_count(5'd4)", text)
         self.assertIn(".first_kv_window(core_first_kv_window_w)", text)
@@ -429,6 +449,7 @@ class FaSramRtlStaticTest(unittest.TestCase):
 
         self.assertRegex(text, r"module\s+fa_optim_4x4_windowed_loop_tb\b")
         self.assertIn("FA_OPTIM_4X4_WINDOWED_LOOP dut", text)
+        self.assertIn(".causal_en(1'b0)", text)
         self.assertIn("localparam integer EXPECTED_Q_GROUPS = 4", text)
         self.assertIn("localparam integer EXPECTED_KV_WINDOWS = 16", text)
         self.assertIn("localparam integer EXPECTED_Q_TILE_REQS = 256", text)
@@ -586,6 +607,8 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertRegex(text, r"module\s+FA_TOP_OPTIM_WINDOWED\b")
         self.assertIn("FA_CSR u_fa_csr", text)
         self.assertIn("FA_OPTIM_4X4_WINDOWED_LOOP u_windowed_loop", text)
+        self.assertIn(".causal_en(csr_causal_en)", text)
+        self.assertNotIn("(csr_causal_en & 1'b0)", text)
         self.assertIn("FA_AXI_RD_MASTER u_axi_rd", text)
         self.assertIn(".rd_desc_valid(top_rd_desc_valid_w)", text)
         self.assertIn(".rd_beat_valid(top_rd_beat_valid_w)", text)
@@ -603,7 +626,9 @@ class FaSramRtlStaticTest(unittest.TestCase):
         text = read_rtl_smoke("fa_top_optim_windowed_tb.v")
 
         self.assertRegex(text, r"module\s+fa_top_optim_windowed_tb\b")
+        self.assertIn("parameter integer CAUSAL_MODE = 0", text)
         self.assertIn("FA_TOP_OPTIM_WINDOWED dut", text)
+        self.assertIn("axil_write(7'h08, CAUSAL_MODE ? 32'h0000_0001 : 32'h0000_0000)", text)
         self.assertIn("axil_write(7'h00, 32'h0000_0001)", text)
         self.assertIn("axil_read(7'h40, read_data)", text)
         self.assertIn("32'd165509", text)
@@ -611,6 +636,11 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("task drive_axi_write_channel", text)
         self.assertIn("make_axi_read_word", text)
         self.assertIn("expected_o_word_dense_qk", text)
+        self.assertIn("input integer causal_mode", text)
+        self.assertIn("global_k_idx <= global_q_idx", text)
+        self.assertIn("reg [15:0] expected_o_cache [0:16383]", text)
+        self.assertIn("cache_q_tile_i < 64", text)
+        self.assertIn("numeric=dense_qk_reference causal=%0d", text)
         self.assertIn("expect32(ar_count, 32'd1536", text)
         self.assertIn("expect32(r_beat_count, 32'd24576", text)
         self.assertIn("expect32(aw_count, 32'd128", text)

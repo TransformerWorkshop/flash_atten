@@ -8,6 +8,7 @@ from model.fa_windowed_attention_model import (
     compare_outputs,
     dense_attention,
     expected_dense_qk_fixed_o_word,
+    expected_dense_qk_fixed_o_word_for_tile,
     fixed_dense_qk_window_output,
     fixed_dense_qk_score_q16,
     make_qkv,
@@ -121,6 +122,18 @@ class WindowedAttentionModelTest(unittest.TestCase):
         self.assertEqual(output[0][0], expected_dense_qk_fixed_o_word(0, 0))
         self.assertEqual(output[3][63], expected_dense_qk_fixed_o_word(3, 63))
         self.assertEqual(checksum, 0x03735A74)
+
+    def test_fixed_dense_qk_causal_reference_uses_global_query_rows(self):
+        q0_causal = expected_dense_qk_fixed_o_word_for_tile(0, 0, 0, causal=True)
+        q0_noncausal = expected_dense_qk_fixed_o_word_for_tile(0, 0, 0, causal=False)
+        q16_causal = expected_dense_qk_fixed_o_word_for_tile(4, 0, 0, causal=True)
+        last_row_causal = fixed_dense_qk_window_output(63, causal=True)[3]
+        last_row_noncausal = fixed_dense_qk_window_output(63, causal=False)[3]
+
+        self.assertEqual(q0_causal, 0x0100)
+        self.assertNotEqual(q0_causal, q0_noncausal)
+        self.assertNotEqual(q0_causal, q16_causal)
+        self.assertEqual(last_row_causal, last_row_noncausal)
 
 
 def _last_window_only_attention(q_matrix, k_matrix, v_matrix, cfg):

@@ -299,16 +299,25 @@ def fixed_dense_qk_score_q16(
     return _sat_signed(acc_q16, 32)
 
 
-def expected_dense_qk_fixed_o_word_for_tile(q_tile_idx: int, row: int, col: int) -> int:
+def expected_dense_qk_fixed_o_word_for_tile(
+    q_tile_idx: int, row: int, col: int, *, causal: bool = False
+) -> int:
     old_m_q16 = _to_signed(0xFFC0_0000, 32)
     old_l_q16 = 0
     old_o_q412 = 0
 
     for kv_idx in range(16):
-        scores_q16 = [
-            fixed_dense_qk_score_q16(q_tile_idx, row, kv_idx, key_col_idx)
-            for key_col_idx in range(16)
-        ]
+        global_q_idx = (q_tile_idx * 4) + row
+        scores_q16 = []
+        for key_col_idx in range(16):
+            global_k_idx = (kv_idx * 16) + key_col_idx
+            if causal and (global_k_idx > global_q_idx):
+                continue
+            scores_q16.append(
+                fixed_dense_qk_score_q16(q_tile_idx, row, kv_idx, key_col_idx)
+            )
+        if not scores_q16:
+            continue
         new_m_q16 = max(scores_q16)
         if old_l_q16 != 0:
             new_m_q16 = max(old_m_q16, new_m_q16)
@@ -317,12 +326,15 @@ def expected_dense_qk_fixed_o_word_for_tile(q_tile_idx: int, row: int, col: int)
         else:
             alpha_l_old_q16 = 0
 
-        beta_q16 = [
-            _exp_lut_q16_16(_q16_delta_to_exp_idx(score_q16 - new_m_q16))
-            for score_q16 in scores_q16
-        ]
+        beta_q16 = {}
         beta_sum_q16 = 0
-        for beta in beta_q16:
+        for key_col_idx in range(16):
+            global_k_idx = (kv_idx * 16) + key_col_idx
+            if causal and (global_k_idx > global_q_idx):
+                continue
+            score_q16 = fixed_dense_qk_score_q16(q_tile_idx, row, kv_idx, key_col_idx)
+            beta = _exp_lut_q16_16(_q16_delta_to_exp_idx(score_q16 - new_m_q16))
+            beta_q16[key_col_idx] = beta
             beta_sum_q16 = _q16_add_sat(beta_sum_q16, beta)
 
         new_l_q16 = _q16_add_sat(alpha_l_old_q16, beta_sum_q16)
@@ -330,7 +342,7 @@ def expected_dense_qk_fixed_o_word_for_tile(q_tile_idx: int, row: int, col: int)
         scale_q16 = 0 if old_l_q16 == 0 else _q16_mul_rn_sat(alpha_l_old_q16, recip_q16)
 
         partial_acc_q16 = 0
-        for key_col_idx, beta in enumerate(beta_q16):
+        for key_col_idx, beta in beta_q16.items():
             p_q16 = _q16_mul_rn_sat(beta, recip_q16)
             p_q88 = _q16_to_q88_rn_sat(p_q16)
             v_q88 = _dense_qk_v_word(kv_idx, key_col_idx, col)
@@ -347,9 +359,14 @@ def expected_dense_qk_fixed_o_word(row: int, col: int) -> int:
     return expected_dense_qk_fixed_o_word_for_tile(63, row, col)
 
 
-def fixed_dense_qk_window_output(q_tile_idx: int = 63) -> List[List[int]]:
+def fixed_dense_qk_window_output(
+    q_tile_idx: int = 63, *, causal: bool = False
+) -> List[List[int]]:
     return [
-        [expected_dense_qk_fixed_o_word_for_tile(q_tile_idx, row, col) for col in range(64)]
+        [
+            expected_dense_qk_fixed_o_word_for_tile(q_tile_idx, row, col, causal=causal)
+            for col in range(64)
+        ]
         for row in range(4)
     ]
 

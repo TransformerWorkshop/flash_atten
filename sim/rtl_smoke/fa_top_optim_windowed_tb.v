@@ -1,6 +1,8 @@
 `timescale 1ns/1ps
 
-module fa_top_optim_windowed_tb;
+module fa_top_optim_windowed_tb #(
+    parameter integer CAUSAL_MODE = 0
+);
     localparam [63:0] Q_BASE = 64'h0000_1000;
     localparam [63:0] K_BASE = 64'h0001_0000;
     localparam [63:0] V_BASE = 64'h0002_0000;
@@ -76,7 +78,7 @@ module fa_top_optim_windowed_tb;
     reg [63:0] current_araddr;
     reg [63:0] current_awaddr;
     reg [31:0] o_mem [0:O_TOTAL_WORDS-1];
-    reg [15:0] expected_o_cache [0:1023];
+    reg [15:0] expected_o_cache [0:16383];
     integer init_i;
     integer row_i;
     integer col_i;
@@ -530,11 +532,15 @@ module fa_top_optim_windowed_tb;
         input integer q_tile_idx;
         input integer row;
         input integer col;
+        input integer causal_mode;
         reg [5:0] q_tile_idx_narrow;
         reg [1:0] row_idx_narrow;
         reg [5:0] col_idx_narrow;
         integer kv_i;
         integer key_col_i;
+        integer global_q_idx;
+        integer global_k_idx;
+        integer row_has_valid;
         reg signed [31:0] old_m_q16;
         reg signed [31:0] old_l_q16;
         reg signed [31:0] new_m_q16;
@@ -557,73 +563,92 @@ module fa_top_optim_windowed_tb;
             q_tile_idx_narrow = q_tile_idx;
             row_idx_narrow = row;
             col_idx_narrow = col;
+            global_q_idx = (q_tile_idx * 4) + row;
             old_m_q16 = 32'hffc0_0000;
             old_l_q16 = 32'sd0;
             old_o_q412 = 16'sd0;
             for (kv_i = 0; kv_i < 16; kv_i = kv_i + 1) begin
-                new_m_q16 = expected_score_q16(q_tile_idx_narrow, row_idx_narrow, kv_i, 0);
-                for (key_col_i = 1; key_col_i < 16; key_col_i = key_col_i + 1) begin
-                    score_q16 = expected_score_q16(q_tile_idx_narrow, row_idx_narrow,
-                                                   kv_i, key_col_i);
-                    if (score_q16 > new_m_q16) begin
-                        new_m_q16 = score_q16;
-                    end
-                end
-                if (old_l_q16 != 32'sd0) begin
-                    if (old_m_q16 > new_m_q16) begin
-                        new_m_q16 = old_m_q16;
-                    end
-                    alpha_q16 = fa_exp_lut_q16_16(
-                        tb_q16_delta_to_exp_idx(old_m_q16 - new_m_q16));
-                    alpha_l_old_q16 = tb_q16_mul_rn_sat(alpha_q16, old_l_q16);
-                end else begin
-                    alpha_l_old_q16 = 32'sd0;
-                end
-
-                beta_sum_q16 = 32'sd0;
+                row_has_valid = 0;
+                new_m_q16 = 32'hffc0_0000;
                 for (key_col_i = 0; key_col_i < 16; key_col_i = key_col_i + 1) begin
-                    old_score_q16 = expected_score_q16(q_tile_idx_narrow, row_idx_narrow,
+                    global_k_idx = (kv_i * 16) + key_col_i;
+                    if ((!causal_mode) || (global_k_idx <= global_q_idx)) begin
+                        score_q16 = expected_score_q16(q_tile_idx_narrow, row_idx_narrow,
                                                        kv_i, key_col_i);
-                    beta_q16[key_col_i] = fa_exp_lut_q16_16(
-                        tb_q16_delta_to_exp_idx(old_score_q16 - new_m_q16));
-                    beta_sum_q16 = tb_q16_add_sat(beta_sum_q16, beta_q16[key_col_i]);
+                        if ((row_has_valid == 0) || (score_q16 > new_m_q16)) begin
+                            new_m_q16 = score_q16;
+                        end
+                        row_has_valid = 1;
+                    end
                 end
-                new_l_q16 = tb_q16_add_sat(alpha_l_old_q16, beta_sum_q16);
-                recip_q16 = tb_recip_q16_16(new_l_q16);
-
-                if (old_l_q16 == 32'sd0) begin
-                    scale_q16 = 32'sd0;
+                if (row_has_valid == 0) begin
+                    new_m_q16 = old_m_q16;
+                    scale_q16 = (old_l_q16 == 32'sd0) ? 32'sd0 : 32'h0001_0000;
+                    partial_q88 = 16'sd0;
+                    old_o_q412 = tb_update_oacc_elem(old_o_q412, scale_q16, partial_q88);
                 end else begin
-                    scale_q16 = tb_q16_mul_rn_sat(alpha_l_old_q16, recip_q16);
+                    if (old_l_q16 != 32'sd0) begin
+                        if (old_m_q16 > new_m_q16) begin
+                            new_m_q16 = old_m_q16;
+                        end
+                        alpha_q16 = fa_exp_lut_q16_16(
+                            tb_q16_delta_to_exp_idx(old_m_q16 - new_m_q16));
+                        alpha_l_old_q16 = tb_q16_mul_rn_sat(alpha_q16, old_l_q16);
+                    end else begin
+                        alpha_l_old_q16 = 32'sd0;
+                    end
+
+                    beta_sum_q16 = 32'sd0;
+                    for (key_col_i = 0; key_col_i < 16; key_col_i = key_col_i + 1) begin
+                        global_k_idx = (kv_i * 16) + key_col_i;
+                        if ((!causal_mode) || (global_k_idx <= global_q_idx)) begin
+                            old_score_q16 = expected_score_q16(q_tile_idx_narrow, row_idx_narrow,
+                                                               kv_i, key_col_i);
+                            beta_q16[key_col_i] = fa_exp_lut_q16_16(
+                                tb_q16_delta_to_exp_idx(old_score_q16 - new_m_q16));
+                            beta_sum_q16 = tb_q16_add_sat(beta_sum_q16, beta_q16[key_col_i]);
+                        end else begin
+                            beta_q16[key_col_i] = 32'sd0;
+                        end
+                    end
+                    new_l_q16 = tb_q16_add_sat(alpha_l_old_q16, beta_sum_q16);
+                    recip_q16 = tb_recip_q16_16(new_l_q16);
+
+                    if (old_l_q16 == 32'sd0) begin
+                        scale_q16 = 32'sd0;
+                    end else begin
+                        scale_q16 = tb_q16_mul_rn_sat(alpha_l_old_q16, recip_q16);
+                    end
+                    partial_acc_q16 = 128'sd0;
+                    for (key_col_i = 0; key_col_i < 16; key_col_i = key_col_i + 1) begin
+                        p_q16 = tb_q16_mul_rn_sat(beta_q16[key_col_i], recip_q16);
+                        p_q88 = tb_q16_to_q88_rn_sat(p_q16);
+                        v_q88 = make_v_word(kv_i[4:0], key_col_i[3:0], col_idx_narrow);
+                        partial_acc_q16 = partial_acc_q16 + ($signed(p_q88) * $signed(v_q88));
+                    end
+                    partial_q88 = tb_q16_16_to_q88_sat128(partial_acc_q16);
+                    old_o_q412 = tb_update_oacc_elem(old_o_q412, scale_q16, partial_q88);
+                    old_m_q16 = new_m_q16;
+                    old_l_q16 = new_l_q16;
                 end
-                partial_acc_q16 = 128'sd0;
-                for (key_col_i = 0; key_col_i < 16; key_col_i = key_col_i + 1) begin
-                    p_q16 = tb_q16_mul_rn_sat(beta_q16[key_col_i], recip_q16);
-                    p_q88 = tb_q16_to_q88_rn_sat(p_q16);
-                    v_q88 = make_v_word(kv_i[4:0], key_col_i[3:0], col_idx_narrow);
-                    partial_acc_q16 = partial_acc_q16 + ($signed(p_q88) * $signed(v_q88));
-                end
-                partial_q88 = tb_q16_16_to_q88_sat128(partial_acc_q16);
-                old_o_q412 = tb_update_oacc_elem(old_o_q412, scale_q16, partial_q88);
-                old_m_q16 = new_m_q16;
-                old_l_q16 = new_l_q16;
             end
             expected_o_word_dense_qk = old_o_q412;
         end
     endfunction
 
     task init_expected_o_cache;
-        integer cache_qmod_i;
+        integer cache_q_tile_i;
         integer cache_row_i;
         integer cache_col_i;
         integer cache_idx;
         begin
-            for (cache_qmod_i = 0; cache_qmod_i < 4; cache_qmod_i = cache_qmod_i + 1) begin
+            for (cache_q_tile_i = 0; cache_q_tile_i < 64; cache_q_tile_i = cache_q_tile_i + 1) begin
                 for (cache_row_i = 0; cache_row_i < 4; cache_row_i = cache_row_i + 1) begin
                     for (cache_col_i = 0; cache_col_i < 64; cache_col_i = cache_col_i + 1) begin
-                        cache_idx = (cache_qmod_i * 256) + (cache_row_i * 64) + cache_col_i;
+                        cache_idx = (cache_q_tile_i * 256) + (cache_row_i * 64) + cache_col_i;
                         expected_o_cache[cache_idx] =
-                            expected_o_word_dense_qk(cache_qmod_i, cache_row_i, cache_col_i);
+                            expected_o_word_dense_qk(cache_q_tile_i, cache_row_i, cache_col_i,
+                                                     CAUSAL_MODE);
                     end
                 end
             end
@@ -636,7 +661,7 @@ module fa_top_optim_windowed_tb;
         input integer col;
         integer cache_idx;
         begin
-            cache_idx = ((q_tile_idx & 3) * 256) + ((row & 3) * 64) + (col & 63);
+            cache_idx = ((q_tile_idx & 63) * 256) + ((row & 3) * 64) + (col & 63);
             expected_cached_o_word = expected_o_cache[cache_idx];
         end
     endfunction
@@ -940,6 +965,7 @@ module fa_top_optim_windowed_tb;
         axil_write(7'h2c, O_BASE[31:0]);
         axil_write(7'h30, O_BASE[63:32]);
         axil_write(7'h34, 32'd128);
+        axil_write(7'h08, CAUSAL_MODE ? 32'h0000_0001 : 32'h0000_0000);
         axil_write(7'h00, 32'h0000_0001);
 
         while (wait_count < 400000) begin
@@ -996,9 +1022,9 @@ module fa_top_optim_windowed_tb;
         expect_o_memory_dense_qk();
 
         if (error_count == 0) begin
-            $display("PASS: fa_top_optim_windowed_tb numeric=dense_qk_reference cycles=%0d rd_bytes=%0d wr_bytes=%0d ar_count=%0d r_beat_count=%0d aw_count=%0d w_beat_count=%0d",
-                     cycles_data, rd_bytes_data, wr_bytes_data, ar_count, r_beat_count,
-                     aw_count, w_beat_count);
+            $display("PASS: fa_top_optim_windowed_tb numeric=dense_qk_reference causal=%0d cycles=%0d rd_bytes=%0d wr_bytes=%0d ar_count=%0d r_beat_count=%0d aw_count=%0d w_beat_count=%0d",
+                     CAUSAL_MODE, cycles_data, rd_bytes_data, wr_bytes_data, ar_count,
+                     r_beat_count, aw_count, w_beat_count);
             $finish;
         end
 

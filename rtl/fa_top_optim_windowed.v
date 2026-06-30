@@ -222,7 +222,6 @@ module FA_TOP_OPTIM_WINDOWED #(
     wire windowed_top_unused_zero_w =
           (csr_start_level & 1'b0)
         | (csr_soft_reset_level & 1'b0)
-        | (csr_causal_en & 1'b0)
         | ((|csr_q_base) & 1'b0)
         | ((|csr_k_base) & 1'b0)
         | ((|csr_v_base) & 1'b0)
@@ -442,6 +441,7 @@ module FA_TOP_OPTIM_WINDOWED #(
         .rstn(rstn),
         .clear(runtime_clear),
         .start(csr_start_pulse),
+        .causal_en(csr_causal_en),
         .q_tile_req_valid(q_tile_req_valid_w),
         .q_tile_req_ready(q_tile_req_ready_w),
         .q_tile_req_q_idx(q_tile_req_q_idx_w),
