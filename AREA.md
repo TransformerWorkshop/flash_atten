@@ -256,33 +256,235 @@ addr = {kv_idx[3:0], chunk_idx}
 
 No DC was run for this cleanup per the current milestone scope.
 
+## Current Q4 20-Macro Compile-Ultra DC Evidence
+
+This section records the latest landed q4 windowed product-top area point. It
+replaces the earlier pre-DC estimate for this q4 macro-backed architecture.
+The flow order was SpyGlass lint first, then mapped DC with
+`compile_ultra -no_autoungroup`.
+
+Current RTL contract:
+
+| Resource | Count | Role |
+| --- | ---: | --- |
+| K window SRAM | `8` | Packed K window, adjacent rows in low/high 32b lanes |
+| V window SRAM | `8` | Packed V window, slot identity in address |
+| OACC group SRAM | `4` | q4 OACC state backing |
+| Total SRAM | `20` | q4 windowed storage contract |
+
+Using the same DC library numbers as the frozen anchor:
+
+```text
+ND2D0BWP7T40P140 area = 0.294000
+TEM5N28HPCPLVTA256X64M4SWSO area = 8399.200195
+```
+
+Current macro floor:
+
+| Item | Cell area | NAND2 |
+| --- | ---: | ---: |
+| K SRAM, 8 macros | `67193.601560` | `228549.67` |
+| V SRAM, 8 macros | `67193.601560` | `228549.67` |
+| OACC SRAM, 4 macros | `33596.800780` | `114274.83` |
+| Total SRAM, 20 macros | `167984.003900` | `571374.16` |
+
+SpyGlass lint gate:
+
+```text
+RUN=/home/host/codex_runs/fa_q4_windowed_spyglass_fixw122_20260630_224456
+Top=FA_TOP_OPTIM_WINDOWED
+SpyGlass_vT-2022.06-1 lint/lint_rtl
+FATAL=0 ERROR=0 WARNING=264 INFO=4
+```
+
+The first SpyGlass run reported one `W122` error in
+`FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE`: `get_q_word` read `q_block_flat` as a
+hidden function dependency. The RTL fix made the helper pure by passing the
+4096-bit Q block as an explicit function input. The rerun reached the
+`0 fatal / 0 error` lint gate, but warnings remain and this is not lint
+signoff-clean.
+
+Mapped DC run:
+
+```text
+RUN=/home/host/codex_runs/fa_q4_windowed_spyglass_fixw122_20260630_224456/dc_ultra
+Tool=Design Compiler T-2022.03-SP2
+Compile=compile_ultra -no_autoungroup
+Clock=5 ns
+Elapsed=5104 s = 1.42 h
+CPU=4872 s = 1.35 h
+Peak session memory including child processes=5283 MB
+```
+
+Mapped area from `area.rpt` / `nand2_area.log`:
+
+| Bucket | Cell area | NAND2 |
+| --- | ---: | ---: |
+| Total cell area | `577668.887590` | `1964860.16` |
+| Macro/black-box area | `167984.003906` | `571374.16` |
+| Logic + registers, excluding SRAM macros | `409684.883684` | `1393486.00` |
+| Combinational area | `256331.250573` | `871875.00` |
+| Noncombinational area | `153353.633111` | `521611.00` |
+
+Cell counts:
+
+| Metric | Count |
+| --- | ---: |
+| Leaf cells | `521076` |
+| Combinational cells | `438424` |
+| Sequential cells | `82652` |
+| Macros | `20` |
+
+Key hierarchy hot spots:
+
+| Hierarchy | Cell area | NAND2 |
+| --- | ---: | ---: |
+| `u_q_tile_core` | `368330.1578` | `1252823.67` |
+| `u_q_tile_core/u_oacc_update` | `75216.4700` | `255838.33` |
+| `u_q_tile_core/u_row_state` | `39992.1339` | `136027.67` |
+| `u_q_tile_core/u_row_state/u_recip` | `3128.5520` | `10641.33` |
+| `u_q_tile_core/u_score_post` | `16185.9739` | `55054.33` |
+| Four `GEMM_V3` 4x4 lanes | `127142.9460` | `432459.00` |
+
+Timing and rule status from `qor.rpt`:
+
+| Metric | Result |
+| --- | ---: |
+| Critical path length | `4.98 ns` |
+| Setup WNS / TNS / violating paths | `0.00 / 0.00 / 0` |
+| Hold WNS / TNS / violating paths | `0.00 / 0.00 / 0` |
+| Levels of logic | `149` |
+| Nets with design-rule violations | `4` |
+| Max transition / max capacitance violations | `2 / 2` |
+
+The reported critical paths start at
+`u_windowed_loop/u_q_tile_core/feed_count_r_reg[5]` and end in GEMM accumulator
+registers. DC also reports two high-fanout nets with `TIM-134`; this is a
+front-end timing estimate, not a routed timing signoff result.
+
+DC `check_design` still has non-signoff warning noise:
+
+| Check | Count |
+| --- | ---: |
+| `LINT-28` unconnected ports | `59290` |
+| `LINT-31` shorted outputs | `25` |
+| `LINT-52` constant outputs | `18` |
+| `LINT-32` tied pins | `40429` |
+| `LINT-33` same-net multi-pin cells | `70` |
+| `LINT-60` hierarchy pins without driver/load | `539` |
+
+The dominant buckets are generated SRAM wrapper pins, unused CSR/config bits,
+and writer/setup artifacts. They do not block this area probe, but they are not
+waived as final product signoff.
+
+Compared with the frozen 48-macro area point, the SRAM macro floor alone drops:
+
+| Change | NAND2 saved |
+| --- | ---: |
+| 48 macros -> 20 macros | `799923.83` |
+
+Area interpretation:
+
+- The current q4 windowed product-top maps to `1.965M NAND2` including SRAM
+  macros, so it is just under a hard `2.0M NAND2` area line in this DC run.
+- The margin is thin: about `35.1k NAND2`, or `1.8%` of a `2.0M` budget. It is
+  acceptable as a first compile-ultra area anchor, but not comfortable enough
+  to stop area cleanup.
+- Relative to the frozen 48-macro row-partial point (`3.173M NAND2`), total
+  area is down about `38.1%`. The macro floor is down about `58.3%`, and
+  non-SRAM logic is down about `22.6%`.
+- Relative to the historical numerical baseline area of about `4.780M NAND2`,
+  this point is down about `58.9%`, with the usual caveat that this is still a
+  front-end mapped DC comparison, not routed signoff.
+- The macro question is no longer the dominant risk. The main remaining area is
+  inside `u_q_tile_core`: OACC update, GEMM lanes, row-state, and score-post.
+
+## Post-Latest-Run RTL Area Cleanup
+
+Date: 2026-07-01
+
+The `1.965M NAND2` number above is the latest measured DC result. The RTL
+cleanup in this section landed after that run and has not been re-run through
+DC per the current milestone scope. Treat these as implemented area-reduction
+items with local static/model verification; fresh post-cleanup VCS and DC
+numbers are still pending before replacing the measured NAND2 anchor.
+
+Completed priority items:
+
+1. Q4 score-post specialization:
+   - Added `FA_SCORE_POST_Q4_BLOCK_REAL` and switched the active q4 core to it.
+   - Removed the 16-row tile interface shape from the active product path.
+   - Dropped row/tile debug outputs and the configurable score-scale multiply
+     from the active q4 path; the current top uses fixed unit scale.
+
+2. Q4 row-state specialization:
+   - Added `FA_ROW_STATE_Q4_BLOCK_REAL`.
+   - Restore/snapshot state width is now 4 rows:
+     `m/l = 128b + 128b`, `seen = 4b`.
+   - The reciprocal remains `FA_RECIP_Q16_16`; no approximation was introduced
+     in this cleanup.
+
+3. Q4 OACC update specialization:
+   - Added `FA_OACC_UPDATE_Q4_BLOCK_REAL`.
+   - OACC row addressing is now local `2b` q4 row addressing.
+   - Removed the older partial-row/tile-wide input muxing from the active q4
+     update path while keeping the q4 OACC macro-backed contract.
+
+4. GEMM/GEMU control-width cleanup:
+   - `GEMM_V3` and `GEMU_V3` now expose `ACC_COUNT_WIDTH`.
+   - `GEMM_V3` also exposes `GROUP_IDX_WIDTH`.
+   - The active 4x4 product path uses `ACC_COUNT_WIDTH=6` and
+     `GROUP_IDX_WIDTH=2`, instead of carrying default 32-bit control fields
+     through the synthesized datapath.
+
+5. Q-group state-width cleanup:
+   - `FA_OPTIM_4X4_WINDOWED_LOOP` q4 row-state arrays now store only the active
+     q4 state:
+     `q_tile_m_state_r/q_tile_l_state_r = 128b`, `q_tile_row_seen_r = 4b`.
+   - This removes the old 16-row snapshot shape from the q4 window scheduler.
+
+Expected impact:
+
+- Macro count remains `20`; this cleanup targets non-macro area.
+- No intentional scheduler or memory-traffic change was made, so performance
+  should stay on the q4 OACC macro-backed contract. VCS counters are still the
+  authority for the landed build.
+- The K/V `16 -> 8` bank compression is already part of the latest q4
+  macro-backed schedule. K writes split each 64b external beat into two packed
+  SRAM writes through `k_pack_pending_r`, so the load path pays an explicit
+  extra cycle per K beat. That is why this is an area/performance trade-off,
+  not a free macro reduction.
+- The largest expected post-latest-run gains are in `u_score_post`,
+  `u_row_state`, `u_oacc_update`, and narrow GEMM/GEMU control logic. A new DC
+  run is needed before replacing the latest measured `1.964860M NAND2` result.
+
 ## Next Area Optimization Targets
 
-These are not part of the frozen first version.
+These are follow-ups after the q4 20-macro compile-ultra point and the
+post-latest-run q4-specialization cleanup above. They should not change the
+current architecture contract unless a new performance run proves the trade-off.
 
-1. K SRAM bank folding:
-   - Current K SRAM uses `32` 256x64 macros.
-   - The current K mapping uses only half of each macro depth.
-   - Folding K to `16` banks by moving `kv_idx[3]` into the SRAM row address
-     should save about `0.457M NAND2` while preserving the 16-row QK read pack.
+1. OACC update:
+   - Current `u_oacc_update` costs `0.256M NAND2`.
+   - Keep the q4 OACC macro-backed contract, but look for narrower update
+     datapaths or better operand reuse before increasing SRAM macro count.
 
-2. OACC column slicing:
-   - Current OACC update costs about `0.295M NAND2`.
-   - A 16-column sliced OACC can trade about 3 extra cycles per OACC task for a
-     meaningful area reduction.
-   - Estimated performance after a simple 4-cycle OACC update remains below the
-     current baseline cycle count.
+2. GEMM lanes:
+   - Four 4x4 GEMM lanes cost about `0.432M NAND2`.
+   - The critical paths are now from `feed_count_r` into GEMM accumulator
+     registers, so any area compaction here must keep the 5 ns schedule honest.
 
-3. Row-state/reciprocal pipeline:
-   - Current row-state costs about `0.261M NAND2` and is the 5 ns critical path.
-   - The next RTL version should pipeline, iterate, or approximate the reciprocal
-     path instead of allowing an 810-level combinational timing chain.
+3. Row-state and score-post:
+   - `u_row_state` is now `0.136M NAND2`; the reciprocal sub-block itself is
+     only `0.011M NAND2` after compile-ultra pruning.
+   - Score-post is `0.055M NAND2`, much smaller than the frozen anchor, so it is
+     no longer the first area target.
 
-4. Check-design cleanup:
-   - Reduce unconnected/debug/status ports after the architecture point is
-     stable.
-   - Do not use waivers as the first response; clean the RTL interfaces where
-     practical.
+4. Check-design and design-rule cleanup:
+   - Reduce generated unconnected ports and CSR/debug/status unused bits after
+     the architecture point is stable.
+   - Clear or explain the remaining `4` design-rule violating nets before any
+     signoff-oriented physical flow.
 
 ## Frozen Artifact Paths
 

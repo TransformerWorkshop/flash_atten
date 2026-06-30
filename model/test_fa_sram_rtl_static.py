@@ -199,7 +199,7 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertNotIn("q_block_flat_r =", text)
         self.assertNotIn("k_tile_flat_r =", text)
 
-    def test_optim_4x4_q_tile_staggered_core_uses_shared_real_pipes(self):
+    def test_optim_4x4_q_tile_staggered_core_uses_shared_q4_real_pipes(self):
         text = read_rtl("fa_optim_4x4_q_tile_staggered_core.v")
 
         self.assertRegex(text, r"module\s+FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE\b")
@@ -208,23 +208,19 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("GEMM_V3", text)
         self.assertRegex(text, r"\.X_DIM\s*\(\s*4\s*\)")
         self.assertRegex(text, r"\.Y_DIM\s*\(\s*4\s*\)")
-        self.assertRegex(text, r"FA_SCORE_POST_REAL\s*#\s*\([\s\S]*?\)\s*u_score_post")
-        self.assertRegex(text, r"FA_ROW_STATE_REAL\s*#\s*\([\s\S]*?\)\s*u_row_state")
+        self.assertIn("FA_SCORE_POST_Q4_BLOCK_REAL u_score_post", text)
+        self.assertIn("FA_ROW_STATE_Q4_BLOCK_REAL u_row_state", text)
         self.assertIn("row_p_block_flat", text)
-        self.assertRegex(text, r"FA_OACC_UPDATE_REAL\s*#\s*\([\s\S]*?\)\s*u_oacc_update")
+        self.assertIn("FA_OACC_UPDATE_Q4_BLOCK_REAL u_oacc_update", text)
         self.assertIn("slot_score_block_flat_r", text)
         self.assertIn("slot_p_block_flat_r", text)
         self.assertIn("slot_rescale_block_flat_r", text)
         self.assertNotIn("slot_p_tile_flat_r", text)
         self.assertNotIn("slot_rescale_vec_flat_r", text)
-        self.assertIn("slot_p_block_flat_r[row_active_slot_r] <= p_tile_flat_w[1023:0]", text)
-        self.assertIn("slot_rescale_block_flat_r[row_active_slot_r] <= rescale_vec_flat_w[127:0]", text)
+        self.assertIn("slot_p_block_flat_r[row_active_slot_r] <= p_block_flat_w", text)
+        self.assertIn("slot_rescale_block_flat_r[row_active_slot_r] <= rescale_block_flat_w", text)
         self.assertIn("slot_partial_o_row_r", text)
         self.assertIn("o_tile_row_r", text)
-        self.assertIn(".USE_PARTIAL_ROW_INPUT(0)", text)
-        self.assertIn(".USE_PARTIAL_BLOCK_INPUT(1)", text)
-        self.assertIn(".partial_row_rd_valid(1'b0)", text)
-        self.assertIn(".partial_row_rd_data(1024'd0)", text)
         self.assertIn(".partial_o_block_flat(slot_partial_o_block_flat_w)", text)
         self.assertIn("assign o_tile_flat[1023:0] = o_tile_row_r[0]", text)
         self.assertNotIn("slot_partial_o_block_flat_r", text)
@@ -247,6 +243,40 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("oacc_next_kv_idx_r <= kv_base_idx_w", text)
         self.assertIn("if (oacc_next_kv_idx_r == (effective_kv_end_idx_w - 5'd1))", text)
 
+    def test_optim_4x4_q_tile_staggered_core_uses_q4_area_specialized_pipes(self):
+        text = read_rtl("fa_optim_4x4_q_tile_staggered_core.v")
+
+        self.assertIn("FA_SCORE_POST_Q4_BLOCK_REAL u_score_post", text)
+        self.assertIn("FA_ROW_STATE_Q4_BLOCK_REAL u_row_state", text)
+        self.assertIn("FA_OACC_UPDATE_Q4_BLOCK_REAL u_oacc_update", text)
+        self.assertIn("wire [1023:0] p_block_flat_w", text)
+        self.assertIn("wire [127:0] rescale_block_flat_w", text)
+        self.assertIn("output wire [127:0]  snapshot_m_state_flat", text)
+        self.assertIn("output wire [127:0]  snapshot_l_state_flat", text)
+        self.assertIn("output wire [3:0]    snapshot_row_seen", text)
+        self.assertNotIn("unused_masked_score_tile_flat_w", text)
+        self.assertNotIn("unused_score_row_rd_en_w", text)
+        self.assertNotIn("partial_row_rd_en_w", text)
+        self.assertNotIn("partial_row_rd_data_r", text)
+
+    def test_gemm_v3_exposes_narrow_area_controls_for_q4_product_path(self):
+        gemm_text = read_rtl("gemm_v3.v")
+        gemu_text = read_rtl("gemu_v3.v")
+        core_text = read_rtl("fa_optim_4x4_q_tile_staggered_core.v")
+
+        self.assertIn("parameter ACC_COUNT_WIDTH = WIDTH", gemm_text)
+        self.assertIn("parameter GROUP_IDX_WIDTH = 32", gemm_text)
+        self.assertIn("input  wire [ACC_COUNT_WIDTH-1:0] num_acc", gemm_text)
+        self.assertIn("output wire [GROUP_IDX_WIDTH-1:0] m_group_idx", gemm_text)
+        self.assertIn("reg [GROUP_IDX_WIDTH-1:0] stream_idx", gemm_text)
+        self.assertIn("parameter ACC_COUNT_WIDTH = WIDTH", gemu_text)
+        self.assertIn("input  wire [ACC_COUNT_WIDTH-1:0] num_acc", gemu_text)
+        self.assertIn("reg        [ACC_COUNT_WIDTH-1:0] acc_cnt", gemu_text)
+        self.assertIn(".ACC_COUNT_WIDTH(6)", core_text)
+        self.assertIn(".GROUP_IDX_WIDTH(2)", core_text)
+        self.assertIn("reg [5:0]   gemm_num_acc_r", core_text)
+        self.assertIn("wire [1:0] gemm_group_idx_w [0:3]", core_text)
+
     def test_optim_4x4_q_tile_staggered_core_wires_causal_global_rows(self):
         text = read_rtl("fa_optim_4x4_q_tile_staggered_core.v")
 
@@ -257,8 +287,6 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn(".q_blk_idx(q_blk_idx_w)", text)
         self.assertIn(".causal_en(causal_en)", text)
         self.assertIn(".score_block_row_base(q_score_block_row_base_w)", text)
-        self.assertIn(".masked_block_row_base(unused_masked_block_row_base_w)", text)
-        self.assertIn(".update_row_base(4'd0)", text)
         self.assertIn("wire [4:0] causal_kv_end_idx_w", text)
         self.assertIn("wire [4:0] effective_kv_end_idx_w", text)
         self.assertIn("qk_issue_kv_idx_r < effective_kv_end_idx_w", text)
@@ -377,32 +405,33 @@ class FaSramRtlStaticTest(unittest.TestCase):
         )
         self.assertLess(
             text.index("wire [2:0] micro_v_rd_req_pair_idx_w"),
-            text.index("wire [3:0] v_sram_rd_row_idx_w = {1'b0, v_sram_rd_slot_idx_w[1:0], micro_v_rd_req_pair_idx_w[2]}"),
+            text.index("wire [7:0] v_sram_rd_addr_w"),
         )
-        self.assertIn("wire [3:0] k_sram_wr_bank_idx_w = k_tile_beat_row_idx", text)
-        self.assertIn("wire [3:0] k_sram_wr_row_idx_w = {2'd0, kv_load_slot_idx_r}", text)
-        self.assertIn("wire [3:0] k_sram_wr_chunk_idx_w = k_tile_beat_chunk_idx", text)
-        self.assertIn("wire [3:0] k_sram_rd_row_idx_w = {2'd0, k_sram_rd_slot_idx_w[1:0]}", text)
-        self.assertIn("wire [3:0] k_sram_rd_chunk_idx_w = micro_k_rd_req_pair_idx_w[4:1]", text)
-        self.assertIn("wire [3:0] v_sram_wr_bank_idx_w = {kv_load_slot_idx_r[1], v_tile_beat_row_idx[0], v_tile_beat_chunk_idx[1:0]}", text)
-        self.assertIn("wire [3:0] v_sram_wr_row_idx_w = {1'b0, kv_load_slot_idx_r, v_tile_beat_row_idx[3]}", text)
-        self.assertIn("wire [3:0] v_sram_wr_chunk_idx_w = {v_tile_beat_row_idx[2:1], v_tile_beat_chunk_idx[3:2]}", text)
-        self.assertIn("wire [3:0] v_sram_rd_row_idx_w = {1'b0, v_sram_rd_slot_idx_w[1:0], micro_v_rd_req_pair_idx_w[2]}", text)
-        self.assertIn("wire [3:0] v_sram_rd_chunk_idx_w = {micro_v_rd_req_pair_idx_w[1:0], micro_v_rd_req_wave_idx_w}", text)
-        self.assertIn("v_sram_rd_resp_kv_idx_r <= {3'd0, micro_v_rd_window_slot_idx_w}", text)
+        self.assertIn("localparam integer K_SRAM_BANK_COUNT = 8", text)
+        self.assertIn("localparam integer V_SRAM_BANK_COUNT = 8", text)
+        self.assertIn("wire [2:0] k_sram_direct_wr_bank_idx_w = k_tile_beat_row_idx[3:1]", text)
+        self.assertIn("{1'b0, kv_load_slot_idx_r, k_tile_beat_chunk_idx, 1'b0}", text)
+        self.assertIn("{1'b0, kv_load_slot_idx_r, k_tile_beat_chunk_idx, 1'b1}", text)
+        self.assertIn("k_pack_pending_r", text)
+        self.assertIn("wire [7:0] k_sram_rd_addr_w", text)
+        self.assertIn("localparam integer K_ELEM_BANK = k_row_gi / 2", text)
+        self.assertIn("wire [2:0] v_sram_wr_bank_idx_w", text)
+        self.assertIn("wire [7:0] v_sram_wr_addr_w", text)
+        self.assertIn("wire [7:0] v_sram_rd_addr_w", text)
+        self.assertNotIn("v_sram_rd_resp_kv_idx_r", text)
 
     def test_optim_staggered_core_exposes_window_state_snapshot_ports(self):
         text = read_rtl("fa_optim_4x4_q_tile_staggered_core.v")
 
         for port_decl in (
             "input  wire          restore_state_valid",
-            "input  wire [511:0]  restore_m_state_flat",
-            "input  wire [511:0]  restore_l_state_flat",
-            "input  wire [15:0]   restore_row_seen",
+            "input  wire [127:0]  restore_m_state_flat",
+            "input  wire [127:0]  restore_l_state_flat",
+            "input  wire [3:0]    restore_row_seen",
             "input  wire [4095:0] restore_o_tile_flat",
-            "output wire [511:0]  snapshot_m_state_flat",
-            "output wire [511:0]  snapshot_l_state_flat",
-            "output wire [15:0]   snapshot_row_seen",
+            "output wire [127:0]  snapshot_m_state_flat",
+            "output wire [127:0]  snapshot_l_state_flat",
+            "output wire [3:0]    snapshot_row_seen",
         ):
             self.assertIn(port_decl, text)
 
@@ -430,15 +459,18 @@ class FaSramRtlStaticTest(unittest.TestCase):
     def test_optim_windowed_top_persists_q_tile_state_snapshots(self):
         text = read_rtl("fa_optim_4x4_windowed_loop.v")
 
-        self.assertIn("reg [511:0] q_tile_m_state_r [0:Q_TILES_PER_GROUP-1]", text)
-        self.assertIn("reg [511:0] q_tile_l_state_r [0:Q_TILES_PER_GROUP-1]", text)
-        self.assertIn("reg [15:0] q_tile_row_seen_r [0:Q_TILES_PER_GROUP-1]", text)
-        self.assertIn("reg [4095:0] q_tile_o_state_r [0:Q_TILES_PER_GROUP-1]", text)
+        self.assertIn("reg [127:0] q_tile_m_state_r [0:Q_TILES_PER_GROUP-1]", text)
+        self.assertIn("reg [127:0] q_tile_l_state_r [0:Q_TILES_PER_GROUP-1]", text)
+        self.assertIn("reg [3:0] q_tile_row_seen_r [0:Q_TILES_PER_GROUP-1]", text)
+        self.assertNotIn("reg [4095:0] q_tile_o_state_r [0:Q_TILES_PER_GROUP-1]", text)
+        self.assertIn("FA_OACC_GROUP_SRAM_64X64X16 u_oacc_group_sram", text)
+        self.assertIn("reg [4095:0] q_tile_o_restore_flat_r", text)
         self.assertIn(".restore_state_valid(!core_first_kv_window_w)", text)
         self.assertIn(".restore_m_state_flat(q_tile_m_state_r[q_tile_in_group_idx_r])", text)
-        self.assertIn(".restore_o_tile_flat(q_tile_o_state_r[q_tile_in_group_idx_r])", text)
+        self.assertIn(".restore_o_tile_flat(q_tile_o_restore_flat_r)", text)
         self.assertIn("q_tile_m_state_r[q_tile_in_group_idx_r] <= micro_snapshot_m_state_w", text)
-        self.assertIn("q_tile_o_state_r[q_tile_in_group_idx_r] <= o_block_flat", text)
+        self.assertIn("state_r == ST_SPILL_O_WRITE", text)
+        self.assertIn("o_block_flat[(oacc_chunk_idx_r * 256) +: 256]", text)
 
     def test_optim_windowed_loop_exposes_group_o_dump_stream(self):
         text = read_rtl("fa_optim_4x4_windowed_loop.v")
@@ -451,7 +483,8 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("output wire         o_dump_last", text)
         self.assertIn("ST_DUMP_GROUP", text)
         self.assertIn("wire o_dump_fire_w = o_dump_valid && o_dump_ready", text)
-        self.assertIn("q_tile_o_state_r[o_dump_q_tile_idx_w]", text)
+        self.assertIn("o_dump_chunk_valid_r", text)
+        self.assertIn("o_dump_chunk_r[(o_dump_word_in_chunk_w * 32) +: 32]", text)
 
     def test_optim_windowed_real_core_smoke_checks_s256(self):
         smoke_path = RTL_SMOKE_DIR / "fa_optim_4x4_windowed_loop_tb.v"
@@ -518,7 +551,7 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("build_windowed_rtl_contract", model_text)
         self.assertIn("count_k_layout_roundtrip_errors", model_text)
         self.assertIn("count_v_layout_roundtrip_errors", model_text)
-        self.assertIn("v_write_bank_uses_slot_high=False", test_text)
+        self.assertIn("v_write_addr_uses_slot=False", test_text)
         self.assertIn("test_s256_d64_windowed_contract_matches_vcs_smoke_counters", test_text)
         self.assertIn("test_v_sram_window_layout_roundtrips_all_resident_slots", test_text)
 
@@ -642,16 +675,21 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("axil_write(7'h08, CAUSAL_MODE ? 32'h0000_0001 : 32'h0000_0000)", text)
         self.assertIn("axil_write(7'h00, 32'h0000_0001)", text)
         self.assertIn("axil_read(7'h40, read_data)", text)
-        self.assertIn("32'd165509", text)
+        self.assertIn("32'd193037", text)
         self.assertIn("task drive_axi_read_channel", text)
         self.assertIn("task drive_axi_write_channel", text)
+        self.assertIn("parameter integer NUMERIC_MODE = 1", text)
+        self.assertIn("localparam integer NUMERIC_MODE_DENSE_QK = 1", text)
+        self.assertIn("localparam integer NUMERIC_MODE_SIGNED_MIXED = 2", text)
+        self.assertIn("function [8*32-1:0] numeric_mode_name", text)
         self.assertIn("make_axi_read_word", text)
+        self.assertIn("signed_mixed_word", text)
         self.assertIn("expected_o_word_dense_qk", text)
         self.assertIn("input integer causal_mode", text)
         self.assertIn("global_k_idx <= global_q_idx", text)
         self.assertIn("reg [15:0] expected_o_cache [0:16383]", text)
         self.assertIn("cache_q_tile_i < 64", text)
-        self.assertIn("numeric=dense_qk_reference causal=%0d", text)
+        self.assertIn("numeric=%0s causal=%0d", text)
         self.assertIn("expected_windowed_kv_tile_count", text)
         self.assertIn("CAUSAL_MODE ? 32'd544 : 32'd1024", text)
         self.assertIn("expected_windowed_kv_window_count", text)
@@ -674,7 +712,7 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("32'd32768", text)
         self.assertNotIn("windowed top should keep AXI master idle", text)
         self.assertNotIn("windowed top should keep AXI write master idle", text)
-        self.assertIn("numeric=dense_qk_reference", text)
+        self.assertIn('numeric_mode_name = "dense_qk_reference"', text)
 
     def test_optim_packed_negative_smoke_covers_pv_feeder_reuse(self):
         text = read_rtl_smoke("fa_optim_sa_pipeline_packed_negative_tb.v")

@@ -4,13 +4,15 @@ module GEMM_V3 #(
 	parameter PACK_LANES    = 4,
 	parameter X_DIM         = 4 ,
 	parameter Y_DIM         = 4 ,
-	parameter OUTPUT_BY_ROW = 1
+	parameter OUTPUT_BY_ROW = 1,
+	parameter ACC_COUNT_WIDTH = WIDTH,
+	parameter GROUP_IDX_WIDTH = 32
 ) (
 	input  wire                   clk                  ,
 	input  wire                   rstn                 ,
 	input  wire                   clear                ,
 	input  wire                   start                ,
-	input  wire [      WIDTH-1:0] num_acc              ,
+	input  wire [ACC_COUNT_WIDTH-1:0] num_acc          ,
 	input  wire                   a_valid              ,
 	output wire                   a_ready              ,
 	input  wire [X_DIM*WIDTH-1:0] a                    ,
@@ -21,7 +23,7 @@ module GEMM_V3 #(
 	output                        wire [((OUTPUT_BY_ROW  != 0) ? Y_DIM : X_DIM)*4*WIDTH-1:0] m_group_data,
 	output wire                   m_group_valid        ,
 	input  wire                   m_group_ready        ,
-	output wire [           31:0] m_group_idx          ,
+	output wire [GROUP_IDX_WIDTH-1:0] m_group_idx      ,
 	output wire                   m_last
 );
 
@@ -29,7 +31,7 @@ module GEMM_V3 #(
 	localparam integer GROUP_SIZE  = (OUTPUT_BY_ROW != 0) ? Y_DIM : X_DIM;
 	localparam integer GROUP_COUNT = (OUTPUT_BY_ROW != 0) ? X_DIM : Y_DIM;
 
-	reg [31:0] stream_idx;
+	reg [GROUP_IDX_WIDTH-1:0] stream_idx;
 	localparam integer TILE_COUNT_W = 2;
 	reg [TILE_COUNT_W-1:0] ready_tile_count_r;
 
@@ -128,7 +130,8 @@ module GEMM_V3 #(
 				GEMU_V3 #(
 					.WIDTH(WIDTH),
 					.ELEM_WIDTH(ELEM_WIDTH),
-					.PACK_LANES(PACK_LANES)
+					.PACK_LANES(PACK_LANES),
+					.ACC_COUNT_WIDTH(ACC_COUNT_WIDTH)
 				) gemu_unit (
 					.clk    (clk                     ),
 					.rstn   (rstn                    ),

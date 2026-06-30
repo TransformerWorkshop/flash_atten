@@ -64,6 +64,7 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     localparam integer HEAD_DIM = 64;
     localparam integer Q_GROUP_ROWS = 64;
     localparam integer Q_TILE_ROWS = 4;
+    localparam integer STATE_GROUP_ROWS = 4;
     localparam integer Q_TILES_PER_GROUP = 16;
     localparam integer Q_GROUP_COUNT = 4;
     localparam integer KV_TILE_COUNT = 16;
@@ -72,25 +73,30 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     localparam integer Q_TILE_BEATS = 64;
     localparam integer K_TILE_BEATS = 256;
     localparam integer V_TILE_BEATS = 256;
-    localparam integer K_SRAM_BANK_COUNT = 16;
-    localparam integer V_SRAM_BANK_COUNT = 16;
+    localparam integer K_SRAM_BANK_COUNT = 8;
+    localparam integer V_SRAM_BANK_COUNT = 8;
+    localparam integer OACC_SRAM_BANK_COUNT = 4;
+    localparam integer OACC_CHUNKS_PER_Q_TILE = 16;
     localparam integer O_DUMP_WORDS_PER_GROUP = 2048;
 
-    localparam [3:0] ST_IDLE        = 4'd0;
-    localparam [3:0] ST_GROUP_START = 4'd1;
-    localparam [3:0] ST_K_LOAD_REQ  = 4'd2;
-    localparam [3:0] ST_K_LOAD_WAIT = 4'd3;
-    localparam [3:0] ST_V_LOAD_REQ  = 4'd4;
-    localparam [3:0] ST_V_LOAD_WAIT = 4'd5;
-    localparam [3:0] ST_Q_LOAD_REQ  = 4'd6;
-    localparam [3:0] ST_Q_LOAD_WAIT = 4'd7;
-    localparam [3:0] ST_START_TILE  = 4'd8;
-    localparam [3:0] ST_WAIT_TILE   = 4'd9;
-    localparam [3:0] ST_DUMP_GROUP  = 4'd10;
-    localparam [3:0] ST_DONE        = 4'd11;
+    localparam [4:0] ST_IDLE           = 5'd0;
+    localparam [4:0] ST_GROUP_START    = 5'd1;
+    localparam [4:0] ST_K_LOAD_REQ     = 5'd2;
+    localparam [4:0] ST_K_LOAD_WAIT    = 5'd3;
+    localparam [4:0] ST_V_LOAD_REQ     = 5'd4;
+    localparam [4:0] ST_V_LOAD_WAIT    = 5'd5;
+    localparam [4:0] ST_Q_LOAD_REQ     = 5'd6;
+    localparam [4:0] ST_Q_LOAD_WAIT    = 5'd7;
+    localparam [4:0] ST_RESTORE_O_REQ  = 5'd8;
+    localparam [4:0] ST_RESTORE_O_WAIT = 5'd9;
+    localparam [4:0] ST_START_TILE     = 5'd10;
+    localparam [4:0] ST_WAIT_TILE      = 5'd11;
+    localparam [4:0] ST_SPILL_O_WRITE  = 5'd12;
+    localparam [4:0] ST_DUMP_GROUP     = 5'd13;
+    localparam [4:0] ST_DONE           = 5'd14;
 
-    reg [3:0] state_r;
-    reg [3:0] state_n;
+    reg [4:0] state_r;
+    reg [4:0] state_n;
     reg [1:0] q_group_idx_r;
     reg [1:0] kv_window_idx_r;
     reg [1:0] kv_load_slot_idx_r;
@@ -122,11 +128,21 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     reg [31:0] pv_task_count_r;
     reg [31:0] oacc_task_count_r;
     reg [4095:0] q_block_flat_r;
+    reg [4095:0] q_tile_o_restore_flat_r;
     reg [KV_WINDOW_TILES-1:0] kv_window_resident_valid_r;
-    reg [511:0] q_tile_m_state_r [0:Q_TILES_PER_GROUP-1];
-    reg [511:0] q_tile_l_state_r [0:Q_TILES_PER_GROUP-1];
-    reg [15:0] q_tile_row_seen_r [0:Q_TILES_PER_GROUP-1];
-    reg [4095:0] q_tile_o_state_r [0:Q_TILES_PER_GROUP-1];
+    reg [127:0] q_tile_m_state_r [0:Q_TILES_PER_GROUP-1];
+    reg [127:0] q_tile_l_state_r [0:Q_TILES_PER_GROUP-1];
+    reg [3:0] q_tile_row_seen_r [0:Q_TILES_PER_GROUP-1];
+    reg [3:0] oacc_chunk_idx_r;
+    reg [255:0] o_dump_chunk_r;
+    reg o_dump_chunk_valid_r;
+    reg o_dump_read_pending_r;
+    reg k_tile_load_done_pending_r;
+    reg k_pack_pending_r;
+    reg [2:0] k_pack_pending_bank_idx_r;
+    reg [7:0] k_pack_pending_addr_r;
+    reg [63:0] k_pack_pending_data_r;
+    reg [63:0] k_pack_pending_mask_r;
 
     wire [5:0] q_group_base_tile_idx_w = {q_group_idx_r, 4'd0};
     wire [5:0] q_current_tile_idx_w = q_group_base_tile_idx_w + {2'd0, q_tile_in_group_idx_r};
@@ -143,8 +159,6 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     wire group_is_last_group_w = (q_group_idx_r == (Q_GROUP_COUNT - 1));
     wire o_dump_fire_w = o_dump_valid && o_dump_ready;
     wire o_dump_last_word_w = (o_dump_word_idx_r == (O_DUMP_WORDS_PER_GROUP - 1));
-    wire [3:0] o_dump_q_tile_idx_w = o_dump_word_idx_r[10:7];
-    wire [6:0] o_dump_word_in_tile_w = o_dump_word_idx_r[6:0];
 
     wire q_tile_req_fire_w = q_tile_req_valid && q_tile_req_ready;
     wire q_tile_beat_fire_w = q_tile_beat_valid && q_tile_beat_ready;
@@ -156,6 +170,7 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     wire k_tile_beat_fire_w = k_tile_beat_valid && k_tile_beat_ready;
     wire k_tile_last_beat_count_w = (k_tile_load_count_r == (K_TILE_BEATS - 1));
     wire k_tile_load_done_w = k_tile_beat_fire_w && k_tile_last_beat_count_w;
+    wire k_tile_all_writes_done_w = k_tile_load_done_pending_r && k_pack_pending_r;
     wire k_tile_last_mismatch_w = k_tile_beat_fire_w
                                 && (k_tile_beat_last != k_tile_last_beat_count_w);
     wire v_tile_req_fire_w = v_tile_req_valid && v_tile_req_ready;
@@ -189,35 +204,75 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     wire [31:0] micro_row_state_task_count_w;
     wire [31:0] micro_pv_task_count_w;
     wire [31:0] micro_oacc_task_count_w;
-    wire [511:0] micro_snapshot_m_state_w;
-    wire [511:0] micro_snapshot_l_state_w;
-    wire [15:0] micro_snapshot_row_seen_w;
+    wire [127:0] micro_snapshot_m_state_w;
+    wire [127:0] micro_snapshot_l_state_w;
+    wire [3:0] micro_snapshot_row_seen_w;
 
-    wire [3:0] k_sram_wr_bank_idx_w = k_tile_beat_row_idx;
-    wire [3:0] k_sram_wr_row_idx_w = {2'd0, kv_load_slot_idx_r};
-    wire [3:0] k_sram_wr_chunk_idx_w = k_tile_beat_chunk_idx;
+    wire [2:0] k_sram_direct_wr_bank_idx_w = k_tile_beat_row_idx[3:1];
+    wire [7:0] k_sram_direct_pair0_addr_w =
+        {1'b0, kv_load_slot_idx_r, k_tile_beat_chunk_idx, 1'b0};
+    wire [7:0] k_sram_direct_pair1_addr_w =
+        {1'b0, kv_load_slot_idx_r, k_tile_beat_chunk_idx, 1'b1};
+    wire [63:0] k_sram_direct_wr_mask_w =
+        k_tile_beat_row_idx[0] ? 64'hffff_ffff_0000_0000 :
+                                 64'h0000_0000_ffff_ffff;
+    wire [63:0] k_sram_direct_pair0_data_w =
+        k_tile_beat_row_idx[0] ? {k_tile_beat_data[31:0], 32'd0} :
+                                 {32'd0, k_tile_beat_data[31:0]};
+    wire [63:0] k_sram_direct_pair1_data_w =
+        k_tile_beat_row_idx[0] ? {k_tile_beat_data[63:32], 32'd0} :
+                                 {32'd0, k_tile_beat_data[63:32]};
+    wire [2:0] k_sram_wr_bank_idx_w =
+        k_pack_pending_r ? k_pack_pending_bank_idx_r : k_sram_direct_wr_bank_idx_w;
+    wire [7:0] k_sram_wr_addr_w =
+        k_pack_pending_r ? k_pack_pending_addr_r : k_sram_direct_pair0_addr_w;
+    wire [63:0] k_sram_wr_data_w =
+        k_pack_pending_r ? k_pack_pending_data_r : k_sram_direct_pair0_data_w;
+    wire [63:0] k_sram_wr_mask_w =
+        k_pack_pending_r ? k_pack_pending_mask_r : k_sram_direct_wr_mask_w;
+    wire k_sram_wr_fire_w = k_pack_pending_r || k_tile_beat_fire_w;
     wire [3:0] k_sram_rd_slot_idx_w = micro_k_rd_req_kv_idx_w - core_kv_base_idx_w;
-    wire [3:0] k_sram_rd_row_idx_w = {2'd0, k_sram_rd_slot_idx_w[1:0]};
-    wire [3:0] k_sram_rd_chunk_idx_w = micro_k_rd_req_pair_idx_w[4:1];
+    wire [7:0] k_sram_rd_addr_w =
+        {1'b0, k_sram_rd_slot_idx_w[1:0], micro_k_rd_req_pair_idx_w[4:1],
+         micro_k_rd_req_pair_idx_w[0]};
     wire [K_SRAM_BANK_COUNT-1:0] k_sram_wr_en_w;
     wire [K_SRAM_BANK_COUNT-1:0] k_sram_rd_valid_w;
     wire [15:0] k_sram_selected_rd_valid_w;
     wire [63:0] k_sram_rd_data_w [0:K_SRAM_BANK_COUNT-1];
     wire k_sram_rd_fire_w;
-    reg [4:0] k_sram_rd_resp_pair_idx_r;
 
-    wire [3:0] v_sram_wr_bank_idx_w = {kv_load_slot_idx_r[1], v_tile_beat_row_idx[0], v_tile_beat_chunk_idx[1:0]};
-    wire [3:0] v_sram_wr_row_idx_w = {1'b0, kv_load_slot_idx_r, v_tile_beat_row_idx[3]};
-    wire [3:0] v_sram_wr_chunk_idx_w = {v_tile_beat_row_idx[2:1], v_tile_beat_chunk_idx[3:2]};
+    wire [2:0] v_sram_wr_bank_idx_w =
+        {v_tile_beat_row_idx[0], v_tile_beat_chunk_idx[1:0]};
+    wire [7:0] v_sram_wr_addr_w =
+        {1'b0, kv_load_slot_idx_r, v_tile_beat_row_idx[3],
+         v_tile_beat_row_idx[2:1], v_tile_beat_chunk_idx[3:2]};
     wire [3:0] v_sram_rd_slot_idx_w = micro_v_rd_req_kv_idx_w - core_kv_base_idx_w;
-    wire [3:0] v_sram_rd_row_idx_w = {1'b0, v_sram_rd_slot_idx_w[1:0], micro_v_rd_req_pair_idx_w[2]};
-    wire [3:0] v_sram_rd_chunk_idx_w = {micro_v_rd_req_pair_idx_w[1:0], micro_v_rd_req_wave_idx_w};
+    wire [7:0] v_sram_rd_addr_w =
+        {1'b0, v_sram_rd_slot_idx_w[1:0], micro_v_rd_req_pair_idx_w[2],
+         micro_v_rd_req_pair_idx_w[1:0], micro_v_rd_req_wave_idx_w};
     wire [V_SRAM_BANK_COUNT-1:0] v_sram_wr_en_w;
     wire [V_SRAM_BANK_COUNT-1:0] v_sram_rd_valid_w;
     wire [7:0] v_sram_selected_rd_valid_w;
     wire [63:0] v_sram_rd_data_w [0:V_SRAM_BANK_COUNT-1];
     wire v_sram_rd_fire_w;
-    reg [4:0] v_sram_rd_resp_kv_idx_r;
+
+    wire [7:0] oacc_state_word_idx_w =
+        {q_tile_in_group_idx_r, oacc_chunk_idx_r};
+    wire [7:0] oacc_dump_word_idx_w = o_dump_word_idx_r[10:3];
+    wire [2:0] o_dump_word_in_chunk_w = o_dump_word_idx_r[2:0];
+    wire oacc_last_chunk_w = (oacc_chunk_idx_r == (OACC_CHUNKS_PER_Q_TILE - 1));
+    wire o_dump_last_word_in_chunk_w = (o_dump_word_in_chunk_w == 3'd7);
+    wire oacc_sram_dump_rd_en_w =
+        (state_r == ST_DUMP_GROUP) && !o_dump_chunk_valid_r && !o_dump_read_pending_r;
+    wire oacc_sram_restore_rd_en_w = (state_r == ST_RESTORE_O_REQ);
+    wire oacc_sram_rd_en_w = oacc_sram_restore_rd_en_w || oacc_sram_dump_rd_en_w;
+    wire [7:0] oacc_sram_rd_word_idx_w =
+        oacc_sram_restore_rd_en_w ? oacc_state_word_idx_w : oacc_dump_word_idx_w;
+    wire oacc_sram_wr_en_w = (state_r == ST_SPILL_O_WRITE);
+    wire [255:0] oacc_sram_wr_data_w =
+        o_block_flat[(oacc_chunk_idx_r * 256) +: 256];
+    wire oacc_sram_rd_valid_w;
+    wire [255:0] oacc_sram_rd_data_w;
 
     wire window_resident_valid_w = &kv_window_resident_valid_r;
     wire [1:0] micro_k_rd_window_slot_idx_w = k_sram_rd_slot_idx_w[1:0];
@@ -234,7 +289,11 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     wire config_invalid_w = (SEQ_LEN != 256)
                           || (HEAD_DIM != 64)
                           || (Q_TILE_ROWS != 4)
+                          || (STATE_GROUP_ROWS != 4)
                           || (KV_TILE_COUNT != 16)
+                          || (K_SRAM_BANK_COUNT != 8)
+                          || (V_SRAM_BANK_COUNT != 8)
+                          || (OACC_SRAM_BANK_COUNT != 4)
                           || unused_micro_counts_w;
 
     integer q_tile_state_i;
@@ -244,7 +303,7 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     assign q_tile_beat_ready = (state_r == ST_Q_LOAD_WAIT);
     assign k_tile_req_valid = (state_r == ST_K_LOAD_REQ);
     assign k_tile_req_kv_idx = kv_load_tile_idx_w;
-    assign k_tile_beat_ready = (state_r == ST_K_LOAD_WAIT);
+    assign k_tile_beat_ready = (state_r == ST_K_LOAD_WAIT) && !k_pack_pending_r;
     assign v_tile_req_valid = (state_r == ST_V_LOAD_REQ);
     assign v_tile_req_kv_idx = kv_load_tile_idx_w;
     assign v_tile_beat_ready = (state_r == ST_V_LOAD_WAIT);
@@ -285,7 +344,7 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
         .restore_m_state_flat(q_tile_m_state_r[q_tile_in_group_idx_r]),
         .restore_l_state_flat(q_tile_l_state_r[q_tile_in_group_idx_r]),
         .restore_row_seen(q_tile_row_seen_r[q_tile_in_group_idx_r]),
-        .restore_o_tile_flat(q_tile_o_state_r[q_tile_in_group_idx_r]),
+        .restore_o_tile_flat(q_tile_o_restore_flat_r),
         .k_rd_req_valid(micro_k_rd_req_valid_w),
         .k_rd_req_ready(micro_k_rd_req_ready_w),
         .k_rd_req_kv_idx(micro_k_rd_req_kv_idx_w),
@@ -320,11 +379,10 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     assign micro_k_rd_resp_valid_w = &k_sram_selected_rd_valid_w;
     assign micro_v_rd_req_ready_w = (state_r == ST_WAIT_TILE) && current_v_rd_resident_w;
     assign micro_v_rd_resp_valid_w = &v_sram_selected_rd_valid_w;
-    assign o_dump_valid = (state_r == ST_DUMP_GROUP);
+    assign o_dump_valid = (state_r == ST_DUMP_GROUP) && o_dump_chunk_valid_r;
     assign o_dump_group_idx = o_dump_group_idx_r;
     assign o_dump_word_idx = o_dump_word_idx_r;
-    assign o_dump_word = q_tile_o_state_r[o_dump_q_tile_idx_w]
-                       [(o_dump_word_in_tile_w * 32) +: 32];
+    assign o_dump_word = o_dump_chunk_r[(o_dump_word_in_chunk_w * 32) +: 32];
     assign o_dump_last = o_dump_last_word_w;
     assign k_sram_rd_fire_w = micro_k_rd_req_valid_w && micro_k_rd_req_ready_w;
     assign v_sram_rd_fire_w = micro_v_rd_req_valid_w && micro_v_rd_req_ready_w;
@@ -332,27 +390,27 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     genvar bank_gi;
     generate
         for (bank_gi = 0; bank_gi < K_SRAM_BANK_COUNT; bank_gi = bank_gi + 1) begin : gen_k_tile_sram_bank
-            localparam [3:0] BANK_IDX = bank_gi[3:0];
+            localparam [2:0] BANK_IDX = bank_gi[2:0];
             assign k_sram_wr_en_w[bank_gi] =
-                k_tile_beat_fire_w && (k_sram_wr_bank_idx_w == BANK_IDX);
+                k_sram_wr_fire_w && (k_sram_wr_bank_idx_w == BANK_IDX);
             FA_LOCAL_TILE_SRAM_16X64X16 u_k_tile_sram (
                 .clk(clk),
                 .rstn(rstn),
                 .clear(clear),
                 .wr_en(k_sram_wr_en_w[bank_gi]),
-                .wr_row_idx(k_sram_wr_row_idx_w),
-                .wr_chunk_idx(k_sram_wr_chunk_idx_w),
-                .wr_data(k_tile_beat_data),
-                .wr_mask(64'hffff_ffff_ffff_ffff),
+                .wr_row_idx(k_sram_wr_addr_w[7:4]),
+                .wr_chunk_idx(k_sram_wr_addr_w[3:0]),
+                .wr_data(k_sram_wr_data_w),
+                .wr_mask(k_sram_wr_mask_w),
                 .rd_en(k_sram_rd_fire_w),
-                .rd_row_idx(k_sram_rd_row_idx_w),
-                .rd_chunk_idx(k_sram_rd_chunk_idx_w),
+                .rd_row_idx(k_sram_rd_addr_w[7:4]),
+                .rd_chunk_idx(k_sram_rd_addr_w[3:0]),
                 .rd_valid(k_sram_rd_valid_w[bank_gi]),
                 .rd_data(k_sram_rd_data_w[bank_gi])
             );
         end
         for (bank_gi = 0; bank_gi < V_SRAM_BANK_COUNT; bank_gi = bank_gi + 1) begin : gen_v_tile_sram_bank
-            localparam [3:0] BANK_IDX = bank_gi[3:0];
+            localparam [2:0] BANK_IDX = bank_gi[2:0];
             assign v_sram_wr_en_w[bank_gi] =
                 v_tile_beat_fire_w && (v_sram_wr_bank_idx_w == BANK_IDX);
             FA_LOCAL_TILE_SRAM_16X64X16 u_v_tile_sram (
@@ -360,26 +418,40 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
                 .rstn(rstn),
                 .clear(clear),
                 .wr_en(v_sram_wr_en_w[bank_gi]),
-                .wr_row_idx(v_sram_wr_row_idx_w),
-                .wr_chunk_idx(v_sram_wr_chunk_idx_w),
+                .wr_row_idx(v_sram_wr_addr_w[7:4]),
+                .wr_chunk_idx(v_sram_wr_addr_w[3:0]),
                 .wr_data(v_tile_beat_data),
                 .wr_mask(64'hffff_ffff_ffff_ffff),
                 .rd_en(v_sram_rd_fire_w),
-                .rd_row_idx(v_sram_rd_row_idx_w),
-                .rd_chunk_idx(v_sram_rd_chunk_idx_w),
+                .rd_row_idx(v_sram_rd_addr_w[7:4]),
+                .rd_chunk_idx(v_sram_rd_addr_w[3:0]),
                 .rd_valid(v_sram_rd_valid_w[bank_gi]),
                 .rd_data(v_sram_rd_data_w[bank_gi])
             );
         end
     endgenerate
 
+    FA_OACC_GROUP_SRAM_64X64X16 u_oacc_group_sram (
+        .clk(clk),
+        .rstn(rstn),
+        .clear(clear),
+        .wr_en(oacc_sram_wr_en_w),
+        .wr_word_idx(oacc_state_word_idx_w),
+        .wr_data(oacc_sram_wr_data_w),
+        .wr_mask(256'hffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff),
+        .rd_en(oacc_sram_rd_en_w),
+        .rd_word_idx(oacc_sram_rd_word_idx_w),
+        .rd_valid(oacc_sram_rd_valid_w),
+        .rd_data(oacc_sram_rd_data_w)
+    );
+
     genvar k_row_gi;
     generate
         for (k_row_gi = 0; k_row_gi < 16; k_row_gi = k_row_gi + 1) begin : gen_k_read_pack
-            localparam integer K_ELEM_BANK = k_row_gi;
+            localparam integer K_ELEM_BANK = k_row_gi / 2;
             assign k_sram_selected_rd_valid_w[k_row_gi] = k_sram_rd_valid_w[K_ELEM_BANK];
             assign micro_k_rd_resp_data_w[(k_row_gi * 32) +: 32] =
-                (k_sram_rd_resp_pair_idx_r[0] == 1'b0) ?
+                ((k_row_gi % 2) == 0) ?
                 k_sram_rd_data_w[K_ELEM_BANK][31:0] :
                 k_sram_rd_data_w[K_ELEM_BANK][63:32];
         end
@@ -389,20 +461,14 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     generate
         for (v_pair_word_gi = 0; v_pair_word_gi < 8; v_pair_word_gi = v_pair_word_gi + 1) begin : gen_v_valid_pack
             assign v_sram_selected_rd_valid_w[v_pair_word_gi] =
-                (v_sram_rd_resp_kv_idx_r[1] == 1'b0) ?
-                v_sram_rd_valid_w[v_pair_word_gi] :
-                v_sram_rd_valid_w[8 + v_pair_word_gi];
+                v_sram_rd_valid_w[v_pair_word_gi];
         end
         for (v_pair_word_gi = 0; v_pair_word_gi < 16; v_pair_word_gi = v_pair_word_gi + 1) begin : gen_v_read_pack
             localparam integer V_CHUNK_IDX = v_pair_word_gi / 4;
             localparam integer V_ELEM_IDX = v_pair_word_gi % 4;
             assign micro_v_rd_resp_data_w[(v_pair_word_gi * 32) +: 32] = {
-                ((v_sram_rd_resp_kv_idx_r[1] == 1'b0) ?
-                    v_sram_rd_data_w[4 + V_CHUNK_IDX][(V_ELEM_IDX * 16) +: 16] :
-                    v_sram_rd_data_w[12 + V_CHUNK_IDX][(V_ELEM_IDX * 16) +: 16]),
-                ((v_sram_rd_resp_kv_idx_r[1] == 1'b0) ?
-                    v_sram_rd_data_w[V_CHUNK_IDX][(V_ELEM_IDX * 16) +: 16] :
-                    v_sram_rd_data_w[8 + V_CHUNK_IDX][(V_ELEM_IDX * 16) +: 16])
+                v_sram_rd_data_w[4 + V_CHUNK_IDX][(V_ELEM_IDX * 16) +: 16],
+                v_sram_rd_data_w[V_CHUNK_IDX][(V_ELEM_IDX * 16) +: 16]
             };
         end
     endgenerate
@@ -430,7 +496,7 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
             ST_K_LOAD_WAIT: begin
                 if (k_tile_last_mismatch_w) begin
                     state_n = ST_DONE;
-                end else if (k_tile_load_done_w) begin
+                end else if (k_tile_all_writes_done_w) begin
                     state_n = ST_V_LOAD_REQ;
                 end
             end
@@ -459,7 +525,23 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
                 if (q_tile_last_mismatch_w) begin
                     state_n = ST_DONE;
                 end else if (q_tile_load_done_w) begin
-                    state_n = ST_START_TILE;
+                    if (core_first_kv_window_w) begin
+                        state_n = ST_START_TILE;
+                    end else begin
+                        state_n = ST_RESTORE_O_REQ;
+                    end
+                end
+            end
+            ST_RESTORE_O_REQ: begin
+                state_n = ST_RESTORE_O_WAIT;
+            end
+            ST_RESTORE_O_WAIT: begin
+                if (oacc_sram_rd_valid_w) begin
+                    if (oacc_last_chunk_w) begin
+                        state_n = ST_START_TILE;
+                    end else begin
+                        state_n = ST_RESTORE_O_REQ;
+                    end
                 end
             end
             ST_START_TILE: begin
@@ -469,7 +551,14 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
                 if (micro_done_w) begin
                     if (micro_error_w) begin
                         state_n = ST_DONE;
-                    end else if (window_is_last_q_tile_w) begin
+                    end else begin
+                        state_n = ST_SPILL_O_WRITE;
+                    end
+                end
+            end
+            ST_SPILL_O_WRITE: begin
+                if (oacc_last_chunk_w) begin
+                    if (window_is_last_q_tile_w) begin
                         if (group_effective_last_window_w) begin
                             state_n = ST_DUMP_GROUP;
                         end else begin
@@ -541,14 +630,22 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
             o_dump_word_idx_r <= 11'd0;
             core_start_r <= 1'b0;
             q_block_flat_r <= 4096'd0;
+            q_tile_o_restore_flat_r <= 4096'd0;
             kv_window_resident_valid_r <= {KV_WINDOW_TILES{1'b0}};
-            k_sram_rd_resp_pair_idx_r <= 5'd0;
-            v_sram_rd_resp_kv_idx_r <= 5'd0;
+            oacc_chunk_idx_r <= 4'd0;
+            o_dump_chunk_r <= 256'd0;
+            o_dump_chunk_valid_r <= 1'b0;
+            o_dump_read_pending_r <= 1'b0;
+            k_tile_load_done_pending_r <= 1'b0;
+            k_pack_pending_r <= 1'b0;
+            k_pack_pending_bank_idx_r <= 3'd0;
+            k_pack_pending_addr_r <= 8'd0;
+            k_pack_pending_data_r <= 64'd0;
+            k_pack_pending_mask_r <= 64'd0;
             for (q_tile_state_i = 0; q_tile_state_i < Q_TILES_PER_GROUP; q_tile_state_i = q_tile_state_i + 1) begin
-                q_tile_m_state_r[q_tile_state_i] <= 512'd0;
-                q_tile_l_state_r[q_tile_state_i] <= 512'd0;
-                q_tile_row_seen_r[q_tile_state_i] <= 16'd0;
-                q_tile_o_state_r[q_tile_state_i] <= 4096'd0;
+                q_tile_m_state_r[q_tile_state_i] <= 128'd0;
+                q_tile_l_state_r[q_tile_state_i] <= 128'd0;
+                q_tile_row_seen_r[q_tile_state_i] <= 4'd0;
             end
         end else if (clear) begin
             busy_r <= 1'b0;
@@ -582,26 +679,26 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
             o_dump_word_idx_r <= 11'd0;
             core_start_r <= 1'b0;
             q_block_flat_r <= 4096'd0;
+            q_tile_o_restore_flat_r <= 4096'd0;
             kv_window_resident_valid_r <= {KV_WINDOW_TILES{1'b0}};
-            k_sram_rd_resp_pair_idx_r <= 5'd0;
-            v_sram_rd_resp_kv_idx_r <= 5'd0;
+            oacc_chunk_idx_r <= 4'd0;
+            o_dump_chunk_r <= 256'd0;
+            o_dump_chunk_valid_r <= 1'b0;
+            o_dump_read_pending_r <= 1'b0;
+            k_tile_load_done_pending_r <= 1'b0;
+            k_pack_pending_r <= 1'b0;
+            k_pack_pending_bank_idx_r <= 3'd0;
+            k_pack_pending_addr_r <= 8'd0;
+            k_pack_pending_data_r <= 64'd0;
+            k_pack_pending_mask_r <= 64'd0;
             for (q_tile_state_i = 0; q_tile_state_i < Q_TILES_PER_GROUP; q_tile_state_i = q_tile_state_i + 1) begin
-                q_tile_m_state_r[q_tile_state_i] <= 512'd0;
-                q_tile_l_state_r[q_tile_state_i] <= 512'd0;
-                q_tile_row_seen_r[q_tile_state_i] <= 16'd0;
-                q_tile_o_state_r[q_tile_state_i] <= 4096'd0;
+                q_tile_m_state_r[q_tile_state_i] <= 128'd0;
+                q_tile_l_state_r[q_tile_state_i] <= 128'd0;
+                q_tile_row_seen_r[q_tile_state_i] <= 4'd0;
             end
         end else begin
             done_r <= 1'b0;
             core_start_r <= 1'b0;
-
-            if (k_sram_rd_fire_w) begin
-                k_sram_rd_resp_pair_idx_r <= micro_k_rd_req_pair_idx_w;
-            end
-
-            if (v_sram_rd_fire_w) begin
-                v_sram_rd_resp_kv_idx_r <= {3'd0, micro_v_rd_window_slot_idx_w};
-            end
 
             if (busy_r) begin
                 cycles_r <= cycles_r + 32'd1;
@@ -637,11 +734,21 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
                 o_dump_group_idx_r <= 2'd0;
                 o_dump_word_idx_r <= 11'd0;
                 kv_window_resident_valid_r <= {KV_WINDOW_TILES{1'b0}};
+                q_tile_o_restore_flat_r <= 4096'd0;
+                oacc_chunk_idx_r <= 4'd0;
+                o_dump_chunk_r <= 256'd0;
+                o_dump_chunk_valid_r <= 1'b0;
+                o_dump_read_pending_r <= 1'b0;
+                k_tile_load_done_pending_r <= 1'b0;
+                k_pack_pending_r <= 1'b0;
+                k_pack_pending_bank_idx_r <= 3'd0;
+                k_pack_pending_addr_r <= 8'd0;
+                k_pack_pending_data_r <= 64'd0;
+                k_pack_pending_mask_r <= 64'd0;
                 for (q_tile_state_i = 0; q_tile_state_i < Q_TILES_PER_GROUP; q_tile_state_i = q_tile_state_i + 1) begin
-                    q_tile_m_state_r[q_tile_state_i] <= 512'd0;
-                    q_tile_l_state_r[q_tile_state_i] <= 512'd0;
-                    q_tile_row_seen_r[q_tile_state_i] <= 16'd0;
-                    q_tile_o_state_r[q_tile_state_i] <= 4096'd0;
+                    q_tile_m_state_r[q_tile_state_i] <= 128'd0;
+                    q_tile_l_state_r[q_tile_state_i] <= 128'd0;
+                    q_tile_row_seen_r[q_tile_state_i] <= 4'd0;
                 end
             end
 
@@ -651,26 +758,48 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
                 kv_load_slot_idx_r <= 2'd0;
                 q_tile_in_group_idx_r <= 4'd0;
                 kv_window_resident_valid_r <= {KV_WINDOW_TILES{1'b0}};
+                q_tile_o_restore_flat_r <= 4096'd0;
+                oacc_chunk_idx_r <= 4'd0;
+                o_dump_chunk_r <= 256'd0;
+                o_dump_chunk_valid_r <= 1'b0;
+                o_dump_read_pending_r <= 1'b0;
+                k_tile_load_done_pending_r <= 1'b0;
+                k_pack_pending_r <= 1'b0;
                 for (q_tile_state_i = 0; q_tile_state_i < Q_TILES_PER_GROUP; q_tile_state_i = q_tile_state_i + 1) begin
-                    q_tile_m_state_r[q_tile_state_i] <= 512'd0;
-                    q_tile_l_state_r[q_tile_state_i] <= 512'd0;
-                    q_tile_row_seen_r[q_tile_state_i] <= 16'd0;
-                    q_tile_o_state_r[q_tile_state_i] <= 4096'd0;
+                    q_tile_m_state_r[q_tile_state_i] <= 128'd0;
+                    q_tile_l_state_r[q_tile_state_i] <= 128'd0;
+                    q_tile_row_seen_r[q_tile_state_i] <= 4'd0;
                 end
             end
 
             if (k_tile_req_fire_w) begin
                 k_tile_req_count_r <= k_tile_req_count_r + 32'd1;
                 k_tile_load_count_r <= 9'd0;
+                k_tile_load_done_pending_r <= 1'b0;
+                k_pack_pending_r <= 1'b0;
+            end
+
+            if (k_pack_pending_r) begin
+                k_pack_pending_r <= 1'b0;
+                if (k_tile_load_done_pending_r) begin
+                    k_tile_load_done_pending_r <= 1'b0;
+                end
             end
 
             if (k_tile_beat_fire_w) begin
                 k_tile_beat_count_r <= k_tile_beat_count_r + 32'd1;
+                k_pack_pending_r <= 1'b1;
+                k_pack_pending_bank_idx_r <= k_sram_direct_wr_bank_idx_w;
+                k_pack_pending_addr_r <= k_sram_direct_pair1_addr_w;
+                k_pack_pending_data_r <= k_sram_direct_pair1_data_w;
+                k_pack_pending_mask_r <= k_sram_direct_wr_mask_w;
                 if (k_tile_last_mismatch_w) begin
                     error_r <= 1'b1;
                     k_tile_load_count_r <= 9'd0;
+                    k_tile_load_done_pending_r <= 1'b0;
                 end else if (k_tile_last_beat_count_w) begin
                     k_tile_load_count_r <= 9'd0;
+                    k_tile_load_done_pending_r <= 1'b1;
                 end else begin
                     k_tile_load_count_r <= k_tile_load_count_r + 9'd1;
                 end
@@ -705,6 +834,8 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
                 q_tile_visit_count_r <= q_tile_visit_count_r + 32'd1;
                 state_fill_count_r <= state_fill_count_r + 32'd1;
                 q_tile_load_count_r <= 7'd0;
+                q_tile_o_restore_flat_r <= 4096'd0;
+                oacc_chunk_idx_r <= 4'd0;
             end
 
             if (q_tile_beat_fire_w) begin
@@ -726,6 +857,20 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
                 core_start_r <= 1'b1;
             end
 
+            if (state_r == ST_RESTORE_O_REQ && (oacc_chunk_idx_r == 4'd0)) begin
+                q_tile_o_restore_flat_r <= 4096'd0;
+            end
+
+            if (state_r == ST_RESTORE_O_WAIT && oacc_sram_rd_valid_w) begin
+                q_tile_o_restore_flat_r[(oacc_chunk_idx_r * 256) +: 256] <=
+                    oacc_sram_rd_data_w;
+                if (oacc_last_chunk_w) begin
+                    oacc_chunk_idx_r <= 4'd0;
+                end else begin
+                    oacc_chunk_idx_r <= oacc_chunk_idx_r + 4'd1;
+                end
+            end
+
             if (state_r == ST_WAIT_TILE && micro_done_w) begin
                 micro_tile_count_r <= micro_tile_count_r + micro_tile_count_w;
                 kv_tile_count_r <= kv_tile_count_r + micro_kv_block_issue_count_w;
@@ -735,11 +880,17 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
                 if (micro_error_w) begin
                     error_r <= 1'b1;
                 end else begin
-                    state_spill_count_r <= state_spill_count_r + 32'd1;
                     q_tile_m_state_r[q_tile_in_group_idx_r] <= micro_snapshot_m_state_w;
                     q_tile_l_state_r[q_tile_in_group_idx_r] <= micro_snapshot_l_state_w;
                     q_tile_row_seen_r[q_tile_in_group_idx_r] <= micro_snapshot_row_seen_w;
-                    q_tile_o_state_r[q_tile_in_group_idx_r] <= o_block_flat;
+                    oacc_chunk_idx_r <= 4'd0;
+                end
+            end
+
+            if (state_r == ST_SPILL_O_WRITE) begin
+                if (oacc_last_chunk_w) begin
+                    state_spill_count_r <= state_spill_count_r + 32'd1;
+                    oacc_chunk_idx_r <= 4'd0;
                     if (window_is_last_q_tile_w) begin
                         q_tile_in_group_idx_r <= 4'd0;
                         kv_window_resident_valid_r <= {KV_WINDOW_TILES{1'b0}};
@@ -747,23 +898,44 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
                             kv_window_idx_r <= 2'd0;
                             o_dump_group_idx_r <= q_group_idx_r;
                             o_dump_word_idx_r <= 11'd0;
+                            o_dump_chunk_r <= 256'd0;
+                            o_dump_chunk_valid_r <= 1'b0;
+                            o_dump_read_pending_r <= 1'b0;
                         end else begin
                             kv_window_idx_r <= kv_window_idx_r + 1'b1;
                         end
                     end else begin
                         q_tile_in_group_idx_r <= q_tile_in_group_idx_r + 1'b1;
                     end
+                end else begin
+                    oacc_chunk_idx_r <= oacc_chunk_idx_r + 4'd1;
                 end
+            end
+
+            if (oacc_sram_dump_rd_en_w) begin
+                o_dump_read_pending_r <= 1'b1;
+            end
+
+            if (state_r == ST_DUMP_GROUP && oacc_sram_rd_valid_w &&
+                o_dump_read_pending_r) begin
+                o_dump_chunk_r <= oacc_sram_rd_data_w;
+                o_dump_chunk_valid_r <= 1'b1;
+                o_dump_read_pending_r <= 1'b0;
             end
 
             if (state_r == ST_DUMP_GROUP && o_dump_fire_w) begin
                 if (o_dump_last_word_w) begin
                     o_dump_word_idx_r <= 11'd0;
+                    o_dump_chunk_valid_r <= 1'b0;
+                    o_dump_read_pending_r <= 1'b0;
                     if (!group_is_last_group_w) begin
                         q_group_idx_r <= q_group_idx_r + 1'b1;
                     end
                 end else begin
                     o_dump_word_idx_r <= o_dump_word_idx_r + 11'd1;
+                    if (o_dump_last_word_in_chunk_w) begin
+                        o_dump_chunk_valid_r <= 1'b0;
+                    end
                 end
             end
 

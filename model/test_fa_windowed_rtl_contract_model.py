@@ -37,6 +37,7 @@ class WindowedRtlContractModelTest(unittest.TestCase):
         self.assertEqual(contract.counters.kv_tile_count, 1024)
         self.assertEqual(contract.counters.state_fill_count, 256)
         self.assertEqual(contract.counters.state_spill_count, 256)
+        self.assertEqual(contract.counters.state_restore_count, 192)
         self.assertEqual(contract.counters.core_start_count, 256)
         self.assertEqual(contract.counters.restore_start_count, 192)
         self.assertEqual(contract.counters.qk_task_count, 131072)
@@ -63,6 +64,7 @@ class WindowedRtlContractModelTest(unittest.TestCase):
         self.assertEqual(contract.counters.kv_tile_count, 544)
         self.assertEqual(contract.counters.state_fill_count, 160)
         self.assertEqual(contract.counters.state_spill_count, 160)
+        self.assertEqual(contract.counters.state_restore_count, 96)
         self.assertEqual(contract.counters.core_start_count, 160)
         self.assertEqual(contract.counters.restore_start_count, 96)
         self.assertEqual(contract.counters.skipped_future_kv_tiles, 480)
@@ -113,7 +115,7 @@ class WindowedRtlContractModelTest(unittest.TestCase):
 
         self.assertEqual(count_v_layout_roundtrip_errors(cfg), 0)
         self.assertGreater(
-            count_v_layout_roundtrip_errors(cfg, v_write_bank_uses_slot_high=False),
+            count_v_layout_roundtrip_errors(cfg, v_write_addr_uses_slot=False),
             0,
         )
 

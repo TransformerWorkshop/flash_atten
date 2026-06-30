@@ -1,7 +1,8 @@
 `timescale 1ns/1ps
 
 module fa_top_optim_windowed_tb #(
-    parameter integer CAUSAL_MODE = 0
+    parameter integer CAUSAL_MODE = 0,
+    parameter integer NUMERIC_MODE = 1
 );
     localparam [63:0] Q_BASE = 64'h0000_1000;
     localparam [63:0] K_BASE = 64'h0001_0000;
@@ -11,6 +12,8 @@ module fa_top_optim_windowed_tb #(
     localparam integer KV_TILE_BYTES = 2048;
     localparam integer O_TOTAL_BYTES = 32768;
     localparam integer O_TOTAL_WORDS = 8192;
+    localparam integer NUMERIC_MODE_DENSE_QK = 1;
+    localparam integer NUMERIC_MODE_SIGNED_MIXED = 2;
 
     reg         clk;
     reg         rstn;
@@ -252,14 +255,42 @@ module fa_top_optim_windowed_tb #(
         end
     endtask
 
+    function [8*32-1:0] numeric_mode_name;
+        begin
+            if (NUMERIC_MODE == NUMERIC_MODE_SIGNED_MIXED) begin
+                numeric_mode_name = "signed_mixed";
+            end else begin
+                numeric_mode_name = "dense_qk_reference";
+            end
+        end
+    endfunction
+
+    function signed [15:0] signed_mixed_word;
+        input integer raw_value;
+        integer folded_value;
+        begin
+            folded_value = raw_value % 17;
+            if (folded_value < 0) begin
+                folded_value = folded_value + 17;
+            end
+            signed_mixed_word = folded_value - 8;
+        end
+    endfunction
+
     function [15:0] make_q_word;
         input [5:0] q_tile_idx;
         input [1:0] row_idx;
         input [5:0] col_idx;
         begin
-            make_q_word = 16'h0001
-                        + {13'd0, (row_idx + q_tile_idx[1:0])}
-                        + {13'd0, col_idx[1:0]};
+            if (NUMERIC_MODE == NUMERIC_MODE_SIGNED_MIXED) begin
+                make_q_word = signed_mixed_word(
+                    (q_tile_idx * 3) + (row_idx * 5) + (col_idx * 7)
+                );
+            end else begin
+                make_q_word = 16'h0001
+                            + {13'd0, (row_idx + q_tile_idx[1:0])}
+                            + {13'd0, col_idx[1:0]};
+            end
         end
     endfunction
 
@@ -268,9 +299,15 @@ module fa_top_optim_windowed_tb #(
         input [3:0] row_idx;
         input [5:0] col_idx;
         begin
-            make_k_word = 16'h0001
-                        + {13'd0, (row_idx[1:0] + kv_tile_idx[1:0])}
-                        + {13'd0, col_idx[1:0]};
+            if (NUMERIC_MODE == NUMERIC_MODE_SIGNED_MIXED) begin
+                make_k_word = signed_mixed_word(
+                    (kv_tile_idx * 11) + (row_idx * 3) - (col_idx * 5) + 4
+                );
+            end else begin
+                make_k_word = 16'h0001
+                            + {13'd0, (row_idx[1:0] + kv_tile_idx[1:0])}
+                            + {13'd0, col_idx[1:0]};
+            end
         end
     endfunction
 
@@ -279,8 +316,14 @@ module fa_top_optim_windowed_tb #(
         input [3:0] row_idx;
         input [5:0] col_idx;
         begin
-            make_v_word = 16'h0010 + ({12'd0, kv_tile_idx[3:0]} << 4)
-                        + {12'd0, row_idx} + {10'd0, col_idx};
+            if (NUMERIC_MODE == NUMERIC_MODE_SIGNED_MIXED) begin
+                make_v_word = signed_mixed_word(
+                    (kv_tile_idx * 13) - (row_idx * 7) + (col_idx * 3) + 2
+                );
+            end else begin
+                make_v_word = 16'h0010 + ({12'd0, kv_tile_idx[3:0]} << 4)
+                            + {12'd0, row_idx} + {10'd0, col_idx};
+            end
         end
     endfunction
 
@@ -1045,9 +1088,15 @@ module fa_top_optim_windowed_tb #(
                          read_data);
                 error_count = error_count + 1;
             end
+        end else if (NUMERIC_MODE == NUMERIC_MODE_DENSE_QK) begin
+            if (read_data !== 32'd193037) begin
+                $display("FAIL: CYCLES expected 193037 got %0d", read_data);
+                error_count = error_count + 1;
+            end
         end else begin
-            if (read_data !== 32'd165509) begin
-                $display("FAIL: CYCLES expected 165509 got %0d", read_data);
+            if ((read_data == 32'd0) || (read_data > 32'd193037)) begin
+                $display("FAIL: noncausal alternate CYCLES expected 1..193037 got %0d",
+                         read_data);
                 error_count = error_count + 1;
             end
         end
@@ -1106,9 +1155,10 @@ module fa_top_optim_windowed_tb #(
         expect_o_memory_dense_qk();
 
         if (error_count == 0) begin
-            $display("PASS: fa_top_optim_windowed_tb numeric=dense_qk_reference causal=%0d cycles=%0d rd_bytes=%0d wr_bytes=%0d ar_count=%0d r_beat_count=%0d aw_count=%0d w_beat_count=%0d kv_windows=%0d q_reqs=%0d k_reqs=%0d v_reqs=%0d core_starts=%0d restore_starts=%0d kv_tiles=%0d qk_tasks=%0d pv_tasks=%0d",
-                     CAUSAL_MODE, cycles_data, rd_bytes_data, wr_bytes_data, ar_count,
-                     r_beat_count, aw_count, w_beat_count, dut.windowed_kv_window_count,
+            $display("PASS: fa_top_optim_windowed_tb numeric=%0s causal=%0d cycles=%0d rd_bytes=%0d wr_bytes=%0d ar_count=%0d r_beat_count=%0d aw_count=%0d w_beat_count=%0d kv_windows=%0d q_reqs=%0d k_reqs=%0d v_reqs=%0d core_starts=%0d restore_starts=%0d kv_tiles=%0d qk_tasks=%0d pv_tasks=%0d",
+                     numeric_mode_name(), CAUSAL_MODE, cycles_data, rd_bytes_data,
+                     wr_bytes_data, ar_count, r_beat_count, aw_count, w_beat_count,
+                     dut.windowed_kv_window_count,
                      dut.windowed_q_tile_req_count, dut.windowed_k_tile_req_count,
                      dut.windowed_v_tile_req_count, core_start_count, restore_start_count,
                      dut.windowed_kv_tile_count,

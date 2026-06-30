@@ -10,8 +10,13 @@ class WindowedRtlContractConfig:
     head_dim: int = 64
     q_group_rows: int = 64
     q_tile_rows: int = 4
+    state_group_rows: int = 4
     kv_tile_rows: int = 16
     kv_window_tiles: int = 4
+    k_sram_macro_count: int = 8
+    v_sram_macro_count: int = 8
+    oacc_sram_macro_count: int = 4
+    oacc_sram_data_width: int = 64
     q_tile_beat_count: int = 64
     k_tile_beat_count: int = 256
     v_tile_beat_count: int = 256
@@ -26,8 +31,13 @@ class WindowedRtlContractConfig:
             "head_dim": self.head_dim,
             "q_group_rows": self.q_group_rows,
             "q_tile_rows": self.q_tile_rows,
+            "state_group_rows": self.state_group_rows,
             "kv_tile_rows": self.kv_tile_rows,
             "kv_window_tiles": self.kv_window_tiles,
+            "k_sram_macro_count": self.k_sram_macro_count,
+            "v_sram_macro_count": self.v_sram_macro_count,
+            "oacc_sram_macro_count": self.oacc_sram_macro_count,
+            "oacc_sram_data_width": self.oacc_sram_data_width,
             "q_tile_beat_count": self.q_tile_beat_count,
             "k_tile_beat_count": self.k_tile_beat_count,
             "v_tile_beat_count": self.v_tile_beat_count,
@@ -42,10 +52,22 @@ class WindowedRtlContractConfig:
             raise ValueError("seq_len must be divisible by q_group_rows")
         if self.q_group_rows % self.q_tile_rows != 0:
             raise ValueError("q_group_rows must be divisible by q_tile_rows")
+        if self.q_group_rows % self.state_group_rows != 0:
+            raise ValueError("q_group_rows must be divisible by state_group_rows")
+        if self.state_group_rows % self.q_tile_rows != 0:
+            raise ValueError("state_group_rows must be divisible by q_tile_rows")
         if self.seq_len % self.kv_tile_rows != 0:
             raise ValueError("seq_len must be divisible by kv_tile_rows")
         if (self.seq_len // self.kv_tile_rows) % self.kv_window_tiles != 0:
             raise ValueError("KV tile count must be divisible by kv_window_tiles")
+
+    @property
+    def total_sram_macro_count(self) -> int:
+        return (
+            self.k_sram_macro_count
+            + self.v_sram_macro_count
+            + self.oacc_sram_macro_count
+        )
 
 
 @dataclass(frozen=True)
@@ -89,6 +111,9 @@ class WindowedRtlCounters:
     kv_tile_count: int
     state_fill_count: int
     state_spill_count: int
+    state_restore_count: int
+    oacc_restore_cycle_count: int
+    oacc_spill_cycle_count: int
     core_start_count: int
     restore_start_count: int
     qk_task_count: int
@@ -123,6 +148,7 @@ def build_windowed_rtl_contract(
     cfg.validate()
     q_group_count = cfg.seq_len // cfg.q_group_rows
     q_tiles_per_group = cfg.q_group_rows // cfg.q_tile_rows
+    state_groups_per_q_group = cfg.q_group_rows // cfg.state_group_rows
     kv_tile_count = cfg.seq_len // cfg.kv_tile_rows
     kv_windows_per_group = kv_tile_count // cfg.kv_window_tiles
 
@@ -163,6 +189,26 @@ def build_windowed_rtl_contract(
         * cfg.micro_tiles_per_core_start
     )
     skipped_future_kv_tiles = full_schedule_micro_tiles - micro_tile_count
+    state_fill_count = sum(
+        state_groups_per_q_group
+        for q_group_idx in range(q_group_count)
+        for kv_window_idx in range(kv_windows_per_group)
+        if not _causal_window_fully_future(cfg, q_group_idx, kv_window_idx)
+    )
+    state_restore_count = sum(
+        state_groups_per_q_group
+        for q_group_idx in range(q_group_count)
+        for kv_window_idx in range(kv_windows_per_group)
+        if (kv_window_idx != 0)
+        and not _causal_window_fully_future(cfg, q_group_idx, kv_window_idx)
+    )
+    oacc_state_bits_per_state_group = (
+        cfg.state_group_rows * cfg.head_dim * 16
+    )
+    oacc_cycles_per_state_group = _ceil_div(
+        oacc_state_bits_per_state_group,
+        cfg.oacc_sram_macro_count * cfg.oacc_sram_data_width,
+    )
     counters = WindowedRtlCounters(
         q_group_count=q_group_count,
         kv_window_count=len(k_tile_requests) // cfg.kv_window_tiles,
@@ -175,8 +221,11 @@ def build_windowed_rtl_contract(
         v_tile_beat_count=len(v_tile_requests) * cfg.v_tile_beat_count,
         micro_tile_count=micro_tile_count,
         kv_tile_count=micro_tile_count,
-        state_fill_count=len(q_tile_requests),
-        state_spill_count=len(q_tile_requests),
+        state_fill_count=state_fill_count,
+        state_spill_count=state_fill_count,
+        state_restore_count=state_restore_count,
+        oacc_restore_cycle_count=state_restore_count * oacc_cycles_per_state_group,
+        oacc_spill_cycle_count=state_fill_count * oacc_cycles_per_state_group,
         core_start_count=core_start_count,
         restore_start_count=sum(1 for event in core_starts if event.restore),
         qk_task_count=micro_tile_count * cfg.qk_tasks_per_micro_tile,
@@ -345,26 +394,35 @@ def dense_qk_o_write_word32(
 def count_k_layout_roundtrip_errors(cfg: WindowedRtlContractConfig) -> int:
     cfg.validate()
     error_count = 0
-    window: Dict[Tuple[int, int], Tuple[int, int, int]] = {}
+    window: Dict[Tuple[int, int, int], Tuple[int, int, int, int]] = {}
     for slot_idx in range(cfg.kv_window_tiles):
         for row_idx in range(cfg.kv_tile_rows):
             for chunk_idx in range(cfg.head_dim // 4):
-                bank, addr = k_sram_write_address(slot_idx, row_idx, chunk_idx)
-                window[(bank, addr)] = (slot_idx, row_idx, chunk_idx)
+                for pair_in_chunk in range(2):
+                    bank, addr, row_lane = k_sram_write_address(
+                        slot_idx, row_idx, chunk_idx, pair_in_chunk
+                    )
+                    window[(bank, addr, row_lane)] = (
+                        slot_idx,
+                        row_idx,
+                        chunk_idx,
+                        pair_in_chunk,
+                    )
 
     for slot_idx in range(cfg.kv_window_tiles):
         for pair_idx in range(cfg.head_dim // 2):
             chunk_idx = pair_idx >> 1
+            pair_in_chunk = pair_idx & 1
             for row_idx in range(cfg.kv_tile_rows):
-                bank, addr = k_sram_read_address(slot_idx, row_idx, pair_idx)
-                stored = window.get((bank, addr))
-                if stored != (slot_idx, row_idx, chunk_idx):
+                bank, addr, row_lane = k_sram_read_address(slot_idx, row_idx, pair_idx)
+                stored = window.get((bank, addr, row_lane))
+                if stored != (slot_idx, row_idx, chunk_idx, pair_in_chunk):
                     error_count += 1
     return error_count
 
 
 def count_v_layout_roundtrip_errors(
-    cfg: WindowedRtlContractConfig, *, v_write_bank_uses_slot_high: bool = True
+    cfg: WindowedRtlContractConfig, *, v_write_addr_uses_slot: bool = True
 ) -> int:
     cfg.validate()
     error_count = 0
@@ -376,7 +434,7 @@ def count_v_layout_roundtrip_errors(
                     slot_idx,
                     row_idx,
                     chunk_idx,
-                    uses_slot_high=v_write_bank_uses_slot_high,
+                    uses_slot=v_write_addr_uses_slot,
                 )
                 window[(bank, addr)] = (slot_idx, row_idx, chunk_idx)
 
@@ -400,10 +458,13 @@ def count_v_layout_roundtrip_errors(
     return error_count
 
 
-def k_sram_write_address(slot_idx: int, row_idx: int, chunk_idx: int) -> Tuple[int, int]:
-    bank = row_idx & 0xF
-    addr = ((slot_idx & 0x3) << 4) | (chunk_idx & 0xF)
-    return bank, addr
+def k_sram_write_address(
+    slot_idx: int, row_idx: int, chunk_idx: int, pair_in_chunk: int
+) -> Tuple[int, int, int]:
+    bank = (row_idx >> 1) & 0x7
+    addr = ((slot_idx & 0x3) << 5) | ((chunk_idx & 0xF) << 1) | (pair_in_chunk & 0x1)
+    row_lane = row_idx & 0x1
+    return bank, addr, row_lane
 
 
 def _dense_qk_word(kind: str, tile_idx: int, row_idx: int, col_idx: int) -> int:
@@ -435,29 +496,35 @@ def _micro_tiles_for_event(
     return max(0, effective_end_idx - event.kv_base_idx)
 
 
-def k_sram_read_address(slot_idx: int, row_idx: int, pair_idx: int) -> Tuple[int, int]:
-    bank = row_idx & 0xF
-    addr = ((slot_idx & 0x3) << 4) | ((pair_idx >> 1) & 0xF)
-    return bank, addr
+def k_sram_read_address(slot_idx: int, row_idx: int, pair_idx: int) -> Tuple[int, int, int]:
+    bank = (row_idx >> 1) & 0x7
+    addr = ((slot_idx & 0x3) << 5) | (((pair_idx >> 1) & 0xF) << 1) | (pair_idx & 0x1)
+    row_lane = row_idx & 0x1
+    return bank, addr, row_lane
 
 
 def v_sram_write_address(
-    slot_idx: int, row_idx: int, chunk_idx: int, *, uses_slot_high: bool = True
+    slot_idx: int, row_idx: int, chunk_idx: int, *, uses_slot: bool = True
 ) -> Tuple[int, int]:
-    slot_high = (slot_idx >> 1) & 0x1 if uses_slot_high else 0
-    bank = (slot_high << 3) | ((row_idx & 0x1) << 2) | (chunk_idx & 0x3)
-    row_field = ((slot_idx & 0x3) << 1) | ((row_idx >> 3) & 0x1)
-    chunk_field = (((row_idx >> 1) & 0x3) << 2) | ((chunk_idx >> 2) & 0x3)
-    addr = (row_field << 4) | chunk_field
+    slot_field = slot_idx & 0x3 if uses_slot else 0
+    bank = ((row_idx & 0x1) << 2) | (chunk_idx & 0x3)
+    addr = (
+        (slot_field << 5)
+        | (((row_idx >> 3) & 0x1) << 4)
+        | (((row_idx >> 1) & 0x3) << 2)
+        | ((chunk_idx >> 2) & 0x3)
+    )
     return bank, addr
 
 
 def v_sram_read_address(
     slot_idx: int, wave_idx: int, pair_idx: int, chunk_low_idx: int, *, high: bool
 ) -> Tuple[int, int]:
-    bank_base = 8 if ((slot_idx >> 1) & 0x1) else 0
-    bank = bank_base + (4 if high else 0) + (chunk_low_idx & 0x3)
-    row_field = ((slot_idx & 0x3) << 1) | ((pair_idx >> 2) & 0x1)
-    chunk_field = ((pair_idx & 0x3) << 2) | (wave_idx & 0x3)
-    addr = (row_field << 4) | chunk_field
+    bank = (4 if high else 0) + (chunk_low_idx & 0x3)
+    addr = (
+        ((slot_idx & 0x3) << 5)
+        | (((pair_idx >> 2) & 0x1) << 4)
+        | ((pair_idx & 0x3) << 2)
+        | (wave_idx & 0x3)
+    )
     return bank, addr

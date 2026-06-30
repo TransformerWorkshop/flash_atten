@@ -270,3 +270,154 @@ module FA_SCORE_POST_REAL #(
     end
 
 endmodule
+
+module FA_SCORE_POST_Q4_BLOCK_REAL (
+    input  wire          clk,
+    input  wire          rstn,
+    input  wire          clear,
+    input  wire          req_valid,
+    output wire          req_ready,
+    input  wire [3:0]    q_blk_idx,
+    input  wire [3:0]    kv_blk_idx,
+    input  wire          causal_en,
+    input  wire [3:0]    score_block_row_base,
+    input  wire [2047:0] score_block_flat,
+    output reg           resp_valid,
+    input  wire          resp_ready,
+    output reg  [63:0]   masked_score_block_valid,
+    output reg  [2047:0] masked_score_block_flat,
+    output reg           done_pulse
+);
+
+    localparam [1:0] ST_IDLE = 2'd0;
+    localparam [1:0] ST_RUN  = 2'd1;
+    localparam [1:0] ST_DONE = 2'd2;
+
+    reg [1:0] state_r;
+    reg [1:0] state_n;
+    reg [1:0] row_idx_r;
+    reg [1:0] row_idx_n;
+    reg [3:0] q_blk_r;
+    reg [3:0] kv_blk_r;
+    reg       causal_r;
+    reg [3:0] score_block_row_base_r;
+    reg [2047:0] score_block_flat_r;
+
+    integer col_idx;
+    integer global_q_idx;
+    integer global_k_idx;
+    reg signed [31:0] score_word_s;
+
+    assign req_ready = (state_r == ST_IDLE) && !resp_valid;
+
+    always @(*) begin
+        state_n = state_r;
+        row_idx_n = row_idx_r;
+
+        if ((state_r == ST_DONE) && resp_valid && resp_ready) begin
+            state_n = ST_IDLE;
+        end
+
+        case (state_r)
+            ST_IDLE: begin
+                if (req_valid && req_ready) begin
+                    state_n = ST_RUN;
+                    row_idx_n = 2'd0;
+                end
+            end
+            ST_RUN: begin
+                if (row_idx_r == 2'd3) begin
+                    state_n = ST_DONE;
+                end else begin
+                    row_idx_n = row_idx_r + 1'b1;
+                end
+            end
+            ST_DONE: begin
+            end
+            default: begin
+                state_n = ST_IDLE;
+                row_idx_n = 2'd0;
+            end
+        endcase
+    end
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            state_r <= ST_IDLE;
+            row_idx_r <= 2'd0;
+        end else if (clear) begin
+            state_r <= ST_IDLE;
+            row_idx_r <= 2'd0;
+        end else begin
+            state_r <= state_n;
+            row_idx_r <= row_idx_n;
+        end
+    end
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            q_blk_r <= 4'd0;
+            kv_blk_r <= 4'd0;
+            causal_r <= 1'b0;
+            score_block_row_base_r <= 4'd0;
+            score_block_flat_r <= 2048'd0;
+            resp_valid <= 1'b0;
+            masked_score_block_valid <= 64'd0;
+            masked_score_block_flat <= 2048'd0;
+            done_pulse <= 1'b0;
+        end else if (clear) begin
+            q_blk_r <= 4'd0;
+            kv_blk_r <= 4'd0;
+            causal_r <= 1'b0;
+            score_block_row_base_r <= 4'd0;
+            score_block_flat_r <= 2048'd0;
+            resp_valid <= 1'b0;
+            masked_score_block_valid <= 64'd0;
+            masked_score_block_flat <= 2048'd0;
+            done_pulse <= 1'b0;
+        end else begin
+            done_pulse <= 1'b0;
+
+            if (resp_valid && resp_ready) begin
+                resp_valid <= 1'b0;
+                done_pulse <= 1'b1;
+            end
+
+            case (state_r)
+                ST_IDLE: begin
+                    if (req_valid && req_ready) begin
+                        q_blk_r <= q_blk_idx;
+                        kv_blk_r <= kv_blk_idx;
+                        causal_r <= causal_en;
+                        score_block_row_base_r <= score_block_row_base;
+                        score_block_flat_r <= score_block_flat;
+                        masked_score_block_valid <= 64'd0;
+                        masked_score_block_flat <= 2048'd0;
+                    end
+                end
+                ST_RUN: begin
+                    global_q_idx = (q_blk_r * 16) + score_block_row_base_r + row_idx_r;
+                    for (col_idx = 0; col_idx < 16; col_idx = col_idx + 1) begin
+                        global_k_idx = (kv_blk_r * 16) + col_idx;
+                        score_word_s = score_block_flat_r[(((row_idx_r * 16) + col_idx) * 32) +: 32];
+                        if (causal_r && (global_k_idx > global_q_idx)) begin
+                            masked_score_block_valid[(row_idx_r * 16) + col_idx] <= 1'b0;
+                            masked_score_block_flat[(((row_idx_r * 16) + col_idx) * 32) +: 32] <= 32'hffc0_0000;
+                        end else begin
+                            masked_score_block_valid[(row_idx_r * 16) + col_idx] <= 1'b1;
+                            masked_score_block_flat[(((row_idx_r * 16) + col_idx) * 32) +: 32] <= score_word_s;
+                        end
+                    end
+                    if (row_idx_r == 2'd3) begin
+                        resp_valid <= 1'b1;
+                    end
+                end
+                ST_DONE: begin
+                end
+                default: begin
+                end
+            endcase
+        end
+    end
+
+endmodule

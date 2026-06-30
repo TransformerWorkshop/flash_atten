@@ -71,6 +71,11 @@ module fa_optim_4x4_windowed_loop_tb;
     wire [31:0] qk_task_count;
     wire [31:0] pv_task_count;
     wire [31:0] oacc_task_count;
+    wire o_dump_valid;
+    wire [1:0] o_dump_group_idx;
+    wire [10:0] o_dump_word_idx;
+    wire [31:0] o_dump_word;
+    wire o_dump_last;
     wire [4095:0] o_block_flat;
 
     integer error_count;
@@ -139,6 +144,12 @@ module fa_optim_4x4_windowed_loop_tb;
         .qk_task_count(qk_task_count),
         .pv_task_count(pv_task_count),
         .oacc_task_count(oacc_task_count),
+        .o_dump_valid(o_dump_valid),
+        .o_dump_ready(1'b1),
+        .o_dump_group_idx(o_dump_group_idx),
+        .o_dump_word_idx(o_dump_word_idx),
+        .o_dump_word(o_dump_word),
+        .o_dump_last(o_dump_last),
         .o_block_flat(o_block_flat)
     );
 
@@ -319,14 +330,6 @@ module fa_optim_4x4_windowed_loop_tb;
                 4'd5:  k_window_word = dut.gen_k_tile_sram_bank[5].u_k_tile_sram.u_sram.u_sram.mem[addr];
                 4'd6:  k_window_word = dut.gen_k_tile_sram_bank[6].u_k_tile_sram.u_sram.u_sram.mem[addr];
                 4'd7:  k_window_word = dut.gen_k_tile_sram_bank[7].u_k_tile_sram.u_sram.u_sram.mem[addr];
-                4'd8:  k_window_word = dut.gen_k_tile_sram_bank[8].u_k_tile_sram.u_sram.u_sram.mem[addr];
-                4'd9:  k_window_word = dut.gen_k_tile_sram_bank[9].u_k_tile_sram.u_sram.u_sram.mem[addr];
-                4'd10: k_window_word = dut.gen_k_tile_sram_bank[10].u_k_tile_sram.u_sram.u_sram.mem[addr];
-                4'd11: k_window_word = dut.gen_k_tile_sram_bank[11].u_k_tile_sram.u_sram.u_sram.mem[addr];
-                4'd12: k_window_word = dut.gen_k_tile_sram_bank[12].u_k_tile_sram.u_sram.u_sram.mem[addr];
-                4'd13: k_window_word = dut.gen_k_tile_sram_bank[13].u_k_tile_sram.u_sram.u_sram.mem[addr];
-                4'd14: k_window_word = dut.gen_k_tile_sram_bank[14].u_k_tile_sram.u_sram.u_sram.mem[addr];
-                4'd15: k_window_word = dut.gen_k_tile_sram_bank[15].u_k_tile_sram.u_sram.u_sram.mem[addr];
                 default: k_window_word = 64'hxxxx_xxxx_xxxx_xxxx;
             endcase
         end
@@ -340,16 +343,37 @@ module fa_optim_4x4_windowed_loop_tb;
         reg [3:0] check_row_idx;
         reg [3:0] check_chunk_idx;
         reg [7:0] window_addr;
+        reg [3:0] row_pair_idx;
+        reg [63:0] expected_row0_beat;
+        reg [63:0] expected_row1_beat;
+        reg [63:0] expected_pair0_word;
+        reg [63:0] expected_pair1_word;
         begin
             window_slot_idx = kv_tile_idx[1:0];
-            for (check_row_i = 0; check_row_i < 16; check_row_i = check_row_i + 1) begin
+            for (check_row_i = 0; check_row_i < 8; check_row_i = check_row_i + 1) begin
                 for (check_chunk_i = 0; check_chunk_i < 16; check_chunk_i = check_chunk_i + 1) begin
-                    check_row_idx = check_row_i[3:0];
+                    row_pair_idx = check_row_i[3:0];
+                    check_row_idx = {check_row_i[2:0], 1'b0};
                     check_chunk_idx = check_chunk_i[3:0];
-                    window_addr = {2'd0, window_slot_idx, check_chunk_idx};
-                    expect64(k_window_word(check_row_idx, window_addr),
-                             make_k_beat(kv_tile_idx, check_row_idx, check_chunk_idx),
+                    window_addr = {1'b0, window_slot_idx, check_chunk_idx, 1'b0};
+                    expected_row0_beat =
+                        make_k_beat(kv_tile_idx, check_row_idx, check_chunk_idx);
+                    expected_row1_beat =
+                        make_k_beat(kv_tile_idx, check_row_idx + 4'd1, check_chunk_idx);
+                    expected_pair0_word = {
+                        expected_row1_beat[31:0],
+                        expected_row0_beat[31:0]
+                    };
+                    expected_pair1_word = {
+                        expected_row1_beat[63:32],
+                        expected_row0_beat[63:32]
+                    };
+                    expect64(k_window_word(row_pair_idx, window_addr),
+                             expected_pair0_word,
                              "k_window_word");
+                    expect64(k_window_word(row_pair_idx, window_addr + 8'd1),
+                             expected_pair1_word,
+                             "k_window_word_pair1");
                 end
             end
         end
@@ -431,6 +455,9 @@ module fa_optim_4x4_windowed_loop_tb;
             k_tile_beat_chunk_idx = 4'd0;
             k_tile_beat_data = 64'd0;
             k_tile_beat_last = 1'b0;
+            while (dut.k_pack_pending_r === 1'b1) begin
+                tick();
+            end
             check_k_sram_window_layout(req_kv_idx);
         end
     endtask

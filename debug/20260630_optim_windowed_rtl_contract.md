@@ -1,5 +1,11 @@
 # Optim Windowed RTL Contract Anchor
 
+Current note: the latest landed implementation is the q4 macro-backed
+20-SRAM-macro contract recorded in
+[#q4-macro-backed-current-anchor](#q4-macro-backed-current-anchor). Earlier
+cycle anchors in this file are historical debug evidence for the previous
+flop-backed/16-bank landing.
+
 This note records the first RTL landing step for the target windowed Flash
 Attention architecture. It is a contract scaffold and not a complete numerical
 product RTL claim.
@@ -67,18 +73,19 @@ window, starts the real core once per `{q4 tile, KV window}`, and drives
 core. Its K/V SRAM layout is window-local, not full-matrix resident: the local
 SRAM row encodes the resident window slot.
 
-The current RTL now exposes a structural state snapshot path for cross-window
-correctness:
+The current RTL now exposes a structural state restore/spill path for
+cross-window correctness:
 
-- `FA_ROW_STATE_REAL` can load `m_state`, `l_state`, and `row_seen` from restore
-  inputs during its init handshake.
+- The active q4 product path uses `FA_ROW_STATE_Q4_BLOCK_REAL`, which can load
+  four rows of `m_state`, `l_state`, and `row_seen` from restore inputs during
+  its init handshake.
 - `FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE` exports row-state snapshots and accepts
   row-state/OACC restore inputs. On `start`, it either clears OACC for the first
   KV window or restores the previous OACC snapshot for later windows.
-- `FA_OPTIM_4X4_WINDOWED_LOOP` stores one snapshot per q4 tile inside the active
-  Q group and reconnects it on later KV windows. One q4 snapshot is
-  `512b m + 512b l + 16b seen + 4096b OACC = 5136b`; 16 q4 tiles require
-  `82176b`, or `10272B`, before any later area-oriented compression.
+- `FA_OPTIM_4X4_WINDOWED_LOOP` stores only q4 row-state in flops inside the
+  active Q group: `128b m + 128b l + 4b seen` per q4 tile. OACC state is not a
+  q_tile-wide flop snapshot table; it is backed by `FA_OACC_GROUP_SRAM_64X64X16`
+  and restored/spilled as 16 x 256b chunks per q4 tile.
 
 This is still not a complete numerical product RTL claim. The model proves the
 math contract, and the RTL structural contract is now present. The windowed
@@ -101,9 +108,11 @@ This VCS run found and closed a real window-local V SRAM packing bug: the write
 bank high bit must come from `kv_load_slot_idx_r[1]`, otherwise resident slots
 2 and 3 are written into banks 0-7 but read back from banks 8-15.
 
-The Python RTL-contract model reproduces that failure mode with
-`count_v_layout_roundtrip_errors(..., v_write_bank_uses_slot_high=False) > 0`
-and requires the corrected mapping to have zero K/V layout roundtrip errors.
+The Python RTL-contract model reproduces that failure mode with the historical
+16-bank layout negative control. In the current 8-bank packed layout, the active
+negative control is
+`count_v_layout_roundtrip_errors(..., v_write_addr_uses_slot=False) > 0`, and
+the corrected mapping must have zero K/V layout roundtrip errors.
 
 The Python model now also has an RTL-bench-aligned fixed-point dense-QK golden
 path. `fixed_dense_qk_score_q16`, `expected_dense_qk_fixed_o_word`, and
@@ -339,6 +348,46 @@ This closes the previous `rtl_missing_feature` for causal K/V load-window
 suppression on the active product path. It is a measured current RTL fact, not
 only a model target.
 
+### Q4 Macro-Backed Current Anchor
+
+The active windowed loop has since moved from the earlier flop-backed q4 OACC
+snapshot table to q4 OACC macro backing and the 20-macro storage contract:
+
+- `STATE_GROUP_ROWS = 4`; state fill/spill/restore accounting is per q4 tile,
+  not q8/q16.
+- K window uses 8 `256x64` macros. Adjacent K rows are packed into the low/high
+  32b halves of each 64b macro word, so the QK read side still returns
+  `16 rows x 32b = 512b` per request. The current functional write path stores
+  each external 64b K beat as two internal macro writes.
+- V window uses 8 `256x64` macros. Slot identity is held in the macro address
+  field rather than doubling banks by `slot_high`.
+- OACC group uses 4 `256x64` macros via
+  `FA_OACC_GROUP_SRAM_64X64X16`. One q4 OACC state is 4096b and is restored or
+  spilled as 16 beats of 256b.
+- The old `reg [4095:0] q_tile_o_state_r [0:Q_TILES_PER_GROUP-1]` snapshot
+  array is no longer part of the design.
+
+Current measured VCS anchors:
+
+```text
+RUN=/home/host/codex_runs/fa_q4_oacc_macro_20260630_215127
+
+Windowed loop:
+PASS: fa_optim_4x4_windowed_loop_tb shape=S256_D64_B1_H1 numeric=dense_qk_reference perf_max_cycles=600000 cycles=191109 q_groups=4 kv_windows=16 micro_tiles=1024 q_visits=256 kv_tiles=1024 q_reqs=256 q_beats=16384 k_reqs=64 k_beats=16384 v_reqs=64 v_beats=16384 qk_tasks=131072 pv_tasks=131072 restore_starts=192
+
+Product top, non-causal:
+PASS: fa_top_optim_windowed_tb numeric=dense_qk_reference causal=0 cycles=193037 rd_bytes=393216 wr_bytes=32768 ar_count=1536 r_beat_count=24576 aw_count=128 w_beat_count=2048 kv_windows=16 q_reqs=256 k_reqs=64 v_reqs=64 core_starts=256 restore_starts=192 kv_tiles=1024 qk_tasks=131072 pv_tasks=131072
+
+Product top, causal:
+PASS: fa_top_optim_windowed_tb numeric=dense_qk_reference causal=1 cycles=115837 rd_bytes=245760 wr_bytes=32768 ar_count=960 r_beat_count=15360 aw_count=128 w_beat_count=2048 kv_windows=10 q_reqs=160 k_reqs=40 v_reqs=40 core_starts=160 restore_starts=96 kv_tiles=544 qk_tasks=69632 pv_tasks=69632
+```
+
+The cycle delta versus the earlier flop-backed/16-bank anchors is expected for
+this functional landing: OACC restore/spill now costs real macro cycles, and K
+8-bank packing serializes each K load beat into two internal writes. These are
+current-RTL costs and should be optimized only after preserving the 20-macro q4
+contract.
+
 TABLE I
 Module Parameters
 
@@ -405,14 +454,16 @@ the historical full K/V resident schedule. The new contract module is separate
 so the target loop can be checked without destabilizing the numerical full-loop
 anchor.
 
-Remaining RTL landing items:
+Remaining RTL landing items after the q4 macro-backed area cleanup:
 
 1. Add randomized numerical coverage around `FA_OPTIM_4X4_WINDOWED_LOOP`. The
    current directed benches prove one nonzero-Q/K dense-reference fixed-point
    stream in both non-causal and causal product-top modes, but not arbitrary
    score distributions.
-2. Convert score post and OACC update to the sliced widths used by the contract.
-3. Decide whether the q4 snapshot table remains flops for the first functional
-   anchor or is moved into small SRAM/RF storage before area work.
+2. Re-run product-top VCS after the post-latest-run q4-specialized
+   score/row-state/OACC/GEMM-control cleanup. The expected counters remain the
+   q4 OACC macro-backed values above.
+3. Run the next DC only after that VCS gate is green; the latest measured DC
+   area remains the compile-ultra `1.964860M NAND2` run recorded in `AREA.md`.
 4. Broaden product-top output checking beyond the current directed dense-QK
    fixed-point stream.

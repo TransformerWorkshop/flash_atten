@@ -1,7 +1,8 @@
 module GEMU_V3 #(
 	parameter WIDTH = 32,
 	parameter ELEM_WIDTH = 8,
-	parameter PACK_LANES = 4
+	parameter PACK_LANES = 4,
+	parameter ACC_COUNT_WIDTH = WIDTH
 ) (
 	// clock, reset and soft reset
 	input  wire               clk    ,
@@ -19,7 +20,7 @@ module GEMU_V3 #(
 	input  wire               m_ready,
 	// control signals
 	input  wire               start  ,
-	input  wire [  WIDTH-1:0] num_acc,
+	input  wire [ACC_COUNT_WIDTH-1:0] num_acc,
 	output wire               start_ready,
 	output wire               tile_done
 );
@@ -29,7 +30,7 @@ module GEMU_V3 #(
 
 
 	reg signed [4*WIDTH-1:0] accm                           ;
-	reg        [  WIDTH-1:0] acc_cnt                        ;
+	reg        [ACC_COUNT_WIDTH-1:0] acc_cnt                ;
 	reg signed [4*WIDTH-1:0] m_data_r                       ;
 	reg                      m_valid_r                      ;
 	reg [1:0] current_state, next_state;
