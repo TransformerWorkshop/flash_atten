@@ -25,7 +25,7 @@ Local evidence:
 
 ```text
 python -m unittest discover model -v
-43 tests OK
+44 tests OK
 ```
 
 The correctness regression includes one negative-control check:
@@ -71,9 +71,10 @@ correctness:
   `82176b`, or `10272B`, before any later area-oriented compression.
 
 This is still not a complete numerical product RTL claim. The model proves the
-math contract, and the RTL structural contract is now present, but the
-windowed real-core top still needs a dense-reference numerical directed test
-before claiming end-to-end RTL numerical correctness.
+math contract, and the RTL structural contract is now present. The windowed
+real-core top now has one analytical directed numerical proof for the
+`Q=0` uniform-softmax case, but it still needs a random/nonzero-Q dense-reference
+directed test before claiming general end-to-end RTL numerical correctness.
 
 Remote VCS now proves the fixed-shape windowed real-core schedule smoke:
 
@@ -91,6 +92,30 @@ bank high bit must come from `kv_load_slot_idx_r[1]`, otherwise resident slots
 The Python RTL-contract model reproduces that failure mode with
 `count_v_layout_roundtrip_errors(..., v_write_bank_uses_slot_high=False) > 0`
 and requires the corrected mapping to have zero K/V layout roundtrip errors.
+
+Remote VCS now also proves a fixed-point directed numerical case for the same
+shape. The test drives zero Q, a deterministic low-range V pattern, and full
+K/V traffic through the 64-bit beat interfaces. With zero Q, every score in a
+KV tile is equal, so the softmax contract collapses to a uniform mean over the
+V rows. The testbench computes the expected result using a cycle-independent
+fixed-point reference model for row-state `p/rescale`, PV accumulation, and
+OACC q4.12 update, then checks all 4 x 64 output words for every final q4 tile.
+It also checks V SRAM read responses against the window-local layout.
+
+```text
+RUN=/home/host/codex_runs/fa_optim_windowed_numeric_20260630_140520
+VCS compile: CODEX_VCS_COMPILE_STATUS=0
+VCS run: CODEX_VCS_RUN_STATUS=0
+PASS: fa_optim_4x4_windowed_loop_tb shape=S256_D64_B1_H1 numeric=uniform_q_mean_v perf_max_cycles=600000 cycles=154245 q_groups=4 kv_windows=16 micro_tiles=1024 q_visits=256 kv_tiles=1024 q_reqs=256 q_beats=16384 k_reqs=64 k_beats=16384 v_reqs=64 v_beats=16384 qk_tasks=131072 pv_tasks=131072 restore_starts=192
+```
+
+This pass closes the earlier "nonzero O only" weakness for the windowed RTL
+landing. During debug, the same bench exposed an OACC mode bug in
+`FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE`: row-input mode made
+`FA_OACC_UPDATE_REAL` update 16 rows while the local O tile only has 4 rows,
+aliasing rows 4-15 onto rows 0-3. The core now uses block-input OACC mode with
+a packed 4-row `slot_partial_o_block_flat_w`, so OACC only updates the local
+4-row q tile.
 
 TABLE I
 Module Parameters
@@ -152,9 +177,10 @@ anchor.
 
 Remaining RTL landing items:
 
-1. Add a dense-reference numerical VCS directed bench for
-   `FA_OPTIM_4X4_WINDOWED_LOOP`; the current VCS smoke proves schedule,
-   counters, restore starts, and nonzero O, but not per-element dense agreement.
+1. Add a random/nonzero-Q dense-reference numerical VCS directed bench for
+   `FA_OPTIM_4X4_WINDOWED_LOOP`. The current directed bench proves one full
+   fixed-point numerical case (`Q=0`, uniform softmax, analytical V mean), but
+   not arbitrary score distributions.
 2. Convert score post and OACC update to the sliced widths used by the contract.
 3. Decide whether the q4 snapshot table remains flops for the first functional
    anchor or is moved into small SRAM/RF storage before area work.

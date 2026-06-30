@@ -79,6 +79,8 @@ module fa_optim_4x4_windowed_loop_tb;
     integer restore_start_count;
     integer row_i;
     integer col_i;
+    reg expected_v_resp_valid_r;
+    reg [511:0] expected_v_resp_data_r;
 
     FA_OPTIM_4X4_WINDOWED_LOOP dut (
         .clk(clk),
@@ -232,7 +234,7 @@ module fa_optim_4x4_windowed_loop_tb;
         input [3:0] row_idx;
         input integer col_idx;
         begin
-            make_v_word = 16'h0100 + ({11'd0, kv_tile_idx} << 8)
+            make_v_word = 16'h0010 + ({12'd0, kv_tile_idx[3:0]} << 4)
                         + {12'd0, row_idx} + col_idx[15:0];
         end
     endfunction
@@ -449,6 +451,268 @@ module fa_optim_4x4_windowed_loop_tb;
         end
     endfunction
 
+    function signed [31:0] tb_q16_add_sat;
+        input signed [31:0] lhs;
+        input signed [31:0] rhs;
+        reg signed [32:0] sum_ext;
+        begin
+            sum_ext = lhs + rhs;
+            if (sum_ext > 33'sh0_7FFF_FFFF) begin
+                tb_q16_add_sat = 32'sh7FFF_FFFF;
+            end else if (sum_ext < -33'sh0_8000_0000) begin
+                tb_q16_add_sat = -32'sh8000_0000;
+            end else begin
+                tb_q16_add_sat = sum_ext[31:0];
+            end
+        end
+    endfunction
+
+    function signed [31:0] tb_q16_mul_rn_sat;
+        input signed [31:0] lhs;
+        input signed [31:0] rhs;
+        reg signed [63:0] prod;
+        reg signed [63:0] rounded;
+        reg signed [63:0] shifted;
+        begin
+            prod = lhs * rhs;
+            if (prod >= 0) begin
+                rounded = prod + 64'sd32768;
+            end else begin
+                rounded = prod - 64'sd32768;
+            end
+            shifted = rounded >>> 16;
+            if (shifted > 64'sh0000_0000_7FFF_FFFF) begin
+                tb_q16_mul_rn_sat = 32'sh7FFF_FFFF;
+            end else if (shifted < -64'sh0000_0000_8000_0000) begin
+                tb_q16_mul_rn_sat = -32'sh8000_0000;
+            end else begin
+                tb_q16_mul_rn_sat = shifted[31:0];
+            end
+        end
+    endfunction
+
+    function signed [15:0] tb_q16_to_q88_rn_sat;
+        input signed [31:0] value;
+        reg signed [31:0] rounded;
+        reg signed [31:0] shifted;
+        begin
+            if (value >= 0) begin
+                rounded = value + 32'sd128;
+            end else begin
+                rounded = value - 32'sd128;
+            end
+            shifted = rounded >>> 8;
+            if (shifted > 32'sd32767) begin
+                tb_q16_to_q88_rn_sat = 16'sh7FFF;
+            end else if (shifted < -32'sd32768) begin
+                tb_q16_to_q88_rn_sat = -16'sh8000;
+            end else begin
+                tb_q16_to_q88_rn_sat = shifted[15:0];
+            end
+        end
+    endfunction
+
+    function signed [15:0] tb_q16_to_q412_rn_sat;
+        input signed [31:0] value;
+        reg signed [31:0] rounded;
+        reg signed [31:0] shifted;
+        begin
+            if (value >= 0) begin
+                rounded = value + 32'sd8;
+            end else begin
+                rounded = value - 32'sd8;
+            end
+            shifted = rounded >>> 4;
+            if (shifted > 32'sd32767) begin
+                tb_q16_to_q412_rn_sat = 16'sh7FFF;
+            end else if (shifted < -32'sd32768) begin
+                tb_q16_to_q412_rn_sat = -16'sh8000;
+            end else begin
+                tb_q16_to_q412_rn_sat = shifted[15:0];
+            end
+        end
+    endfunction
+
+    function signed [15:0] tb_q16_16_to_q88_sat128;
+        input signed [127:0] value;
+        reg signed [127:0] rounded;
+        reg signed [127:0] shifted;
+        begin
+            if (value >= 0) begin
+                rounded = value + 128'sd128;
+            end else begin
+                rounded = value - 128'sd128;
+            end
+            shifted = rounded >>> 8;
+            if (shifted > 128'sd32767) begin
+                tb_q16_16_to_q88_sat128 = 16'sh7FFF;
+            end else if (shifted < -128'sd32768) begin
+                tb_q16_16_to_q88_sat128 = -16'sh8000;
+            end else begin
+                tb_q16_16_to_q88_sat128 = shifted[15:0];
+            end
+        end
+    endfunction
+
+    function signed [31:0] tb_q88_to_q16;
+        input signed [15:0] value;
+        begin
+            tb_q88_to_q16 = {{8{value[15]}}, value, 8'd0};
+        end
+    endfunction
+
+    function signed [31:0] tb_q412_to_q16;
+        input signed [15:0] value;
+        begin
+            tb_q412_to_q16 = {{12{value[15]}}, value, 4'd0};
+        end
+    endfunction
+
+    function [31:0] tb_recip_q16_16;
+        input [31:0] in_value;
+        reg [63:0] dividend;
+        reg [63:0] divisor;
+        reg [63:0] quotient;
+        begin
+            dividend = 64'h1_0000_0000;
+            divisor = {32'd0, in_value};
+            if ((in_value[31] == 1'b1) || (in_value == 32'd0)) begin
+                quotient = 64'd0;
+            end else begin
+                quotient = dividend / divisor;
+            end
+            if (quotient > 64'h7FFF_FFFF) begin
+                tb_recip_q16_16 = 32'h7FFF_FFFF;
+            end else begin
+                tb_recip_q16_16 = quotient[31:0];
+            end
+        end
+    endfunction
+
+    function [15:0] tb_update_oacc_elem;
+        input signed [15:0] old_q412_word;
+        input signed [31:0] scale_word;
+        input signed [15:0] partial_q88_word;
+        reg signed [31:0] old_q16_v;
+        reg signed [31:0] scaled_old_q16_v;
+        reg signed [31:0] partial_q16_v;
+        reg signed [31:0] next_q16_v;
+        begin
+            old_q16_v = tb_q412_to_q16(old_q412_word);
+            scaled_old_q16_v = tb_q16_mul_rn_sat(old_q16_v, scale_word);
+            partial_q16_v = tb_q88_to_q16(partial_q88_word);
+            next_q16_v = tb_q16_add_sat(scaled_old_q16_v, partial_q16_v);
+            tb_update_oacc_elem = tb_q16_to_q412_rn_sat(next_q16_v);
+        end
+    endfunction
+
+    function [15:0] expected_o_word_all_tiles;
+        input integer col;
+        integer kv_i;
+        integer row_idx;
+        reg signed [31:0] old_l_q16;
+        reg signed [31:0] new_l_q16;
+        reg signed [31:0] recip_q16;
+        reg signed [31:0] scale_q16;
+        reg signed [31:0] p_q16;
+        reg signed [15:0] p_q88;
+        reg signed [15:0] v_q88;
+        reg signed [15:0] partial_q88;
+        reg signed [15:0] old_o_q412;
+        reg signed [127:0] partial_acc_q16;
+        begin
+            old_l_q16 = 32'sd0;
+            old_o_q412 = 16'sd0;
+            for (kv_i = 0; kv_i < 16; kv_i = kv_i + 1) begin
+                new_l_q16 = old_l_q16 + 32'sd1048576;
+                recip_q16 = tb_recip_q16_16(new_l_q16);
+                p_q16 = tb_q16_mul_rn_sat(32'sh0001_0000, recip_q16);
+                p_q88 = tb_q16_to_q88_rn_sat(p_q16);
+                partial_acc_q16 = 128'sd0;
+                for (row_idx = 0; row_idx < 16; row_idx = row_idx + 1) begin
+                    v_q88 = make_v_word(kv_i, row_idx, col);
+                    partial_acc_q16 = partial_acc_q16 + ($signed(p_q88) * $signed(v_q88));
+                end
+                partial_q88 = tb_q16_16_to_q88_sat128(partial_acc_q16);
+                if (old_l_q16 == 32'sd0) begin
+                    scale_q16 = 32'sd0;
+                end else begin
+                    scale_q16 = tb_q16_mul_rn_sat(old_l_q16, recip_q16);
+                end
+                old_o_q412 = tb_update_oacc_elem(old_o_q412, scale_q16, partial_q88);
+                old_l_q16 = new_l_q16;
+            end
+            expected_o_word_all_tiles = old_o_q412;
+        end
+    endfunction
+
+    task expect_o_word_all_tiles;
+        input integer row;
+        input integer col;
+        reg [15:0] actual;
+        reg [15:0] expected;
+        begin
+            actual = get_o_word(row, col);
+            expected = expected_o_word_all_tiles(col);
+            if (actual !== expected) begin
+                if (error_count < 16) begin
+                    $display("FAIL: full-window O[%0d,%0d] expected 0x%04h got 0x%04h at %0t",
+                             row, col, expected, actual, $time);
+                end
+                error_count = error_count + 1;
+            end
+        end
+    endtask
+
+    function [511:0] expected_v_resp_data;
+        input [4:0] kv_idx;
+        input [2:0] pair_idx;
+        input [1:0] wave_idx;
+        integer word_idx;
+        integer row_low_idx;
+        integer row_high_idx;
+        integer col_idx;
+        reg [511:0] expected;
+        begin
+            expected = 512'd0;
+            for (word_idx = 0; word_idx < 16; word_idx = word_idx + 1) begin
+                row_low_idx = pair_idx * 2;
+                row_high_idx = row_low_idx + 1;
+                col_idx = (wave_idx * 16) + ((word_idx / 4) * 4) + (word_idx % 4);
+                expected[(word_idx * 32) +: 32] = {
+                    make_v_word(kv_idx, row_high_idx[3:0], col_idx),
+                    make_v_word(kv_idx, row_low_idx[3:0], col_idx)
+                };
+            end
+            expected_v_resp_data = expected;
+        end
+    endfunction
+
+    always @(posedge clk) begin
+        if (!rstn || clear) begin
+            expected_v_resp_valid_r <= 1'b0;
+            expected_v_resp_data_r <= 512'd0;
+        end else begin
+            expected_v_resp_valid_r <= dut.v_sram_rd_fire_w;
+            if (dut.v_sram_rd_fire_w) begin
+                expected_v_resp_data_r <= expected_v_resp_data(
+                    dut.micro_v_rd_req_kv_idx_w,
+                    dut.micro_v_rd_req_pair_idx_w,
+                    dut.micro_v_rd_req_wave_idx_w);
+            end
+            if (expected_v_resp_valid_r && dut.micro_v_rd_resp_valid_w &&
+                (dut.micro_v_rd_resp_data_w !== expected_v_resp_data_r)) begin
+                if (error_count < 16) begin
+                    $display("FAIL: v response mismatch expected=0x%0128h got=0x%0128h at %0t",
+                             expected_v_resp_data_r,
+                             dut.micro_v_rd_resp_data_w,
+                             $time);
+                end
+                error_count = error_count + 1;
+            end
+        end
+    end
+
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
             core_start_count <= 0;
@@ -493,6 +757,8 @@ module fa_optim_4x4_windowed_loop_tb;
         q_req_seen_count = 0;
         k_req_seen_count = 0;
         v_req_seen_count = 0;
+        expected_v_resp_valid_r = 1'b0;
+        expected_v_resp_data_r = 512'd0;
         rstn = 1'b0;
         clear = 1'b0;
         start = 1'b0;
@@ -562,17 +828,12 @@ module fa_optim_4x4_windowed_loop_tb;
 
         for (row_i = 0; row_i < 4; row_i = row_i + 1) begin
             for (col_i = 0; col_i < 64; col_i = col_i + 1) begin
-                if (get_o_word(row_i, col_i) === 16'd0) begin
-                    if (error_count < 8) begin
-                        $display("FAIL: final O[%0d,%0d] should be nonzero", row_i, col_i);
-                    end
-                    error_count = error_count + 1;
-                end
+                expect_o_word_all_tiles(row_i, col_i);
             end
         end
 
         if (error_count == 0) begin
-            $display("PASS: fa_optim_4x4_windowed_loop_tb shape=S256_D64_B1_H1 perf_max_cycles=%0d cycles=%0d q_groups=%0d kv_windows=%0d micro_tiles=%0d q_visits=%0d kv_tiles=%0d q_reqs=%0d q_beats=%0d k_reqs=%0d k_beats=%0d v_reqs=%0d v_beats=%0d qk_tasks=%0d pv_tasks=%0d restore_starts=%0d",
+            $display("PASS: fa_optim_4x4_windowed_loop_tb shape=S256_D64_B1_H1 numeric=uniform_q_mean_v perf_max_cycles=%0d cycles=%0d q_groups=%0d kv_windows=%0d micro_tiles=%0d q_visits=%0d kv_tiles=%0d q_reqs=%0d q_beats=%0d k_reqs=%0d k_beats=%0d v_reqs=%0d v_beats=%0d qk_tasks=%0d pv_tasks=%0d restore_starts=%0d",
                      MAX_EXPECTED_CYCLES, cycles, q_group_count, kv_window_count,
                      micro_tile_count, q_tile_visit_count, kv_tile_count,
                      q_tile_req_count, q_tile_beat_count,

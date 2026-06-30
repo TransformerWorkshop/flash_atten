@@ -216,6 +216,12 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
         ((oacc_selected_slot_w == 2'd2) ? slot_rescale_block_flat_r[2] :
                                           slot_rescale_block_flat_r[3]));
     wire [511:0] oacc_rescale_vec_flat_w = {384'd0, oacc_rescale_block_flat_w};
+    wire [4095:0] slot_partial_o_block_flat_w = {
+        slot_partial_o_row_r[oacc_selected_slot_w][3],
+        slot_partial_o_row_r[oacc_selected_slot_w][2],
+        slot_partial_o_row_r[oacc_selected_slot_w][1],
+        slot_partial_o_row_r[oacc_selected_slot_w][0]
+    };
     wire oacc_req_ready_w;
     wire oacc_resp_valid_w;
     wire oacc_done_pulse_w;
@@ -522,8 +528,8 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
     );
 
     FA_OACC_UPDATE_REAL #(
-        .USE_PARTIAL_ROW_INPUT(1),
-        .USE_PARTIAL_BLOCK_INPUT(0)
+        .USE_PARTIAL_ROW_INPUT(0),
+        .USE_PARTIAL_BLOCK_INPUT(1)
     ) u_oacc_update (
         .clk(clk),
         .rstn(rstn),
@@ -533,11 +539,11 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
         .rescale_vec_flat(oacc_rescale_vec_flat_w),
         .partial_o_tile_flat(16384'd0),
         .req_row_base(4'd0),
-        .partial_o_block_flat(4096'd0),
+        .partial_o_block_flat(slot_partial_o_block_flat_w),
         .partial_row_rd_en(partial_row_rd_en_w),
         .partial_row_rd_addr(partial_row_rd_addr_w),
-        .partial_row_rd_valid(partial_row_rd_valid_r),
-        .partial_row_rd_data(partial_row_rd_data_r),
+        .partial_row_rd_valid(1'b0),
+        .partial_row_rd_data(1024'd0),
         .oacc_row_rd_en(oacc_row_rd_en_w),
         .oacc_row_rd_addr(oacc_row_rd_addr_w),
         .oacc_row_rd_valid(oacc_row_rd_valid_r),

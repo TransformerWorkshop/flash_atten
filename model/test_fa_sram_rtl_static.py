@@ -221,10 +221,11 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("slot_rescale_block_flat_r[row_active_slot_r] <= rescale_vec_flat_w[127:0]", text)
         self.assertIn("slot_partial_o_row_r", text)
         self.assertIn("o_tile_row_r", text)
-        self.assertIn(".USE_PARTIAL_ROW_INPUT(1)", text)
-        self.assertIn(".USE_PARTIAL_BLOCK_INPUT(0)", text)
-        self.assertIn(".partial_row_rd_valid(partial_row_rd_valid_r)", text)
-        self.assertIn(".partial_row_rd_data(partial_row_rd_data_r)", text)
+        self.assertIn(".USE_PARTIAL_ROW_INPUT(0)", text)
+        self.assertIn(".USE_PARTIAL_BLOCK_INPUT(1)", text)
+        self.assertIn(".partial_row_rd_valid(1'b0)", text)
+        self.assertIn(".partial_row_rd_data(1024'd0)", text)
+        self.assertIn(".partial_o_block_flat(slot_partial_o_block_flat_w)", text)
         self.assertIn("assign o_tile_flat[1023:0] = o_tile_row_r[0]", text)
         self.assertNotIn("slot_partial_o_block_flat_r", text)
         self.assertNotIn("oacc_partial_o_block_flat_w", text)
@@ -442,6 +443,14 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("expect32(core_start_count, 32'd256", text)
         self.assertIn("expect32(restore_start_count, 32'd192", text)
         self.assertIn("PASS: fa_optim_4x4_windowed_loop_tb", text)
+
+    def test_optim_windowed_real_core_smoke_checks_full_numeric_mean(self):
+        text = read_rtl_smoke("fa_optim_4x4_windowed_loop_tb.v")
+
+        self.assertIn("function [15:0] expected_o_word_all_tiles", text)
+        self.assertIn("task expect_o_word_all_tiles", text)
+        self.assertIn("expect_o_word_all_tiles(row_i, col_i)", text)
+        self.assertIn("numeric=uniform_q_mean_v", text)
 
     def test_optim_windowed_rtl_contract_model_checks_layout_negative_control(self):
         model_path = REPO_ROOT / "model" / "fa_windowed_rtl_contract_model.py"
