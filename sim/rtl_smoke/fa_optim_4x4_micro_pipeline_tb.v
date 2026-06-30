@@ -9,6 +9,17 @@ module fa_optim_4x4_micro_pipeline_tb;
     reg  [4095:0] q_block_flat;
     reg  [16383:0] k_tile_flat;
     reg  [16383:0] v_tile_flat;
+    wire         k_rd_req_valid;
+    reg          k_rd_req_ready;
+    wire [4:0]   k_rd_req_pair_idx;
+    reg          k_rd_resp_valid;
+    reg  [511:0] k_rd_resp_data;
+    wire         v_rd_req_valid;
+    reg          v_rd_req_ready;
+    wire [1:0]   v_rd_req_wave_idx;
+    wire [2:0]   v_rd_req_pair_idx;
+    reg          v_rd_resp_valid;
+    reg  [511:0] v_rd_resp_data;
     wire         busy;
     wire         done;
     wire         error;
@@ -26,6 +37,21 @@ module fa_optim_4x4_micro_pipeline_tb;
     integer col_i;
     reg [31:0] first_tile_cycles;
     reg [31:0] second_tile_cycles;
+    integer idle_state_cycles;
+    integer row_init_state_cycles;
+    integer qk_req_state_cycles;
+    integer qk_wait_state_cycles;
+    integer qk_send_state_cycles;
+    integer qk_drain_state_cycles;
+    integer score_state_cycles;
+    integer row_state_cycles;
+    integer pv_req_state_cycles;
+    integer pv_wait_state_cycles;
+    integer pv_send_state_cycles;
+    integer pv_drain_state_cycles;
+    integer oacc_state_cycles;
+    integer done_state_cycles;
+    integer other_state_cycles;
 
     FA_OPTIM_4X4_MICRO_PIPELINE dut (
         .clk(clk),
@@ -34,8 +60,17 @@ module fa_optim_4x4_micro_pipeline_tb;
         .start(start),
         .first_kv_tile(first_kv_tile),
         .q_block_flat(q_block_flat),
-        .k_tile_flat(k_tile_flat),
-        .v_tile_flat(v_tile_flat),
+        .k_rd_req_valid(k_rd_req_valid),
+        .k_rd_req_ready(k_rd_req_ready),
+        .k_rd_req_pair_idx(k_rd_req_pair_idx),
+        .k_rd_resp_valid(k_rd_resp_valid),
+        .k_rd_resp_data(k_rd_resp_data),
+        .v_rd_req_valid(v_rd_req_valid),
+        .v_rd_req_ready(v_rd_req_ready),
+        .v_rd_req_wave_idx(v_rd_req_wave_idx),
+        .v_rd_req_pair_idx(v_rd_req_pair_idx),
+        .v_rd_resp_valid(v_rd_resp_valid),
+        .v_rd_resp_data(v_rd_resp_data),
         .busy(busy),
         .done(done),
         .error(error),
@@ -87,6 +122,69 @@ module fa_optim_4x4_micro_pipeline_tb;
         input integer col;
         begin
             get_o_word = o_tile_flat[(row * 1024) + (col * 16) +: 16];
+        end
+    endfunction
+
+    function [31:0] get_v_pair_word;
+        input integer pair_idx;
+        input integer col;
+        integer lo_word_idx;
+        integer hi_word_idx;
+        reg [15:0] lo_value;
+        reg [15:0] hi_value;
+        begin
+            lo_word_idx = (pair_idx * 2) * 32 + (col >> 1);
+            hi_word_idx = ((pair_idx * 2) + 1) * 32 + (col >> 1);
+            if ((col & 1) == 0) begin
+                lo_value = v_tile_flat[(lo_word_idx * 32) +: 16];
+                hi_value = v_tile_flat[(hi_word_idx * 32) +: 16];
+            end else begin
+                lo_value = v_tile_flat[(lo_word_idx * 32 + 16) +: 16];
+                hi_value = v_tile_flat[(hi_word_idx * 32 + 16) +: 16];
+            end
+            get_v_pair_word = {hi_value, lo_value};
+        end
+    endfunction
+
+    function [31:0] get_k_pair_word;
+        input integer row_idx;
+        input integer pair_idx;
+        begin
+            get_k_pair_word = k_tile_flat[((row_idx * 32 + pair_idx) * 32) +: 32];
+        end
+    endfunction
+
+    function [511:0] make_k_read_data;
+        input [4:0] pair_idx;
+        integer make_row_i;
+        reg [511:0] read_value;
+        begin
+            read_value = 512'd0;
+            for (make_row_i = 0; make_row_i < 16; make_row_i = make_row_i + 1) begin
+                read_value[(make_row_i * 32) +: 32] =
+                    get_k_pair_word(make_row_i, pair_idx);
+            end
+            make_k_read_data = read_value;
+        end
+    endfunction
+
+    function [511:0] make_v_read_data;
+        input [1:0] wave_idx;
+        input [2:0] pair_idx;
+        integer make_lane_i;
+        integer make_col_i;
+        integer make_col_global;
+        reg [511:0] read_value;
+        begin
+            read_value = 512'd0;
+            for (make_lane_i = 0; make_lane_i < 4; make_lane_i = make_lane_i + 1) begin
+                for (make_col_i = 0; make_col_i < 4; make_col_i = make_col_i + 1) begin
+                    make_col_global = (wave_idx * 16) + (make_lane_i * 4) + make_col_i;
+                    read_value[((make_lane_i * 4 + make_col_i) * 32) +: 32] =
+                        get_v_pair_word(pair_idx, make_col_global);
+                end
+            end
+            make_v_read_data = read_value;
         end
     endfunction
 
@@ -153,11 +251,54 @@ module fa_optim_4x4_micro_pipeline_tb;
         end
     endtask
 
+    task clear_state_counters;
+        begin
+            idle_state_cycles = 0;
+            row_init_state_cycles = 0;
+            qk_req_state_cycles = 0;
+            qk_wait_state_cycles = 0;
+            qk_send_state_cycles = 0;
+            qk_drain_state_cycles = 0;
+            score_state_cycles = 0;
+            row_state_cycles = 0;
+            pv_req_state_cycles = 0;
+            pv_wait_state_cycles = 0;
+            pv_send_state_cycles = 0;
+            pv_drain_state_cycles = 0;
+            oacc_state_cycles = 0;
+            done_state_cycles = 0;
+            other_state_cycles = 0;
+        end
+    endtask
+
+    task sample_state_counter;
+        begin
+            case (dut.state_r)
+                4'd0: idle_state_cycles = idle_state_cycles + 1;
+                4'd1: row_init_state_cycles = row_init_state_cycles + 1;
+                4'd2: qk_req_state_cycles = qk_req_state_cycles + 1;
+                4'd3: qk_wait_state_cycles = qk_wait_state_cycles + 1;
+                4'd4: qk_send_state_cycles = qk_send_state_cycles + 1;
+                4'd5: qk_drain_state_cycles = qk_drain_state_cycles + 1;
+                4'd6: score_state_cycles = score_state_cycles + 1;
+                4'd7: row_state_cycles = row_state_cycles + 1;
+                4'd8: pv_req_state_cycles = pv_req_state_cycles + 1;
+                4'd9: pv_wait_state_cycles = pv_wait_state_cycles + 1;
+                4'd10: pv_send_state_cycles = pv_send_state_cycles + 1;
+                4'd11: pv_drain_state_cycles = pv_drain_state_cycles + 1;
+                4'd12: oacc_state_cycles = oacc_state_cycles + 1;
+                4'd13: done_state_cycles = done_state_cycles + 1;
+                default: other_state_cycles = other_state_cycles + 1;
+            endcase
+        end
+    endtask
+
     task run_tile;
         input first_tile;
         input integer timeout_limit;
         begin
             wait_count = 0;
+            clear_state_counters();
             first_kv_tile = first_tile;
             start = 1'b1;
             tick();
@@ -166,6 +307,7 @@ module fa_optim_4x4_micro_pipeline_tb;
             while ((done !== 1'b1) && (wait_count < timeout_limit)) begin
                 wait_count = wait_count + 1;
                 tick();
+                sample_state_counter();
             end
 
             if (done !== 1'b1) begin
@@ -179,6 +321,13 @@ module fa_optim_4x4_micro_pipeline_tb;
                          dut.oacc_req_ready_w, dut.oacc_done_pulse_w);
                 $fatal(1);
             end
+            $display("INFO: micro_state_cycles first_tile=%0d idle=%0d row_init=%0d qk_req=%0d qk_wait=%0d qk_send=%0d qk_drain=%0d score=%0d row_state=%0d pv_req=%0d pv_wait=%0d pv_send=%0d pv_drain=%0d oacc=%0d done=%0d other=%0d",
+                     first_tile, idle_state_cycles, row_init_state_cycles,
+                     qk_req_state_cycles, qk_wait_state_cycles, qk_send_state_cycles,
+                     qk_drain_state_cycles, score_state_cycles, row_state_cycles,
+                     pv_req_state_cycles, pv_wait_state_cycles, pv_send_state_cycles,
+                     pv_drain_state_cycles, oacc_state_cycles, done_state_cycles,
+                     other_state_cycles);
         end
     endtask
 
@@ -194,6 +343,13 @@ module fa_optim_4x4_micro_pipeline_tb;
         q_block_flat = 4096'd0;
         k_tile_flat = 16384'd0;
         v_tile_flat = 16384'd0;
+        k_rd_req_ready = 1'b1;
+        k_rd_resp_valid = 1'b0;
+        k_rd_resp_data = 512'd0;
+        v_rd_req_ready = 1'b1;
+        v_rd_resp_valid = 1'b0;
+        v_rd_resp_data = 512'd0;
+        clear_state_counters();
 
         load_v_tile(16'h0100);
 
@@ -255,5 +411,32 @@ module fa_optim_4x4_micro_pipeline_tb;
 
         $display("FAIL: fa_optim_4x4_micro_pipeline_tb errors=%0d cycles=%0d", error_count, cycles);
         $fatal(1);
+    end
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            k_rd_resp_valid <= 1'b0;
+            k_rd_resp_data <= 512'd0;
+            v_rd_resp_valid <= 1'b0;
+            v_rd_resp_data <= 512'd0;
+        end else if (clear) begin
+            k_rd_resp_valid <= 1'b0;
+            k_rd_resp_data <= 512'd0;
+            v_rd_resp_valid <= 1'b0;
+            v_rd_resp_data <= 512'd0;
+        end else begin
+            k_rd_resp_valid <= k_rd_req_valid && k_rd_req_ready;
+            if (k_rd_req_valid && k_rd_req_ready) begin
+                k_rd_resp_data <= make_k_read_data(k_rd_req_pair_idx);
+            end else begin
+                k_rd_resp_data <= 512'd0;
+            end
+            v_rd_resp_valid <= v_rd_req_valid && v_rd_req_ready;
+            if (v_rd_req_valid && v_rd_req_ready) begin
+                v_rd_resp_data <= make_v_read_data(v_rd_req_wave_idx, v_rd_req_pair_idx);
+            end else begin
+                v_rd_resp_data <= 512'd0;
+            end
+        end
     end
 endmodule

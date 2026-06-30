@@ -5,8 +5,17 @@ module FA_OPTIM_4X4_MICRO_PIPELINE (
     input  wire          start,
     input  wire          first_kv_tile,
     input  wire [4095:0] q_block_flat,
-    input  wire [16383:0] k_tile_flat,
-    input  wire [16383:0] v_tile_flat,
+    output wire          k_rd_req_valid,
+    input  wire          k_rd_req_ready,
+    output wire [4:0]    k_rd_req_pair_idx,
+    input  wire          k_rd_resp_valid,
+    input  wire [511:0]  k_rd_resp_data,
+    output wire          v_rd_req_valid,
+    input  wire          v_rd_req_ready,
+    output wire [1:0]    v_rd_req_wave_idx,
+    output wire [2:0]    v_rd_req_pair_idx,
+    input  wire          v_rd_resp_valid,
+    input  wire [511:0]  v_rd_resp_data,
     output reg           busy,
     output reg           done,
     output reg           error,
@@ -21,22 +30,29 @@ module FA_OPTIM_4X4_MICRO_PIPELINE (
 
     localparam [3:0] ST_IDLE       = 4'd0;
     localparam [3:0] ST_ROW_INIT   = 4'd1;
-    localparam [3:0] ST_QK_FEED    = 4'd2;
-    localparam [3:0] ST_QK_DRAIN   = 4'd3;
-    localparam [3:0] ST_SCORE      = 4'd4;
-    localparam [3:0] ST_ROW_STATE  = 4'd5;
-    localparam [3:0] ST_PV_REQ     = 4'd6;
-    localparam [3:0] ST_PV_WAIT    = 4'd7;
-    localparam [3:0] ST_PV_SEND    = 4'd8;
-    localparam [3:0] ST_PV_DRAIN   = 4'd9;
-    localparam [3:0] ST_OACC       = 4'd10;
-    localparam [3:0] ST_DONE       = 4'd11;
+    localparam [3:0] ST_QK_REQ     = 4'd2;
+    localparam [3:0] ST_QK_WAIT    = 4'd3;
+    localparam [3:0] ST_QK_SEND    = 4'd4;
+    localparam [3:0] ST_QK_DRAIN   = 4'd5;
+    localparam [3:0] ST_SCORE      = 4'd6;
+    localparam [3:0] ST_ROW_STATE  = 4'd7;
+    localparam [3:0] ST_PV_REQ     = 4'd8;
+    localparam [3:0] ST_PV_WAIT    = 4'd9;
+    localparam [3:0] ST_PV_SEND    = 4'd10;
+    localparam [3:0] ST_PV_DRAIN   = 4'd11;
+    localparam [3:0] ST_OACC       = 4'd12;
+    localparam [3:0] ST_DONE       = 4'd13;
 
     reg [3:0] state_r;
     reg [5:0] feed_count_r;
     reg [1:0] qk_key_group_r;
     reg [1:0] pv_wave_r;
+    reg       p_feed_valid_r;
+    reg       v_feed_valid_r;
+    reg       k_feed_valid_r;
     reg [511:0] p_feed_data_r;
+    reg [511:0] v_feed_data_r;
+    reg [511:0] k_feed_data_r;
     reg [2047:0] score_block_flat_r;
     reg [4095:0] partial_o_block_flat_r;
 
@@ -61,12 +77,22 @@ module FA_OPTIM_4X4_MICRO_PIPELINE (
     wire gemm_output_idx_match_w = (gemm_group_idx_w[1] == gemm_group_idx_w[0]) &&
                                    (gemm_group_idx_w[2] == gemm_group_idx_w[0]) &&
                                    (gemm_group_idx_w[3] == gemm_group_idx_w[0]);
-    wire qk_output_accept_w = (state_r == ST_QK_DRAIN) && gemm_group_valid_w[0];
+    wire qk_output_accept_w = (state_r == ST_QK_DRAIN) &&
+                              gemm_all_output_valid_w && gemm_output_idx_match_w;
     wire pv_output_accept_w = (state_r == ST_PV_DRAIN) &&
                               gemm_all_output_valid_w && gemm_output_idx_match_w;
     wire [3:0] gemm_group_ready_w =
-        (state_r == ST_QK_DRAIN) ? {3'b000, qk_output_accept_w} :
+        (state_r == ST_QK_DRAIN) ? {4{qk_output_accept_w}} :
         ((state_r == ST_PV_DRAIN) ? {4{pv_output_accept_w}} : 4'd0);
+    wire qk_feed_valid_w = ((state_r == ST_QK_WAIT) && k_rd_resp_valid) ||
+                           (state_r == ST_QK_SEND);
+    wire qk_feed_accept_w = qk_feed_valid_w && gemm_feed_accept_w;
+    wire qk_feed_last_w = (feed_count_r == 6'd31);
+    wire qk_next_req_valid_w = qk_feed_accept_w && !qk_feed_last_w;
+    wire [4:0] qk_next_pair_idx_w = feed_count_r[4:0] + 5'd1;
+    wire k_rd_req_fire_w = k_rd_req_valid && k_rd_req_ready;
+    wire qk_next_req_fire_w = qk_next_req_valid_w && k_rd_req_ready;
+    wire v_rd_req_fire_w = v_rd_req_valid && v_rd_req_ready;
 
     wire score_req_valid_w;
     wire score_req_ready_w;
@@ -92,9 +118,21 @@ module FA_OPTIM_4X4_MICRO_PIPELINE (
     wire [511:0] unused_l_state_flat_w;
     wire [15:0] unused_row_seen_w;
 
-    reg p_rd_en_r;
     wire p_rd_valid_w;
     wire [511:0] p_rd_data_w;
+    wire [511:0] pv_p_data_w = p_rd_valid_w ? p_rd_data_w : p_feed_data_r;
+    wire [511:0] pv_v_data_w = v_rd_resp_valid ? v_rd_resp_data : v_feed_data_r;
+    wire [511:0] pv_gemm_p_data_w = (state_r == ST_PV_WAIT) ? pv_p_data_w : p_feed_data_r;
+    wire [511:0] pv_gemm_v_data_w = (state_r == ST_PV_WAIT) ? pv_v_data_w : v_feed_data_r;
+    wire pv_operands_ready_w = (p_feed_valid_r || p_rd_valid_w) &&
+                               (v_feed_valid_r || v_rd_resp_valid);
+    wire pv_feed_valid_w = ((state_r == ST_PV_WAIT) && pv_operands_ready_w) ||
+                           (state_r == ST_PV_SEND);
+    wire pv_feed_accept_w = pv_feed_valid_w && gemm_feed_accept_w;
+    wire pv_feed_last_w = (feed_count_r == 6'd7);
+    wire pv_next_req_valid_w = pv_feed_accept_w && !pv_feed_last_w;
+    wire [2:0] pv_next_pair_idx_w = feed_count_r[2:0] + 3'd1;
+    wire pv_next_req_fire_w = pv_next_req_valid_w && v_rd_req_ready;
 
     wire oacc_req_valid_w;
     reg oacc_req_issued_r;
@@ -119,42 +157,17 @@ module FA_OPTIM_4X4_MICRO_PIPELINE (
     assign score_req_valid_w = (state_r == ST_SCORE);
     assign row_update_valid_w = (state_r == ST_ROW_STATE) && score_resp_valid_w;
     assign oacc_req_valid_w = (state_r == ST_OACC) && !oacc_req_issued_r;
+    assign k_rd_req_valid = (state_r == ST_QK_REQ) || qk_next_req_valid_w;
+    assign k_rd_req_pair_idx = qk_next_req_valid_w ? qk_next_pair_idx_w : feed_count_r[4:0];
+    assign v_rd_req_valid = (state_r == ST_PV_REQ) || pv_next_req_valid_w;
+    assign v_rd_req_wave_idx = pv_wave_r;
+    assign v_rd_req_pair_idx = pv_next_req_valid_w ? pv_next_pair_idx_w : feed_count_r[2:0];
 
     function automatic [31:0] get_q_word;
         input integer row;
         input integer pair_idx;
         begin
             get_q_word = q_block_flat[((row * 32 + pair_idx) * 32) +: 32];
-        end
-    endfunction
-
-    function automatic [31:0] get_k_word;
-        input integer key_row;
-        input integer pair_idx;
-        begin
-            get_k_word = k_tile_flat[((key_row * 32 + pair_idx) * 32) +: 32];
-        end
-    endfunction
-
-    function automatic [15:0] get_v_elem;
-        input integer row;
-        input integer col;
-        integer word_idx;
-        begin
-            word_idx = row * 32 + (col >> 1);
-            if ((col & 1) == 0) begin
-                get_v_elem = v_tile_flat[(word_idx * 32) +: 16];
-            end else begin
-                get_v_elem = v_tile_flat[(word_idx * 32 + 16) +: 16];
-            end
-        end
-    endfunction
-
-    function automatic [31:0] pack_v_pair;
-        input integer pair_idx;
-        input integer col;
-        begin
-            pack_v_pair = {get_v_elem((pair_idx * 2) + 1, col), get_v_elem(pair_idx * 2, col)};
         end
     endfunction
 
@@ -199,32 +212,30 @@ module FA_OPTIM_4X4_MICRO_PIPELINE (
         gemm_a_data_r = 128'd0;
         gemm_b_data_r = 512'd0;
 
-        if (state_r == ST_QK_FEED) begin
-            gemm_start_r[0] = (feed_count_r == 6'd0);
-            gemm_valid_r[0] = 1'b1;
+        if (((state_r == ST_QK_WAIT) && k_rd_resp_valid) ||
+            (state_r == ST_QK_SEND)) begin
+            gemm_start_r = {4{feed_count_r == 6'd0}};
+            gemm_valid_r = 4'hf;
             gemm_num_acc_r = 32'd32;
             for (row_i = 0; row_i < 4; row_i = row_i + 1) begin
                 gemm_a_data_r[(row_i * 32) +: 32] = get_q_word(row_i, feed_count_r);
             end
-            for (col_i = 0; col_i < 4; col_i = col_i + 1) begin
-                gemm_b_data_r[(col_i * 32) +: 32] =
-                    get_k_word((qk_key_group_r * 4) + col_i, feed_count_r);
+            if (state_r == ST_QK_WAIT) begin
+                gemm_b_data_r = k_rd_resp_data;
+            end else begin
+                gemm_b_data_r = k_feed_data_r;
             end
         end else if (state_r == ST_QK_DRAIN) begin
             gemm_num_acc_r = 32'd32;
-        end else if (state_r == ST_PV_SEND) begin
+        end else if (((state_r == ST_PV_WAIT) && pv_operands_ready_w) ||
+                     (state_r == ST_PV_SEND)) begin
             gemm_start_r = {4{feed_count_r == 6'd0}};
             gemm_valid_r = 4'hf;
             gemm_num_acc_r = 32'd8;
             for (row_i = 0; row_i < 4; row_i = row_i + 1) begin
-                gemm_a_data_r[(row_i * 32) +: 32] = p_feed_data_r[(row_i * 32) +: 32];
+                gemm_a_data_r[(row_i * 32) +: 32] = pv_gemm_p_data_w[(row_i * 32) +: 32];
             end
-            for (lane_i = 0; lane_i < 4; lane_i = lane_i + 1) begin
-                for (col_i = 0; col_i < 4; col_i = col_i + 1) begin
-                    gemm_b_data_r[((lane_i * 4 + col_i) * 32) +: 32] =
-                        pack_v_pair(feed_count_r, (pv_wave_r * 16) + (lane_i * 4) + col_i);
-                end
-            end
+            gemm_b_data_r = pv_gemm_v_data_w;
         end else if (state_r == ST_PV_DRAIN) begin
             gemm_num_acc_r = 32'd8;
         end
@@ -324,8 +335,8 @@ module FA_OPTIM_4X4_MICRO_PIPELINE (
         .rstn(rstn),
         .clear(clear),
         .row_p_tile_flat(p_tile_flat_w),
-        .rd_en(p_rd_en_r),
-        .rd_addr(feed_count_r[2:0]),
+        .rd_en(v_rd_req_fire_w),
+        .rd_addr(v_rd_req_pair_idx),
         .rd_valid(p_rd_valid_w),
         .rd_data(p_rd_data_w)
     );
@@ -388,11 +399,15 @@ module FA_OPTIM_4X4_MICRO_PIPELINE (
             feed_count_r <= 6'd0;
             qk_key_group_r <= 2'd0;
             pv_wave_r <= 2'd0;
+            p_feed_valid_r <= 1'b0;
+            v_feed_valid_r <= 1'b0;
+            k_feed_valid_r <= 1'b0;
             p_feed_data_r <= 512'd0;
+            v_feed_data_r <= 512'd0;
+            k_feed_data_r <= 512'd0;
             score_block_flat_r <= 2048'd0;
             partial_o_block_flat_r <= 4096'd0;
             row_init_valid_r <= 1'b0;
-            p_rd_en_r <= 1'b0;
             oacc_req_issued_r <= 1'b0;
         end else if (clear) begin
             state_r <= ST_IDLE;
@@ -409,15 +424,18 @@ module FA_OPTIM_4X4_MICRO_PIPELINE (
             feed_count_r <= 6'd0;
             qk_key_group_r <= 2'd0;
             pv_wave_r <= 2'd0;
+            p_feed_valid_r <= 1'b0;
+            v_feed_valid_r <= 1'b0;
+            k_feed_valid_r <= 1'b0;
             p_feed_data_r <= 512'd0;
+            v_feed_data_r <= 512'd0;
+            k_feed_data_r <= 512'd0;
             score_block_flat_r <= 2048'd0;
             partial_o_block_flat_r <= 4096'd0;
             row_init_valid_r <= 1'b0;
-            p_rd_en_r <= 1'b0;
             oacc_req_issued_r <= 1'b0;
         end else begin
             done <= 1'b0;
-            p_rd_en_r <= 1'b0;
             if (busy) begin
                 cycles <= cycles + 32'd1;
             end
@@ -439,6 +457,10 @@ module FA_OPTIM_4X4_MICRO_PIPELINE (
                         feed_count_r <= 6'd0;
                         qk_key_group_r <= 2'd0;
                         pv_wave_r <= 2'd0;
+                        p_feed_valid_r <= 1'b0;
+                        v_feed_valid_r <= 1'b0;
+                        k_feed_valid_r <= 1'b0;
+                        k_feed_data_r <= 512'd0;
                         score_block_flat_r <= 2048'd0;
                         partial_o_block_flat_r <= 4096'd0;
                         oacc_req_issued_r <= 1'b0;
@@ -447,7 +469,7 @@ module FA_OPTIM_4X4_MICRO_PIPELINE (
                             state_r <= ST_ROW_INIT;
                         end else begin
                             row_init_valid_r <= 1'b0;
-                            state_r <= ST_QK_FEED;
+                            state_r <= ST_QK_REQ;
                         end
                     end
                 end
@@ -456,35 +478,56 @@ module FA_OPTIM_4X4_MICRO_PIPELINE (
                         row_init_valid_r <= 1'b0;
                     end
                     if (row_init_done_pulse_w) begin
-                        state_r <= ST_QK_FEED;
+                        state_r <= ST_QK_REQ;
                         feed_count_r <= 6'd0;
                     end
                 end
-                ST_QK_FEED: begin
+                ST_QK_REQ: begin
+                    if (k_rd_req_fire_w) begin
+                        state_r <= ST_QK_WAIT;
+                    end
+                end
+                ST_QK_WAIT: begin
+                    if (k_rd_resp_valid) begin
+                        if (gemm_feed_accept_w) begin
+                            qk_task_count <= qk_task_count + 32'd4;
+                            if (qk_feed_last_w) begin
+                                feed_count_r <= 6'd0;
+                                state_r <= ST_QK_DRAIN;
+                            end else begin
+                                feed_count_r <= feed_count_r + 6'd1;
+                                state_r <= qk_next_req_fire_w ? ST_QK_WAIT : ST_QK_REQ;
+                            end
+                        end else begin
+                            k_feed_valid_r <= 1'b1;
+                            k_feed_data_r <= k_rd_resp_data;
+                            state_r <= ST_QK_SEND;
+                        end
+                    end
+                end
+                ST_QK_SEND: begin
                     if (gemm_feed_accept_w) begin
-                        qk_task_count <= qk_task_count + 32'd1;
-                        if (feed_count_r == 6'd31) begin
+                        qk_task_count <= qk_task_count + 32'd4;
+                        k_feed_valid_r <= 1'b0;
+                        if (qk_feed_last_w) begin
                             feed_count_r <= 6'd0;
                             state_r <= ST_QK_DRAIN;
                         end else begin
                             feed_count_r <= feed_count_r + 6'd1;
+                            state_r <= qk_next_req_fire_w ? ST_QK_WAIT : ST_QK_REQ;
                         end
                     end
                 end
                 ST_QK_DRAIN: begin
                     if (qk_output_accept_w) begin
-                        for (col_i = 0; col_i < 4; col_i = col_i + 1) begin
-                            score_block_flat_r[(((gemm_group_idx_w[0][1:0] * 16) + (qk_key_group_r * 4) + col_i) * 32) +: 32] <=
-                                clamp_q16_16_from_acc128(gemm_group_data_w[0][(col_i * 128) +: 128]);
+                        for (lane_i = 0; lane_i < 4; lane_i = lane_i + 1) begin
+                            for (col_i = 0; col_i < 4; col_i = col_i + 1) begin
+                                score_block_flat_r[(((gemm_group_idx_w[0][1:0] * 16) + (lane_i * 4) + col_i) * 32) +: 32] <=
+                                    clamp_q16_16_from_acc128(gemm_group_data_w[lane_i][(col_i * 128) +: 128]);
+                            end
                         end
                         if (gemm_last_w[0]) begin
-                            if (qk_key_group_r == 2'd3) begin
-                                state_r <= ST_SCORE;
-                            end else begin
-                                qk_key_group_r <= qk_key_group_r + 2'd1;
-                                feed_count_r <= 6'd0;
-                                state_r <= ST_QK_FEED;
-                            end
+                            state_r <= ST_SCORE;
                         end
                     end
                 end
@@ -505,24 +548,51 @@ module FA_OPTIM_4X4_MICRO_PIPELINE (
                     end
                 end
                 ST_PV_REQ: begin
-                    p_rd_en_r <= 1'b1;
-                    state_r <= ST_PV_WAIT;
+                    if (v_rd_req_fire_w) begin
+                        state_r <= ST_PV_WAIT;
+                    end
                 end
                 ST_PV_WAIT: begin
                     if (p_rd_valid_w) begin
+                        p_feed_valid_r <= 1'b1;
                         p_feed_data_r <= p_rd_data_w;
-                        state_r <= ST_PV_SEND;
+                    end
+                    if (v_rd_resp_valid) begin
+                        v_feed_valid_r <= 1'b1;
+                        v_feed_data_r <= v_rd_resp_data;
+                    end
+                    if (pv_operands_ready_w) begin
+                        if (gemm_feed_accept_w) begin
+                            pv_task_count <= pv_task_count + 32'd4;
+                            p_feed_valid_r <= 1'b0;
+                            v_feed_valid_r <= 1'b0;
+                            if (pv_feed_last_w) begin
+                                feed_count_r <= 6'd0;
+                                state_r <= ST_PV_DRAIN;
+                            end else begin
+                                feed_count_r <= feed_count_r + 6'd1;
+                                state_r <= pv_next_req_fire_w ? ST_PV_WAIT : ST_PV_REQ;
+                            end
+                        end else begin
+                            p_feed_valid_r <= 1'b1;
+                            v_feed_valid_r <= 1'b1;
+                            p_feed_data_r <= pv_p_data_w;
+                            v_feed_data_r <= pv_v_data_w;
+                            state_r <= ST_PV_SEND;
+                        end
                     end
                 end
                 ST_PV_SEND: begin
                     if (gemm_feed_accept_w) begin
                         pv_task_count <= pv_task_count + 32'd4;
-                        if (feed_count_r == 6'd7) begin
+                        p_feed_valid_r <= 1'b0;
+                        v_feed_valid_r <= 1'b0;
+                        if (pv_feed_last_w) begin
                             feed_count_r <= 6'd0;
                             state_r <= ST_PV_DRAIN;
                         end else begin
                             feed_count_r <= feed_count_r + 6'd1;
-                            state_r <= ST_PV_REQ;
+                            state_r <= pv_next_req_fire_w ? ST_PV_WAIT : ST_PV_REQ;
                         end
                     end
                 end
