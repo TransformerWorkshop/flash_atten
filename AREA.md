@@ -219,6 +219,43 @@ directionally smaller by about `33.6%`. This is not a final product-top
 apples-to-apples signoff comparison because AXI shell integration and timing
 closure remain open.
 
+## Post-Freeze VCS Cleanup
+
+This section tracks RTL cleanup after the frozen first area point. It does not
+replace the DC area numbers above until a new DC run is explicitly requested.
+
+K SRAM bank folding:
+
+| Item | Frozen first area point | Post-freeze RTL cleanup |
+| --- | ---: | ---: |
+| K tile SRAM macros | `32` | `16` |
+| V tile SRAM macros | `16` | `16` |
+| Total K/V SRAM macros | `48` | `32` |
+
+Contract:
+
+- K write bank is the K row index, `0..15`.
+- Full KV tile index `kv_idx[3:0]` is stored in the 256-depth SRAM row field.
+- K read still returns 16 K rows in parallel, so the QK feeder bandwidth is
+  unchanged for the current full-loop schedule.
+
+VCS-only evidence:
+
+```text
+/home/host/codex_runs/fa_optim_4x4_kfold_20260630_1113/remote_reports/vcs_kfold
+PASS: fa_optim_4x4_full_loop_tb shape=S256_D64_B1_H1 perf_max_cycles=123202 cycles=116065 micro_tiles=1024 q_tiles=64 kv_tiles=1024 q_reqs=64 q_beats=4096 k_reqs=16 k_beats=4096 v_reqs=16 v_beats=4096 qk_tasks=131072 pv_tasks=131072
+```
+
+The smoke now also checks the folded K SRAM physical layout by writing a
+nonzero K pattern and verifying:
+
+```text
+bank = k_row_idx
+addr = {kv_idx[3:0], chunk_idx}
+```
+
+No DC was run for this cleanup per the current milestone scope.
+
 ## Next Area Optimization Targets
 
 These are not part of the frozen first version.

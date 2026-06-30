@@ -145,6 +145,49 @@ module fa_optim_4x4_full_loop_tb;
         end
     endtask
 
+    task expect64;
+        input [63:0] actual;
+        input [63:0] expected;
+        input [8*64-1:0] name;
+        begin
+            if (actual !== expected) begin
+                if (error_count < 16) begin
+                    $display("FAIL: %0s expected 0x%016h got 0x%016h at %0t",
+                             name, expected, actual, $time);
+                end
+                error_count = error_count + 1;
+            end
+        end
+    endtask
+
+    function [15:0] make_k_word;
+        input [4:0] kv_tile_idx;
+        input [3:0] row_idx;
+        input integer col_idx;
+        begin
+            make_k_word = 16'h2000
+                        + ({12'd0, kv_tile_idx[3:0]} << 10)
+                        + ({12'd0, row_idx} << 6)
+                        + col_idx[15:0];
+        end
+    endfunction
+
+    function [63:0] make_k_beat;
+        input [4:0] kv_tile_idx;
+        input [3:0] row_idx;
+        input [3:0] chunk_idx;
+        integer base_col;
+        begin
+            base_col = chunk_idx * 4;
+            make_k_beat = {
+                make_k_word(kv_tile_idx, row_idx, base_col + 3),
+                make_k_word(kv_tile_idx, row_idx, base_col + 2),
+                make_k_word(kv_tile_idx, row_idx, base_col + 1),
+                make_k_word(kv_tile_idx, row_idx, base_col + 0)
+            };
+        end
+    endfunction
+
     function [15:0] make_v_word;
         input [4:0] kv_tile_idx;
         input [3:0] row_idx;
@@ -179,6 +222,53 @@ module fa_optim_4x4_full_loop_tb;
             make_zero_beat = 64'd0;
         end
     endfunction
+
+    function [63:0] k_folded_word;
+        input [3:0] bank_idx;
+        input [7:0] addr;
+        begin
+            case (bank_idx)
+                4'd0:  k_folded_word = dut.gen_k_tile_sram_bank[0].u_k_tile_sram.u_sram.u_sram.mem[addr];
+                4'd1:  k_folded_word = dut.gen_k_tile_sram_bank[1].u_k_tile_sram.u_sram.u_sram.mem[addr];
+                4'd2:  k_folded_word = dut.gen_k_tile_sram_bank[2].u_k_tile_sram.u_sram.u_sram.mem[addr];
+                4'd3:  k_folded_word = dut.gen_k_tile_sram_bank[3].u_k_tile_sram.u_sram.u_sram.mem[addr];
+                4'd4:  k_folded_word = dut.gen_k_tile_sram_bank[4].u_k_tile_sram.u_sram.u_sram.mem[addr];
+                4'd5:  k_folded_word = dut.gen_k_tile_sram_bank[5].u_k_tile_sram.u_sram.u_sram.mem[addr];
+                4'd6:  k_folded_word = dut.gen_k_tile_sram_bank[6].u_k_tile_sram.u_sram.u_sram.mem[addr];
+                4'd7:  k_folded_word = dut.gen_k_tile_sram_bank[7].u_k_tile_sram.u_sram.u_sram.mem[addr];
+                4'd8:  k_folded_word = dut.gen_k_tile_sram_bank[8].u_k_tile_sram.u_sram.u_sram.mem[addr];
+                4'd9:  k_folded_word = dut.gen_k_tile_sram_bank[9].u_k_tile_sram.u_sram.u_sram.mem[addr];
+                4'd10: k_folded_word = dut.gen_k_tile_sram_bank[10].u_k_tile_sram.u_sram.u_sram.mem[addr];
+                4'd11: k_folded_word = dut.gen_k_tile_sram_bank[11].u_k_tile_sram.u_sram.u_sram.mem[addr];
+                4'd12: k_folded_word = dut.gen_k_tile_sram_bank[12].u_k_tile_sram.u_sram.u_sram.mem[addr];
+                4'd13: k_folded_word = dut.gen_k_tile_sram_bank[13].u_k_tile_sram.u_sram.u_sram.mem[addr];
+                4'd14: k_folded_word = dut.gen_k_tile_sram_bank[14].u_k_tile_sram.u_sram.u_sram.mem[addr];
+                4'd15: k_folded_word = dut.gen_k_tile_sram_bank[15].u_k_tile_sram.u_sram.u_sram.mem[addr];
+                default: k_folded_word = 64'hxxxx_xxxx_xxxx_xxxx;
+            endcase
+        end
+    endfunction
+
+    task check_k_sram_folded_layout;
+        input [4:0] kv_tile_idx;
+        integer check_row_i;
+        integer check_chunk_i;
+        reg [3:0] check_row_idx;
+        reg [3:0] check_chunk_idx;
+        reg [7:0] folded_addr;
+        begin
+            for (check_row_i = 0; check_row_i < 16; check_row_i = check_row_i + 1) begin
+                for (check_chunk_i = 0; check_chunk_i < 16; check_chunk_i = check_chunk_i + 1) begin
+                    check_row_idx = check_row_i[3:0];
+                    check_chunk_idx = check_chunk_i[3:0];
+                    folded_addr = {kv_tile_idx[3:0], check_chunk_idx};
+                    expect64(k_folded_word(check_row_idx, folded_addr),
+                             make_k_beat(kv_tile_idx, check_row_idx, check_chunk_idx),
+                             "k_folded_word");
+                end
+            end
+        end
+    endtask
 
     task drive_q_tile_beats;
         reg [5:0] req_q_idx;
@@ -222,7 +312,8 @@ module fa_optim_4x4_full_loop_tb;
                     k_tile_beat_valid = 1'b1;
                     k_tile_beat_row_idx = drive_row_i[3:0];
                     k_tile_beat_chunk_idx = drive_chunk_i[3:0];
-                    k_tile_beat_data = make_zero_beat(req_kv_idx, drive_row_i, drive_chunk_i);
+                    k_tile_beat_data = make_k_beat(req_kv_idx, drive_row_i[3:0],
+                                                   drive_chunk_i[3:0]);
                     k_tile_beat_last = (drive_row_i == 15) && (drive_chunk_i == 15);
                     while (k_tile_beat_ready !== 1'b1) begin
                         tick();
@@ -235,6 +326,7 @@ module fa_optim_4x4_full_loop_tb;
             k_tile_beat_chunk_idx = 4'd0;
             k_tile_beat_data = 64'd0;
             k_tile_beat_last = 1'b0;
+            check_k_sram_folded_layout(req_kv_idx);
         end
     endtask
 

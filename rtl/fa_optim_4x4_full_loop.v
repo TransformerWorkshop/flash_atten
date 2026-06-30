@@ -54,7 +54,7 @@ module FA_OPTIM_4X4_FULL_LOOP (
     localparam integer Q_TILE_BEATS = 64;
     localparam integer K_TILE_BEATS = 256;
     localparam integer V_TILE_BEATS = 256;
-    localparam integer K_SRAM_BANK_COUNT = 32;
+    localparam integer K_SRAM_BANK_COUNT = 16;
     localparam integer V_SRAM_BANK_COUNT = 16;
 
     localparam [3:0] ST_IDLE        = 4'd0;
@@ -126,17 +126,16 @@ module FA_OPTIM_4X4_FULL_LOOP (
     wire v_tile_load_done_w = v_tile_beat_fire_w && v_tile_last_beat_count_w;
     wire v_tile_last_mismatch_w = v_tile_beat_fire_w
                                 && (v_tile_beat_last != v_tile_last_beat_count_w);
-    wire [4:0] k_sram_wr_bank_idx_w = {k_tile_req_kv_idx[3], k_tile_beat_row_idx};
-    wire [3:0] k_sram_wr_row_idx_w = {1'b0, k_tile_req_kv_idx[2:0]};
+    wire [3:0] k_sram_wr_bank_idx_w = k_tile_beat_row_idx;
+    wire [3:0] k_sram_wr_row_idx_w = k_tile_req_kv_idx[3:0];
     wire [3:0] k_sram_wr_chunk_idx_w = k_tile_beat_chunk_idx;
-    wire [3:0] k_sram_rd_row_idx_w = {1'b0, micro_k_rd_req_kv_idx_w[2:0]};
+    wire [3:0] k_sram_rd_row_idx_w = micro_k_rd_req_kv_idx_w[3:0];
     wire [3:0] k_sram_rd_chunk_idx_w = micro_k_rd_req_pair_idx_w[4:1];
     wire [K_SRAM_BANK_COUNT-1:0] k_sram_wr_en_w;
     wire [K_SRAM_BANK_COUNT-1:0] k_sram_rd_valid_w;
     wire [15:0] k_sram_selected_rd_valid_w;
     wire [63:0] k_sram_rd_data_w [0:K_SRAM_BANK_COUNT-1];
     wire k_sram_rd_fire_w;
-    reg [4:0] k_sram_rd_resp_kv_idx_r;
     reg [4:0] k_sram_rd_resp_pair_idx_r;
     wire [3:0] v_sram_wr_bank_idx_w =
         {v_tile_req_kv_idx[3], v_tile_beat_row_idx[0], v_tile_beat_chunk_idx[1:0]};
@@ -239,7 +238,7 @@ module FA_OPTIM_4X4_FULL_LOOP (
     genvar bank_gi;
     generate
         for (bank_gi = 0; bank_gi < K_SRAM_BANK_COUNT; bank_gi = bank_gi + 1) begin : gen_k_tile_sram_bank
-            localparam [4:0] BANK_IDX = bank_gi[4:0];
+            localparam [3:0] BANK_IDX = bank_gi[3:0];
             assign k_sram_wr_en_w[bank_gi] =
                 k_tile_beat_fire_w && (k_sram_wr_bank_idx_w == BANK_IDX);
             FA_LOCAL_TILE_SRAM_16X64X16 u_k_tile_sram (
@@ -284,18 +283,11 @@ module FA_OPTIM_4X4_FULL_LOOP (
     generate
         for (k_row_gi = 0; k_row_gi < 16; k_row_gi = k_row_gi + 1) begin : gen_k_read_pack
             localparam integer K_ELEM_BANK = k_row_gi;
-            assign k_sram_selected_rd_valid_w[k_row_gi] =
-                (k_sram_rd_resp_kv_idx_r[3] == 1'b0) ?
-                k_sram_rd_valid_w[K_ELEM_BANK] :
-                k_sram_rd_valid_w[16 + K_ELEM_BANK];
+            assign k_sram_selected_rd_valid_w[k_row_gi] = k_sram_rd_valid_w[K_ELEM_BANK];
             assign micro_k_rd_resp_data_w[(k_row_gi * 32) +: 32] =
                 (k_sram_rd_resp_pair_idx_r[0] == 1'b0) ?
-                ((k_sram_rd_resp_kv_idx_r[3] == 1'b0) ?
-                    k_sram_rd_data_w[K_ELEM_BANK][31:0] :
-                    k_sram_rd_data_w[16 + K_ELEM_BANK][31:0]) :
-                ((k_sram_rd_resp_kv_idx_r[3] == 1'b0) ?
-                    k_sram_rd_data_w[K_ELEM_BANK][63:32] :
-                    k_sram_rd_data_w[16 + K_ELEM_BANK][63:32]);
+                k_sram_rd_data_w[K_ELEM_BANK][31:0] :
+                k_sram_rd_data_w[K_ELEM_BANK][63:32];
         end
     endgenerate
 
@@ -428,7 +420,6 @@ module FA_OPTIM_4X4_FULL_LOOP (
             core_start_r <= 1'b0;
             q_block_flat_r <= 4096'd0;
             kv_resident_valid_r <= {KV_TILE_COUNT{1'b0}};
-            k_sram_rd_resp_kv_idx_r <= 5'd0;
             k_sram_rd_resp_pair_idx_r <= 5'd0;
             v_sram_rd_resp_kv_idx_r <= 5'd0;
         end else if (clear) begin
@@ -456,7 +447,6 @@ module FA_OPTIM_4X4_FULL_LOOP (
             core_start_r <= 1'b0;
             q_block_flat_r <= 4096'd0;
             kv_resident_valid_r <= {KV_TILE_COUNT{1'b0}};
-            k_sram_rd_resp_kv_idx_r <= 5'd0;
             k_sram_rd_resp_pair_idx_r <= 5'd0;
             v_sram_rd_resp_kv_idx_r <= 5'd0;
         end else begin
@@ -464,7 +454,6 @@ module FA_OPTIM_4X4_FULL_LOOP (
             core_start_r <= 1'b0;
 
             if (k_sram_rd_fire_w) begin
-                k_sram_rd_resp_kv_idx_r <= micro_k_rd_req_kv_idx_w;
                 k_sram_rd_resp_pair_idx_r <= micro_k_rd_req_pair_idx_w;
             end
 

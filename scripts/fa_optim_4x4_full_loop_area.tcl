@@ -44,7 +44,7 @@ proc get_area_report_value_or_zero {report_path label} {
 proc write_macro_floor_log {report_dir nand2_ref} {
     set nand2_area [get_attribute [get_lib_cells $nand2_ref] area]
     set sram256x64_area [get_lib_cell_area_or_zero */TEM5N28HPCPLVTA256X64M4SWSO]
-    set k_sram_count 32
+    set k_sram_count 16
     set v_sram_count 16
     set total_sram_count [expr {$k_sram_count + $v_sram_count}]
     set k_sram_area [expr {$sram256x64_area * $k_sram_count}]
@@ -67,7 +67,7 @@ proc write_macro_floor_log {report_dir nand2_ref} {
 proc write_hier_area_log {report_dir nand2_ref} {
     set nand2_area [get_attribute [get_lib_cells $nand2_ref] area]
     set sram256x64_area [get_lib_cell_area_or_zero */TEM5N28HPCPLVTA256X64M4SWSO]
-    set total_sram_count 48
+    set total_sram_count 32
     set total_sram_area [expr {$sram256x64_area * $total_sram_count}]
     set total_sram_nand2 0.0
     if {$nand2_area > 0.0} {
