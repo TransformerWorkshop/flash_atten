@@ -18,6 +18,7 @@ class WindowedRtlContractConfig:
     micro_tiles_per_core_start: int = 4
     qk_tasks_per_micro_tile: int = 128
     pv_tasks_per_micro_tile: int = 128
+    causal: bool = False
 
     def validate(self) -> None:
         positive_fields = {
@@ -93,6 +94,7 @@ class WindowedRtlCounters:
     qk_task_count: int
     pv_task_count: int
     oacc_task_count: int
+    skipped_future_kv_tiles: int
 
 
 @dataclass(frozen=True)
@@ -151,7 +153,10 @@ def build_windowed_rtl_contract(
                 )
 
     core_start_count = len(core_starts)
-    micro_tile_count = core_start_count * cfg.micro_tiles_per_core_start
+    micro_tile_count = sum(_micro_tiles_for_event(cfg, event) for event in core_starts)
+    skipped_future_kv_tiles = (
+        (core_start_count * cfg.micro_tiles_per_core_start) - micro_tile_count
+    )
     counters = WindowedRtlCounters(
         q_group_count=q_group_count,
         kv_window_count=q_group_count * kv_windows_per_group,
@@ -171,6 +176,7 @@ def build_windowed_rtl_contract(
         qk_task_count=micro_tile_count * cfg.qk_tasks_per_micro_tile,
         pv_task_count=micro_tile_count * cfg.pv_tasks_per_micro_tile,
         oacc_task_count=micro_tile_count,
+        skipped_future_kv_tiles=skipped_future_kv_tiles,
     )
 
     return WindowedRtlContract(
@@ -398,6 +404,19 @@ def _dense_qk_word(kind: str, tile_idx: int, row_idx: int, col_idx: int) -> int:
 
 def _ceil_div(numerator: int, denominator: int) -> int:
     return (numerator + denominator - 1) // denominator
+
+
+def _micro_tiles_for_event(
+    cfg: WindowedRtlContractConfig, event: CoreStartEvent
+) -> int:
+    raw_end_idx = event.kv_base_idx + cfg.micro_tiles_per_core_start
+    if not cfg.causal:
+        return cfg.micro_tiles_per_core_start
+
+    q_tile_last_row_idx = (event.q_tile_idx * cfg.q_tile_rows) + cfg.q_tile_rows - 1
+    causal_end_idx = (q_tile_last_row_idx // cfg.kv_tile_rows) + 1
+    effective_end_idx = min(raw_end_idx, causal_end_idx)
+    return max(0, effective_end_idx - event.kv_base_idx)
 
 
 def k_sram_read_address(slot_idx: int, row_idx: int, pair_idx: int) -> Tuple[int, int]:

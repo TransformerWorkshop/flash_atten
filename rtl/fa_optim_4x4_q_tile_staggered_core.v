@@ -150,11 +150,15 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
     wire [4:0] kv_base_idx_w = run_full_kv_range_w ? 5'd0 : kv_base_idx;
     wire [4:0] kv_count_w = run_full_kv_range_w ? KV_TILE_COUNT_W : kv_count;
     wire [4:0] kv_end_idx_w = kv_base_idx_w + kv_count_w;
+    wire [4:0] causal_kv_end_idx_w = q_tile_idx[5:2] + 5'd1;
+    wire [4:0] effective_kv_end_idx_w =
+        (causal_en && (causal_kv_end_idx_w < kv_end_idx_w)) ?
+        causal_kv_end_idx_w : kv_end_idx_w;
     wire kv_range_invalid_w = (kv_end_idx_w > KV_TILE_COUNT_W);
     wire full_range_flag_invalid_w = run_full_kv_range_w && (!first_kv_window || !last_kv_window);
     wire qk_can_issue_w = (core_state_r == CORE_RUN) &&
                           (gemm_state_r == GEMM_IDLE) &&
-                          (qk_issue_kv_idx_r < kv_end_idx_w) &&
+                          (qk_issue_kv_idx_r < effective_kv_end_idx_w) &&
                           qk_free_slot_valid_w;
     wire pv_can_issue_w = (core_state_r == CORE_RUN) &&
                           (gemm_state_r == GEMM_IDLE) &&
@@ -339,19 +343,19 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
     always @(*) begin
         score_issue_valid_w = 1'b0;
         score_issue_slot_w = 2'd0;
-        if ((core_state_r == CORE_RUN) && (row_next_kv_idx_r < kv_end_idx_w) &&
+        if ((core_state_r == CORE_RUN) && (row_next_kv_idx_r < effective_kv_end_idx_w) &&
             slot_busy_r[0] && score_ready_r[0] && (slot_kv_idx_r[0] == row_next_kv_idx_r)) begin
             score_issue_valid_w = 1'b1;
             score_issue_slot_w = 2'd0;
-        end else if ((core_state_r == CORE_RUN) && (row_next_kv_idx_r < kv_end_idx_w) &&
+        end else if ((core_state_r == CORE_RUN) && (row_next_kv_idx_r < effective_kv_end_idx_w) &&
             slot_busy_r[1] && score_ready_r[1] && (slot_kv_idx_r[1] == row_next_kv_idx_r)) begin
             score_issue_valid_w = 1'b1;
             score_issue_slot_w = 2'd1;
-        end else if ((core_state_r == CORE_RUN) && (row_next_kv_idx_r < kv_end_idx_w) &&
+        end else if ((core_state_r == CORE_RUN) && (row_next_kv_idx_r < effective_kv_end_idx_w) &&
             slot_busy_r[2] && score_ready_r[2] && (slot_kv_idx_r[2] == row_next_kv_idx_r)) begin
             score_issue_valid_w = 1'b1;
             score_issue_slot_w = 2'd2;
-        end else if ((core_state_r == CORE_RUN) && (row_next_kv_idx_r < kv_end_idx_w) &&
+        end else if ((core_state_r == CORE_RUN) && (row_next_kv_idx_r < effective_kv_end_idx_w) &&
             slot_busy_r[3] && score_ready_r[3] && (slot_kv_idx_r[3] == row_next_kv_idx_r)) begin
             score_issue_valid_w = 1'b1;
             score_issue_slot_w = 2'd3;
@@ -361,19 +365,19 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
     always @(*) begin
         pv_issue_valid_w = 1'b0;
         pv_issue_slot_w = 2'd0;
-        if ((pv_next_kv_idx_r < kv_end_idx_w) &&
+        if ((pv_next_kv_idx_r < effective_kv_end_idx_w) &&
             slot_busy_r[0] && p_ready_r[0] && (slot_kv_idx_r[0] == pv_next_kv_idx_r)) begin
             pv_issue_valid_w = 1'b1;
             pv_issue_slot_w = 2'd0;
-        end else if ((pv_next_kv_idx_r < kv_end_idx_w) &&
+        end else if ((pv_next_kv_idx_r < effective_kv_end_idx_w) &&
             slot_busy_r[1] && p_ready_r[1] && (slot_kv_idx_r[1] == pv_next_kv_idx_r)) begin
             pv_issue_valid_w = 1'b1;
             pv_issue_slot_w = 2'd1;
-        end else if ((pv_next_kv_idx_r < kv_end_idx_w) &&
+        end else if ((pv_next_kv_idx_r < effective_kv_end_idx_w) &&
             slot_busy_r[2] && p_ready_r[2] && (slot_kv_idx_r[2] == pv_next_kv_idx_r)) begin
             pv_issue_valid_w = 1'b1;
             pv_issue_slot_w = 2'd2;
-        end else if ((pv_next_kv_idx_r < kv_end_idx_w) &&
+        end else if ((pv_next_kv_idx_r < effective_kv_end_idx_w) &&
             slot_busy_r[3] && p_ready_r[3] && (slot_kv_idx_r[3] == pv_next_kv_idx_r)) begin
             pv_issue_valid_w = 1'b1;
             pv_issue_slot_w = 2'd3;
@@ -383,19 +387,19 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
     always @(*) begin
         oacc_issue_valid_w = 1'b0;
         oacc_issue_slot_w = 2'd0;
-        if ((oacc_next_kv_idx_r < kv_end_idx_w) &&
+        if ((oacc_next_kv_idx_r < effective_kv_end_idx_w) &&
             slot_busy_r[0] && partial_ready_r[0] && (slot_kv_idx_r[0] == oacc_next_kv_idx_r)) begin
             oacc_issue_valid_w = 1'b1;
             oacc_issue_slot_w = 2'd0;
-        end else if ((oacc_next_kv_idx_r < kv_end_idx_w) &&
+        end else if ((oacc_next_kv_idx_r < effective_kv_end_idx_w) &&
             slot_busy_r[1] && partial_ready_r[1] && (slot_kv_idx_r[1] == oacc_next_kv_idx_r)) begin
             oacc_issue_valid_w = 1'b1;
             oacc_issue_slot_w = 2'd1;
-        end else if ((oacc_next_kv_idx_r < kv_end_idx_w) &&
+        end else if ((oacc_next_kv_idx_r < effective_kv_end_idx_w) &&
             slot_busy_r[2] && partial_ready_r[2] && (slot_kv_idx_r[2] == oacc_next_kv_idx_r)) begin
             oacc_issue_valid_w = 1'b1;
             oacc_issue_slot_w = 2'd2;
-        end else if ((oacc_next_kv_idx_r < kv_end_idx_w) &&
+        end else if ((oacc_next_kv_idx_r < effective_kv_end_idx_w) &&
             slot_busy_r[3] && partial_ready_r[3] && (slot_kv_idx_r[3] == oacc_next_kv_idx_r)) begin
             oacc_issue_valid_w = 1'b1;
             oacc_issue_slot_w = 2'd3;
@@ -748,7 +752,7 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
                 oacc_active_valid_r <= 1'b0;
                 oacc_next_kv_idx_r <= oacc_next_kv_idx_r + 5'd1;
                 micro_tile_count <= micro_tile_count + 32'd1;
-                if (oacc_next_kv_idx_r == (kv_end_idx_w - 5'd1)) begin
+                if (oacc_next_kv_idx_r == (effective_kv_end_idx_w - 5'd1)) begin
                     core_state_r <= CORE_DONE;
                 end
             end
@@ -802,7 +806,10 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
                     end
                 end
                 CORE_RUN: begin
-                    case (gemm_state_r)
+                    if (effective_kv_end_idx_w <= kv_base_idx_w) begin
+                        core_state_r <= CORE_DONE;
+                    end else begin
+                        case (gemm_state_r)
                         GEMM_IDLE: begin
                             feed_count_r <= 6'd0;
                             p_feed_valid_r <= 1'b0;
@@ -952,7 +959,8 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
                             gemm_state_r <= GEMM_IDLE;
                             error <= 1'b1;
                         end
-                    endcase
+                        endcase
+                    end
                 end
                 CORE_DONE: begin
                     busy <= 1'b0;

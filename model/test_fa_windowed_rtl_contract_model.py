@@ -42,6 +42,21 @@ class WindowedRtlContractModelTest(unittest.TestCase):
         self.assertEqual(contract.counters.qk_task_count, 131072)
         self.assertEqual(contract.counters.pv_task_count, 131072)
         self.assertEqual(contract.counters.oacc_task_count, 1024)
+        self.assertEqual(contract.counters.skipped_future_kv_tiles, 0)
+
+    def test_causal_windowed_contract_skips_fully_future_compute_tiles(self):
+        cfg = WindowedRtlContractConfig(causal=True)
+
+        contract = build_windowed_rtl_contract(cfg)
+        metrics = axi_read_metrics_for_windowed_contract(contract)
+
+        self.assertEqual(contract.counters.micro_tile_count, 544)
+        self.assertEqual(contract.counters.kv_tile_count, 544)
+        self.assertEqual(contract.counters.skipped_future_kv_tiles, 480)
+        self.assertEqual(contract.counters.qk_task_count, 69632)
+        self.assertEqual(contract.counters.pv_task_count, 69632)
+        self.assertEqual(contract.counters.oacc_task_count, 544)
+        self.assertEqual(metrics.rd_bytes, 393216)
 
     def test_request_sequences_match_windowed_rtl_loop_order(self):
         contract = build_windowed_rtl_contract(WindowedRtlContractConfig())

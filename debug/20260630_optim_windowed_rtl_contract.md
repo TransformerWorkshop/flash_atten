@@ -264,6 +264,52 @@ keys in score-post, so cycles and AXI traffic match the non-causal run. The
 model-level opportunity remains to skip fully future KV tiles/windows; that is
 the next performance lever after this correctness landing.
 
+### Causal Compute Skip Anchor
+
+The first causal performance landing is now implemented inside
+`FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE`. The core computes an
+`effective_kv_end_idx_w`:
+
+```text
+causal_kv_end_idx_w    = q_tile_idx[5:2] + 1
+effective_kv_end_idx_w = min(kv_window_end, causal_kv_end_idx_w) when causal
+                       = kv_window_end when non-causal
+```
+
+All QK, score-post, row-state, PV, and OACC issue checks use this effective end
+index. If an entire resident KV window is future-only for the current q4 tile,
+the core restores/init state and then finishes without issuing any compute work.
+
+This lands the model target for causal compute work:
+
+| Metric | Non-causal | Causal after skip |
+| --- | ---: | ---: |
+| `kv_tiles` / `micro_tile_count` | `1024` | `544` |
+| `qk_tasks` | `131072` | `69632` |
+| `pv_tasks` | `131072` | `69632` |
+| Product-top cycles | `165509` | `118597` |
+| `rd_bytes` | `393216` | `393216` |
+
+```text
+RUN=/home/host/codex_runs/fa_top_optim_windowed_causal_skip_20260630_162321
+
+Non-causal:
+VCS compile: CODEX_VCS_COMPILE_STATUS=0
+VCS run: CODEX_VCS_RUN_STATUS=0
+PASS: fa_top_optim_windowed_tb numeric=dense_qk_reference causal=0 cycles=165509 rd_bytes=393216 wr_bytes=32768 ar_count=1536 r_beat_count=24576 aw_count=128 w_beat_count=2048 kv_tiles=1024 qk_tasks=131072 pv_tasks=131072
+
+Causal compute-skip:
+VCS compile: CODEX_VCS_COMPILE_STATUS=0
+VCS run: CODEX_VCS_RUN_STATUS=0
+PASS: fa_top_optim_windowed_tb numeric=dense_qk_reference causal=1 cycles=118597 rd_bytes=393216 wr_bytes=32768 ar_count=1536 r_beat_count=24576 aw_count=128 w_beat_count=2048 kv_tiles=544 qk_tasks=69632 pv_tasks=69632
+```
+
+This is still not the final causal bandwidth optimization. K/V prefetch remains
+window-based and loads all `64` K tiles plus all `64` V tiles, so AXI read
+traffic stays fixed. The next performance gap is `rtl_missing_feature`: causal
+K/V load-window suppression or a scheduler contract that avoids loading
+future-only resident windows.
+
 TABLE I
 Module Parameters
 
