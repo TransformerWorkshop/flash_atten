@@ -147,32 +147,6 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     wire v_tile_last_mismatch_w = v_tile_beat_fire_w
                                 && (v_tile_beat_last != v_tile_last_beat_count_w);
 
-    wire [3:0] k_sram_wr_bank_idx_w = k_tile_beat_row_idx;
-    wire [3:0] k_sram_wr_row_idx_w = {2'd0, kv_load_slot_idx_r};
-    wire [3:0] k_sram_wr_chunk_idx_w = k_tile_beat_chunk_idx;
-    wire [3:0] k_sram_rd_slot_idx_w = micro_k_rd_req_kv_idx_w - core_kv_base_idx_w;
-    wire [3:0] k_sram_rd_row_idx_w = {2'd0, k_sram_rd_slot_idx_w[1:0]};
-    wire [3:0] k_sram_rd_chunk_idx_w = micro_k_rd_req_pair_idx_w[4:1];
-    wire [K_SRAM_BANK_COUNT-1:0] k_sram_wr_en_w;
-    wire [K_SRAM_BANK_COUNT-1:0] k_sram_rd_valid_w;
-    wire [15:0] k_sram_selected_rd_valid_w;
-    wire [63:0] k_sram_rd_data_w [0:K_SRAM_BANK_COUNT-1];
-    wire k_sram_rd_fire_w;
-    reg [4:0] k_sram_rd_resp_pair_idx_r;
-
-    wire [3:0] v_sram_wr_bank_idx_w = {1'b0, v_tile_beat_row_idx[0], v_tile_beat_chunk_idx[1:0]};
-    wire [3:0] v_sram_wr_row_idx_w = {1'b0, kv_load_slot_idx_r, v_tile_beat_row_idx[3]};
-    wire [3:0] v_sram_wr_chunk_idx_w = {v_tile_beat_row_idx[2:1], v_tile_beat_chunk_idx[3:2]};
-    wire [3:0] v_sram_rd_slot_idx_w = micro_v_rd_req_kv_idx_w - core_kv_base_idx_w;
-    wire [3:0] v_sram_rd_row_idx_w = {1'b0, v_sram_rd_slot_idx_w[1:0], micro_v_rd_req_pair_idx_w[2]};
-    wire [3:0] v_sram_rd_chunk_idx_w = {micro_v_rd_req_pair_idx_w[1:0], micro_v_rd_req_wave_idx_w};
-    wire [V_SRAM_BANK_COUNT-1:0] v_sram_wr_en_w;
-    wire [V_SRAM_BANK_COUNT-1:0] v_sram_rd_valid_w;
-    wire [7:0] v_sram_selected_rd_valid_w;
-    wire [63:0] v_sram_rd_data_w [0:V_SRAM_BANK_COUNT-1];
-    wire v_sram_rd_fire_w;
-    reg [4:0] v_sram_rd_resp_kv_idx_r;
-
     wire micro_k_rd_req_valid_w;
     wire micro_k_rd_req_ready_w;
     wire [4:0] micro_k_rd_req_kv_idx_w;
@@ -200,6 +174,33 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     wire [511:0] micro_snapshot_m_state_w;
     wire [511:0] micro_snapshot_l_state_w;
     wire [15:0] micro_snapshot_row_seen_w;
+
+    wire [3:0] k_sram_wr_bank_idx_w = k_tile_beat_row_idx;
+    wire [3:0] k_sram_wr_row_idx_w = {2'd0, kv_load_slot_idx_r};
+    wire [3:0] k_sram_wr_chunk_idx_w = k_tile_beat_chunk_idx;
+    wire [3:0] k_sram_rd_slot_idx_w = micro_k_rd_req_kv_idx_w - core_kv_base_idx_w;
+    wire [3:0] k_sram_rd_row_idx_w = {2'd0, k_sram_rd_slot_idx_w[1:0]};
+    wire [3:0] k_sram_rd_chunk_idx_w = micro_k_rd_req_pair_idx_w[4:1];
+    wire [K_SRAM_BANK_COUNT-1:0] k_sram_wr_en_w;
+    wire [K_SRAM_BANK_COUNT-1:0] k_sram_rd_valid_w;
+    wire [15:0] k_sram_selected_rd_valid_w;
+    wire [63:0] k_sram_rd_data_w [0:K_SRAM_BANK_COUNT-1];
+    wire k_sram_rd_fire_w;
+    reg [4:0] k_sram_rd_resp_pair_idx_r;
+
+    wire [3:0] v_sram_wr_bank_idx_w = {kv_load_slot_idx_r[1], v_tile_beat_row_idx[0], v_tile_beat_chunk_idx[1:0]};
+    wire [3:0] v_sram_wr_row_idx_w = {1'b0, kv_load_slot_idx_r, v_tile_beat_row_idx[3]};
+    wire [3:0] v_sram_wr_chunk_idx_w = {v_tile_beat_row_idx[2:1], v_tile_beat_chunk_idx[3:2]};
+    wire [3:0] v_sram_rd_slot_idx_w = micro_v_rd_req_kv_idx_w - core_kv_base_idx_w;
+    wire [3:0] v_sram_rd_row_idx_w = {1'b0, v_sram_rd_slot_idx_w[1:0], micro_v_rd_req_pair_idx_w[2]};
+    wire [3:0] v_sram_rd_chunk_idx_w = {micro_v_rd_req_pair_idx_w[1:0], micro_v_rd_req_wave_idx_w};
+    wire [V_SRAM_BANK_COUNT-1:0] v_sram_wr_en_w;
+    wire [V_SRAM_BANK_COUNT-1:0] v_sram_rd_valid_w;
+    wire [7:0] v_sram_selected_rd_valid_w;
+    wire [63:0] v_sram_rd_data_w [0:V_SRAM_BANK_COUNT-1];
+    wire v_sram_rd_fire_w;
+    reg [4:0] v_sram_rd_resp_kv_idx_r;
+
     wire window_resident_valid_w = &kv_window_resident_valid_r;
     wire [1:0] micro_k_rd_window_slot_idx_w = k_sram_rd_slot_idx_w[1:0];
     wire [1:0] micro_v_rd_window_slot_idx_w = v_sram_rd_slot_idx_w[1:0];

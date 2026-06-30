@@ -339,12 +339,20 @@ class FaSramRtlStaticTest(unittest.TestCase):
     def test_optim_windowed_real_core_top_uses_window_local_sram_layout(self):
         text = read_rtl("fa_optim_4x4_windowed_loop.v")
 
+        self.assertLess(
+            text.index("wire [4:0] micro_k_rd_req_kv_idx_w"),
+            text.index("wire [3:0] k_sram_rd_slot_idx_w = micro_k_rd_req_kv_idx_w"),
+        )
+        self.assertLess(
+            text.index("wire [2:0] micro_v_rd_req_pair_idx_w"),
+            text.index("wire [3:0] v_sram_rd_row_idx_w = {1'b0, v_sram_rd_slot_idx_w[1:0], micro_v_rd_req_pair_idx_w[2]}"),
+        )
         self.assertIn("wire [3:0] k_sram_wr_bank_idx_w = k_tile_beat_row_idx", text)
         self.assertIn("wire [3:0] k_sram_wr_row_idx_w = {2'd0, kv_load_slot_idx_r}", text)
         self.assertIn("wire [3:0] k_sram_wr_chunk_idx_w = k_tile_beat_chunk_idx", text)
         self.assertIn("wire [3:0] k_sram_rd_row_idx_w = {2'd0, k_sram_rd_slot_idx_w[1:0]}", text)
         self.assertIn("wire [3:0] k_sram_rd_chunk_idx_w = micro_k_rd_req_pair_idx_w[4:1]", text)
-        self.assertIn("wire [3:0] v_sram_wr_bank_idx_w = {1'b0, v_tile_beat_row_idx[0], v_tile_beat_chunk_idx[1:0]}", text)
+        self.assertIn("wire [3:0] v_sram_wr_bank_idx_w = {kv_load_slot_idx_r[1], v_tile_beat_row_idx[0], v_tile_beat_chunk_idx[1:0]}", text)
         self.assertIn("wire [3:0] v_sram_wr_row_idx_w = {1'b0, kv_load_slot_idx_r, v_tile_beat_row_idx[3]}", text)
         self.assertIn("wire [3:0] v_sram_wr_chunk_idx_w = {v_tile_beat_row_idx[2:1], v_tile_beat_chunk_idx[3:2]}", text)
         self.assertIn("wire [3:0] v_sram_rd_row_idx_w = {1'b0, v_sram_rd_slot_idx_w[1:0], micro_v_rd_req_pair_idx_w[2]}", text)
@@ -399,6 +407,56 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn(".restore_o_tile_flat(q_tile_o_state_r[q_tile_in_group_idx_r])", text)
         self.assertIn("q_tile_m_state_r[q_tile_in_group_idx_r] <= micro_snapshot_m_state_w", text)
         self.assertIn("q_tile_o_state_r[q_tile_in_group_idx_r] <= o_block_flat", text)
+
+    def test_optim_windowed_real_core_smoke_checks_s256(self):
+        smoke_path = RTL_SMOKE_DIR / "fa_optim_4x4_windowed_loop_tb.v"
+        self.assertTrue(smoke_path.exists(), "fa_optim_4x4_windowed_loop_tb.v must exist")
+        text = smoke_path.read_text(encoding="utf-8")
+
+        self.assertRegex(text, r"module\s+fa_optim_4x4_windowed_loop_tb\b")
+        self.assertIn("FA_OPTIM_4X4_WINDOWED_LOOP dut", text)
+        self.assertIn("localparam integer EXPECTED_Q_GROUPS = 4", text)
+        self.assertIn("localparam integer EXPECTED_KV_WINDOWS = 16", text)
+        self.assertIn("localparam integer EXPECTED_Q_TILE_REQS = 256", text)
+        self.assertIn("localparam integer EXPECTED_Q_TILE_BEATS = 16384", text)
+        self.assertIn("localparam integer EXPECTED_K_TILE_REQS = 64", text)
+        self.assertIn("localparam integer EXPECTED_K_TILE_BEATS = 16384", text)
+        self.assertIn("localparam integer EXPECTED_V_TILE_REQS = 64", text)
+        self.assertIn("localparam integer EXPECTED_V_TILE_BEATS = 16384", text)
+        self.assertIn("localparam integer EXPECTED_MICRO_TILES = 1024", text)
+        self.assertIn("localparam integer EXPECTED_CORE_STARTS = 256", text)
+        self.assertIn("localparam integer EXPECTED_RESTORE_STARTS = 192", text)
+        self.assertIn("task drive_q_tile_beats", text)
+        self.assertIn("task drive_k_tile_beats", text)
+        self.assertIn("task drive_v_tile_beats", text)
+        self.assertIn("task check_k_sram_window_layout", text)
+        self.assertIn("u_k_tile_sram.u_sram.u_sram.mem", text)
+        self.assertIn("expected_q_tile_idx", text)
+        self.assertIn("expected_kv_tile_idx", text)
+        self.assertIn("expect32(q_group_count, 32'd4", text)
+        self.assertIn("expect32(kv_window_count, 32'd16", text)
+        self.assertIn("expect32(q_tile_visit_count, 32'd256", text)
+        self.assertIn("expect32(kv_tile_count, 32'd1024", text)
+        self.assertIn("expect32(state_fill_count, 32'd256", text)
+        self.assertIn("expect32(state_spill_count, 32'd256", text)
+        self.assertIn("expect32(core_start_count, 32'd256", text)
+        self.assertIn("expect32(restore_start_count, 32'd192", text)
+        self.assertIn("PASS: fa_optim_4x4_windowed_loop_tb", text)
+
+    def test_optim_windowed_rtl_contract_model_checks_layout_negative_control(self):
+        model_path = REPO_ROOT / "model" / "fa_windowed_rtl_contract_model.py"
+        test_path = REPO_ROOT / "model" / "test_fa_windowed_rtl_contract_model.py"
+        self.assertTrue(model_path.exists(), "windowed RTL contract model must exist")
+        self.assertTrue(test_path.exists(), "windowed RTL contract model tests must exist")
+        model_text = model_path.read_text(encoding="utf-8")
+        test_text = test_path.read_text(encoding="utf-8")
+
+        self.assertIn("build_windowed_rtl_contract", model_text)
+        self.assertIn("count_k_layout_roundtrip_errors", model_text)
+        self.assertIn("count_v_layout_roundtrip_errors", model_text)
+        self.assertIn("v_write_bank_uses_slot_high=False", test_text)
+        self.assertIn("test_s256_d64_windowed_contract_matches_vcs_smoke_counters", test_text)
+        self.assertIn("test_v_sram_window_layout_roundtrips_all_resident_slots", test_text)
 
     def test_optim_4x4_full_loop_smoke_checks_s256(self):
         smoke_path = RTL_SMOKE_DIR / "fa_optim_4x4_full_loop_tb.v"

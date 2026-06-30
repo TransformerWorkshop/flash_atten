@@ -25,7 +25,7 @@ Local evidence:
 
 ```text
 python -m unittest discover model -v
-36 tests OK
+43 tests OK
 ```
 
 The correctness regression includes one negative-control check:
@@ -34,6 +34,13 @@ model matches dense attention with `max_abs < 1.0e-12`, while a forbidden model
 that drops all previous KV-window row-state/OACC and keeps only the final
 window differs from dense attention by more than `1.0e-4`. This proves the
 model-level requirement that row-state and OACC must survive across KV windows.
+
+The RTL-contract model in `model/fa_windowed_rtl_contract_model.py` now also
+checks the non-numerical RTL correctness surface that the dense math model does
+not see: Q/K/V request order, fixed S=256,d=64 counters, core restore starts,
+and K/V window-local SRAM layout roundtrips. It includes a negative-control for
+the V SRAM packing bug found by VCS: forcing the V write bank high bit to zero
+must produce layout roundtrip errors for resident slots 2 and 3.
 
 ## RTL Landing Status
 
@@ -65,8 +72,25 @@ correctness:
 
 This is still not a complete numerical product RTL claim. The model proves the
 math contract, and the RTL structural contract is now present, but the
-windowed real-core top still needs a remote VCS numerical directed test before
-claiming end-to-end RTL correctness or performance.
+windowed real-core top still needs a dense-reference numerical directed test
+before claiming end-to-end RTL numerical correctness.
+
+Remote VCS now proves the fixed-shape windowed real-core schedule smoke:
+
+```text
+RUN=/home/host/codex_runs/fa_optim_windowed_loop_20260630_131637
+VCS compile: CODEX_VCS_COMPILE_STATUS=0
+VCS run: CODEX_VCS_RUN_STATUS=0
+PASS: fa_optim_4x4_windowed_loop_tb shape=S256_D64_B1_H1 perf_max_cycles=600000 cycles=169093 q_groups=4 kv_windows=16 micro_tiles=1024 q_visits=256 kv_tiles=1024 q_reqs=256 q_beats=16384 k_reqs=64 k_beats=16384 v_reqs=64 v_beats=16384 qk_tasks=131072 pv_tasks=131072 restore_starts=192
+```
+
+This VCS run found and closed a real window-local V SRAM packing bug: the write
+bank high bit must come from `kv_load_slot_idx_r[1]`, otherwise resident slots
+2 and 3 are written into banks 0-7 but read back from banks 8-15.
+
+The Python RTL-contract model reproduces that failure mode with
+`count_v_layout_roundtrip_errors(..., v_write_bank_uses_slot_high=False) > 0`
+and requires the corrected mapping to have zero K/V layout roundtrip errors.
 
 TABLE I
 Module Parameters
@@ -128,10 +152,11 @@ anchor.
 
 Remaining RTL landing items:
 
-1. Add a numerical VCS directed bench for `FA_OPTIM_4X4_WINDOWED_LOOP` that
-   checks S=256,d=64 against the model-generated dense/windowed reference.
+1. Add a dense-reference numerical VCS directed bench for
+   `FA_OPTIM_4X4_WINDOWED_LOOP`; the current VCS smoke proves schedule,
+   counters, restore starts, and nonzero O, but not per-element dense agreement.
 2. Convert score post and OACC update to the sliced widths used by the contract.
 3. Decide whether the q4 snapshot table remains flops for the first functional
    anchor or is moved into small SRAM/RF storage before area work.
-4. Run remote VCS on `fa_optim_windowed_sched_contract_tb` and then a full
-   numerical windowed top once the real compute path is connected.
+4. Wrap the windowed real-core loop into the product CSR/AXI top once the
+   numerical directed test is passing.
