@@ -25,7 +25,7 @@ Local evidence:
 
 ```text
 python -m unittest discover model -v
-45 tests OK
+47 tests OK
 ```
 
 The correctness regression includes one negative-control check:
@@ -74,8 +74,8 @@ This is still not a complete numerical product RTL claim. The model proves the
 math contract, and the RTL structural contract is now present. The windowed
 real-core top now has fixed-point directed numerical proof for both the earlier
 `Q=0` uniform-softmax case and a nonzero-Q/K dense-reference case. It still
-needs randomized/non-causal coverage and product-top integration before claiming
-general end-to-end RTL signoff.
+needs randomized/causal coverage and real AXI DMA fill/writeback before
+claiming general end-to-end product RTL signoff.
 
 Remote VCS now proves the fixed-shape windowed real-core schedule smoke:
 
@@ -129,6 +129,20 @@ RUN=/home/host/codex_runs/fa_optim_windowed_dense_20260630_142028
 VCS compile: CODEX_VCS_COMPILE_STATUS=0
 VCS run: CODEX_VCS_RUN_STATUS=0
 PASS: fa_optim_4x4_windowed_loop_tb shape=S256_D64_B1_H1 numeric=dense_qk_reference perf_max_cycles=600000 cycles=154245 q_groups=4 kv_windows=16 micro_tiles=1024 q_visits=256 kv_tiles=1024 q_reqs=256 q_beats=16384 k_reqs=64 k_beats=16384 v_reqs=64 v_beats=16384 qk_tasks=131072 pv_tasks=131072 restore_starts=192
+```
+
+`FA_TOP_OPTIM_WINDOWED` now wraps the windowed loop with the existing
+`FA_CSR` AXI-Lite control/status plane. This is a product-lifecycle scaffold:
+CSR start, sticky done/error, cycles, and byte counters are observable at the
+top, while a deterministic internal feeder supplies the same dense-QK Q/K/V
+tile stream used by the directed numerical bench. The AXI master remains
+intentionally idle, so this is not yet a real DMA product top.
+
+```text
+RUN=/home/host/codex_runs/fa_top_optim_windowed_20260630_143135
+VCS compile: CODEX_VCS_COMPILE_STATUS=0
+VCS run: CODEX_VCS_RUN_STATUS=0
+PASS: fa_top_optim_windowed_tb numeric=dense_qk_reference cycles=154245 rd_bytes=393216
 ```
 
 TABLE I
@@ -191,12 +205,12 @@ anchor.
 
 Remaining RTL landing items:
 
-1. Add randomized/non-causal numerical coverage around
+1. Add randomized/causal numerical coverage around
    `FA_OPTIM_4X4_WINDOWED_LOOP`. The current directed bench proves one
    nonzero-Q/K dense-reference fixed-point case, but not arbitrary score
    distributions.
 2. Convert score post and OACC update to the sliced widths used by the contract.
 3. Decide whether the q4 snapshot table remains flops for the first functional
    anchor or is moved into small SRAM/RF storage before area work.
-4. Wrap the windowed real-core loop into the product CSR/AXI top once the
-   numerical directed test is passing.
+4. Replace the `FA_TOP_OPTIM_WINDOWED` deterministic feeder with real AXI DMA
+   Q/K/V fill and O writeback before product-top signoff.

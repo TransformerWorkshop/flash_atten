@@ -567,6 +567,26 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("axil_read(7'h40, read_data)", text)
         self.assertIn("32'd2242", text)
 
+    def test_optim_windowed_top_wraps_csr_and_windowed_loop(self):
+        text = read_rtl("fa_top_optim_windowed.v")
+
+        self.assertRegex(text, r"module\s+FA_TOP_OPTIM_WINDOWED\b")
+        self.assertIn("FA_CSR u_fa_csr", text)
+        self.assertIn("FA_OPTIM_4X4_WINDOWED_LOOP u_windowed_loop", text)
+        self.assertIn("assign m_axi_arvalid = 1'b0", text)
+        self.assertIn("assign m_axi_awvalid = 1'b0", text)
+        self.assertIn("assign m_axi_wvalid = 1'b0", text)
+
+    def test_optim_windowed_top_smoke_checks_csr_cycles(self):
+        text = read_rtl_smoke("fa_top_optim_windowed_tb.v")
+
+        self.assertRegex(text, r"module\s+fa_top_optim_windowed_tb\b")
+        self.assertIn("FA_TOP_OPTIM_WINDOWED dut", text)
+        self.assertIn("axil_write(7'h00, 32'h0000_0001)", text)
+        self.assertIn("axil_read(7'h40, read_data)", text)
+        self.assertIn("32'd154245", text)
+        self.assertIn("numeric=dense_qk_reference", text)
+
     def test_optim_packed_negative_smoke_covers_pv_feeder_reuse(self):
         text = read_rtl_smoke("fa_optim_sa_pipeline_packed_negative_tb.v")
 
