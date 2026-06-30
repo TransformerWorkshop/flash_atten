@@ -62,9 +62,14 @@ class WindowedAttentionModelTest(unittest.TestCase):
         err = compare_outputs(actual, expected)
 
         self.assertLess(err.max_abs, 1.0e-12)
-        self.assertEqual(actual.counters.kv_window_count, 16)
+        self.assertEqual(actual.counters.kv_window_count, 10)
+        self.assertEqual(actual.counters.q_tile_visit_count, 160)
         self.assertEqual(actual.counters.kv_tile_compute_count, 544)
         self.assertEqual(actual.counters.skipped_future_kv_tiles, 480)
+        self.assertEqual(actual.counters.score_slice_count, 2176)
+        self.assertEqual(actual.counters.oacc_slice_count, 2176)
+        self.assertEqual(actual.counters.state_fill_count, 160)
+        self.assertEqual(actual.counters.state_spill_count, 160)
 
     def test_streaming_state_must_survive_across_kv_windows(self):
         cfg = WindowedAttentionConfig(

@@ -133,6 +133,8 @@ def build_windowed_rtl_contract(
 
     for q_group_idx in range(q_group_count):
         for kv_window_idx in range(kv_windows_per_group):
+            if _causal_window_fully_future(cfg, q_group_idx, kv_window_idx):
+                continue
             kv_base_idx = kv_window_idx * cfg.kv_window_tiles
             for slot_idx in range(cfg.kv_window_tiles):
                 kv_tile_idx = kv_base_idx + slot_idx
@@ -154,12 +156,16 @@ def build_windowed_rtl_contract(
 
     core_start_count = len(core_starts)
     micro_tile_count = sum(_micro_tiles_for_event(cfg, event) for event in core_starts)
-    skipped_future_kv_tiles = (
-        (core_start_count * cfg.micro_tiles_per_core_start) - micro_tile_count
+    full_schedule_micro_tiles = (
+        q_group_count
+        * kv_windows_per_group
+        * q_tiles_per_group
+        * cfg.micro_tiles_per_core_start
     )
+    skipped_future_kv_tiles = full_schedule_micro_tiles - micro_tile_count
     counters = WindowedRtlCounters(
         q_group_count=q_group_count,
-        kv_window_count=q_group_count * kv_windows_per_group,
+        kv_window_count=len(k_tile_requests) // cfg.kv_window_tiles,
         q_tile_visit_count=len(q_tile_requests),
         q_tile_req_count=len(q_tile_requests),
         q_tile_beat_count=len(q_tile_requests) * cfg.q_tile_beat_count,
@@ -187,6 +193,16 @@ def build_windowed_rtl_contract(
         v_tile_requests=v_tile_requests,
         core_starts=core_starts,
     )
+
+
+def _causal_window_fully_future(
+    cfg: WindowedRtlContractConfig, q_group_idx: int, kv_window_idx: int
+) -> bool:
+    if not cfg.causal:
+        return False
+    q_group_last_row = ((q_group_idx + 1) * cfg.q_group_rows) - 1
+    kv_window_base_row = kv_window_idx * cfg.kv_window_tiles * cfg.kv_tile_rows
+    return kv_window_base_row > q_group_last_row
 
 
 def axi_read_metrics_for_windowed_contract(

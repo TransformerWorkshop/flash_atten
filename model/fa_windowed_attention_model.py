@@ -181,6 +181,11 @@ def windowed_attention(
         row_seen = [False for _ in group_rows]
 
         for kv_window_idx in range(kv_window_count_per_group):
+            if _causal_window_fully_future(cfg, q_group_base, kv_window_idx):
+                skipped_future_kv_tiles += (
+                    q_tile_count_per_group * cfg.kv_window_tiles
+                )
+                continue
             kv_window_count += 1
             kv_tile_base = kv_window_idx * cfg.kv_window_tiles
             for q_tile_offset in range(q_tile_count_per_group):
@@ -413,6 +418,16 @@ def _causal_tile_fully_future(
         return False
     q_tile_last_row = q_tile_base + cfg.q_tile_rows - 1
     return kv_base > q_tile_last_row
+
+
+def _causal_window_fully_future(
+    cfg: WindowedAttentionConfig, q_group_base: int, kv_window_idx: int
+) -> bool:
+    if not cfg.causal:
+        return False
+    q_group_last_row = q_group_base + cfg.q_group_rows - 1
+    kv_window_base_row = kv_window_idx * cfg.kv_window_tiles * cfg.kv_tile_rows
+    return kv_window_base_row > q_group_last_row
 
 
 def _zero_matrix(rows: int, cols: int) -> Matrix:

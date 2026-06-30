@@ -304,11 +304,40 @@ VCS run: CODEX_VCS_RUN_STATUS=0
 PASS: fa_top_optim_windowed_tb numeric=dense_qk_reference causal=1 cycles=118597 rd_bytes=393216 wr_bytes=32768 ar_count=1536 r_beat_count=24576 aw_count=128 w_beat_count=2048 kv_tiles=544 qk_tasks=69632 pv_tasks=69632
 ```
 
-This is still not the final causal bandwidth optimization. K/V prefetch remains
-window-based and loads all `64` K tiles plus all `64` V tiles, so AXI read
-traffic stays fixed. The next performance gap is `rtl_missing_feature`: causal
-K/V load-window suppression or a scheduler contract that avoids loading
-future-only resident windows.
+### Causal Load-Window Skip Anchor
+
+The next scheduler landing suppresses fully future resident KV windows in
+`FA_OPTIM_4X4_WINDOWED_LOOP`. For the fixed `S=256,d=64` shape, a 64-row Q
+group only needs KV windows whose `kv_window_idx <= q_group_idx` in causal
+mode. The loop now uses:
+
+```text
+causal_kv_window_needed_w = (!causal_en) || (kv_window_idx_r <= q_group_idx_r)
+core_last_kv_window_w     = physical_last_window ||
+                            (causal_en && kv_window_idx_r == q_group_idx_r)
+```
+
+When the next KV window is future-only, the loop dumps the retained per-q4
+snapshot/OACC state for the Q group instead of loading K/V, reloading Q, or
+starting the core. The total causal skipped future work remains `480` KV
+micro-tiles: `384` from six whole skipped windows plus `96` from the diagonal
+windows' per-q4 effective-end truncation inside the core.
+
+```text
+RUN=/home/host/codex_runs/fa_top_optim_windowed_causal_load_skip_20260630_164010
+
+Non-causal:
+VCS compile/run: pass
+PASS: fa_top_optim_windowed_tb numeric=dense_qk_reference causal=0 cycles=165509 rd_bytes=393216 wr_bytes=32768 ar_count=1536 r_beat_count=24576 aw_count=128 w_beat_count=2048 kv_windows=16 q_reqs=256 k_reqs=64 v_reqs=64 core_starts=256 restore_starts=192 kv_tiles=1024 qk_tasks=131072 pv_tasks=131072
+
+Causal load-window skip:
+VCS compile/run: pass
+PASS: fa_top_optim_windowed_tb numeric=dense_qk_reference causal=1 cycles=99061 rd_bytes=245760 wr_bytes=32768 ar_count=960 r_beat_count=15360 aw_count=128 w_beat_count=2048 kv_windows=10 q_reqs=160 k_reqs=40 v_reqs=40 core_starts=160 restore_starts=96 kv_tiles=544 qk_tasks=69632 pv_tasks=69632
+```
+
+This closes the previous `rtl_missing_feature` for causal K/V load-window
+suppression on the active product path. It is a measured current RTL fact, not
+only a model target.
 
 TABLE I
 Module Parameters
@@ -349,17 +378,25 @@ Expected Counter Values
 | Counter | Non-causal | Causal | Meaning |
 | --- | ---: | ---: | --- |
 | `q_group_count` | `4` | `4` | Number of 64-row Q groups |
-| `kv_window_count` | `16` | `16` | Four KV windows per Q group |
-| `q_tile_visit_count` | `256` | `256` | Q reload visits across windows |
-| `q_tile_req_count` | `256` | `256` | Q request handshakes |
-| `k_tile_req_count` | `64` | `64` | K tile load requests |
-| `v_tile_req_count` | `64` | `64` | V tile load requests |
+| `kv_window_count` | `16` | `10` | Resident KV windows actually loaded |
+| `q_tile_visit_count` | `256` | `160` | Q reload visits across loaded windows |
+| `q_tile_req_count` | `256` | `160` | Q request handshakes |
+| `q_tile_beat_count` | `16384` | `10240` | Q 64-bit beat handshakes |
+| `k_tile_req_count` | `64` | `40` | K tile load requests |
+| `k_tile_beat_count` | `16384` | `10240` | K 64-bit beat handshakes |
+| `v_tile_req_count` | `64` | `40` | V tile load requests |
+| `v_tile_beat_count` | `16384` | `10240` | V 64-bit beat handshakes |
+| `core_start_count` | `256` | `160` | Q tile core starts |
+| `restore_start_count` | `192` | `96` | Starts after the first effective window |
 | `kv_tile_compute_count` | `1024` | `544` | Non-skipped q4 x kv16 work items |
 | `skipped_future_kv_tiles` | `0` | `480` | Fully future-masked causal tiles |
 | `score_slice_count` | `4096` | `2176` | Score slice beats |
 | `oacc_slice_count` | `4096` | `2176` | OACC slice beats |
-| `state_fill_count` | `256` | `256` | Row-state/OACC restore events |
-| `state_spill_count` | `256` | `256` | Row-state/OACC save events |
+| `state_fill_count` | `256` | `160` | Row-state/OACC restore/init events |
+| `state_spill_count` | `256` | `160` | Row-state/OACC save events |
+| `rd_bytes` | `393216` | `245760` | AXI read byte count |
+| `ar_count` | `1536` | `960` | AXI read address bursts |
+| `r_beat_count` | `24576` | `15360` | AXI read data beats |
 
 ## Current Gap To Final RTL
 

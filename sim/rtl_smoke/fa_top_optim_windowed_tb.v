@@ -71,6 +71,8 @@ module fa_top_optim_windowed_tb #(
     integer aw_count;
     integer w_beat_count;
     integer b_count;
+    integer core_start_count;
+    integer restore_start_count;
     integer current_burst_idx;
     integer current_burst_beats;
     integer current_write_burst_idx;
@@ -81,10 +83,29 @@ module fa_top_optim_windowed_tb #(
     reg [15:0] expected_o_cache [0:16383];
     wire [31:0] expected_windowed_kv_tile_count =
         CAUSAL_MODE ? 32'd544 : 32'd1024;
+    wire [31:0] expected_windowed_kv_window_count =
+        CAUSAL_MODE ? 32'd10 : 32'd16;
+    wire [31:0] expected_windowed_q_tile_req_count =
+        CAUSAL_MODE ? 32'd160 : 32'd256;
+    wire [31:0] expected_windowed_q_tile_beat_count =
+        CAUSAL_MODE ? 32'd10240 : 32'd16384;
+    wire [31:0] expected_windowed_k_tile_req_count =
+        CAUSAL_MODE ? 32'd40 : 32'd64;
+    wire [31:0] expected_windowed_k_tile_beat_count =
+        CAUSAL_MODE ? 32'd10240 : 32'd16384;
+    wire [31:0] expected_windowed_v_tile_req_count =
+        CAUSAL_MODE ? 32'd40 : 32'd64;
+    wire [31:0] expected_windowed_v_tile_beat_count =
+        CAUSAL_MODE ? 32'd10240 : 32'd16384;
+    wire [31:0] expected_windowed_restore_start_count =
+        CAUSAL_MODE ? 32'd96 : 32'd192;
     wire [31:0] expected_windowed_qk_task_count =
         CAUSAL_MODE ? 32'd69632 : 32'd131072;
     wire [31:0] expected_windowed_pv_task_count =
         CAUSAL_MODE ? 32'd69632 : 32'd131072;
+    wire [31:0] expected_rd_bytes = CAUSAL_MODE ? 32'd245760 : 32'd393216;
+    wire [31:0] expected_ar_count = CAUSAL_MODE ? 32'd960 : 32'd1536;
+    wire [31:0] expected_r_beat_count = CAUSAL_MODE ? 32'd15360 : 32'd24576;
     integer init_i;
     integer row_i;
     integer col_i;
@@ -142,6 +163,21 @@ module fa_top_optim_windowed_tb #(
     initial begin
         clk = 1'b0;
         forever #5 clk = ~clk;
+    end
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            core_start_count <= 0;
+            restore_start_count <= 0;
+        end else if (clear) begin
+            core_start_count <= 0;
+            restore_start_count <= 0;
+        end else if (dut.u_windowed_loop.core_start_r) begin
+            core_start_count <= core_start_count + 1;
+            if (!dut.u_windowed_loop.core_first_kv_window_w) begin
+                restore_start_count <= restore_start_count + 1;
+            end
+        end
     end
 
     task tick;
@@ -932,6 +968,8 @@ module fa_top_optim_windowed_tb #(
     initial begin
         error_count = 0;
         wait_count = 0;
+        core_start_count = 0;
+        restore_start_count = 0;
         for (init_i = 0; init_i < O_TOTAL_WORDS; init_i = init_i + 1) begin
             o_mem[init_i] = 32'hdead_beef;
         end
@@ -1002,8 +1040,8 @@ module fa_top_optim_windowed_tb #(
         axil_read(7'h40, read_data);
         cycles_data = read_data;
         if (CAUSAL_MODE) begin
-            if (read_data >= 32'd165509) begin
-                $display("FAIL: causal CYCLES expected less than 165509 got %0d",
+            if (read_data >= 32'd118597) begin
+                $display("FAIL: causal CYCLES expected less than 118597 got %0d",
                          read_data);
                 error_count = error_count + 1;
             end
@@ -1016,8 +1054,8 @@ module fa_top_optim_windowed_tb #(
 
         axil_read(7'h44, read_data);
         rd_bytes_data = read_data;
-        if (read_data !== 32'd393216) begin
-            $display("FAIL: RD_BYTES expected 393216 got %0d", read_data);
+        if (read_data !== expected_rd_bytes) begin
+            $display("FAIL: RD_BYTES expected %0d got %0d", expected_rd_bytes, read_data);
             error_count = error_count + 1;
         end
 
@@ -1028,11 +1066,31 @@ module fa_top_optim_windowed_tb #(
             error_count = error_count + 1;
         end
 
-        expect32(ar_count, 32'd1536, "ar_count");
-        expect32(r_beat_count, 32'd24576, "r_beat_count");
+        expect32(ar_count, expected_ar_count, "ar_count");
+        expect32(r_beat_count, expected_r_beat_count, "r_beat_count");
         expect32(aw_count, 32'd128, "aw_count");
         expect32(w_beat_count, 32'd2048, "w_beat_count");
         expect32(b_count, 32'd128, "b_count");
+        expect32(dut.windowed_kv_window_count, expected_windowed_kv_window_count,
+                 "windowed_kv_window_count");
+        expect32(dut.windowed_q_tile_visit_count, expected_windowed_q_tile_req_count,
+                 "windowed_q_tile_visit_count");
+        expect32(dut.windowed_q_tile_req_count, expected_windowed_q_tile_req_count,
+                 "windowed_q_tile_req_count");
+        expect32(dut.windowed_q_tile_beat_count, expected_windowed_q_tile_beat_count,
+                 "windowed_q_tile_beat_count");
+        expect32(dut.windowed_k_tile_req_count, expected_windowed_k_tile_req_count,
+                 "windowed_k_tile_req_count");
+        expect32(dut.windowed_k_tile_beat_count, expected_windowed_k_tile_beat_count,
+                 "windowed_k_tile_beat_count");
+        expect32(dut.windowed_v_tile_req_count, expected_windowed_v_tile_req_count,
+                 "windowed_v_tile_req_count");
+        expect32(dut.windowed_v_tile_beat_count, expected_windowed_v_tile_beat_count,
+                 "windowed_v_tile_beat_count");
+        expect32(dut.windowed_state_fill_count, expected_windowed_q_tile_req_count,
+                 "windowed_state_fill_count");
+        expect32(dut.windowed_state_spill_count, expected_windowed_q_tile_req_count,
+                 "windowed_state_spill_count");
         expect32(dut.windowed_kv_tile_count, expected_windowed_kv_tile_count,
                  "windowed_kv_tile_count");
         expect32(dut.windowed_qk_task_count, expected_windowed_qk_task_count,
@@ -1041,12 +1099,19 @@ module fa_top_optim_windowed_tb #(
                  "windowed_pv_task_count");
         expect32(dut.windowed_oacc_task_count, expected_windowed_kv_tile_count,
                  "windowed_oacc_task_count");
+        expect32(core_start_count, expected_windowed_q_tile_req_count,
+                 "core_start_count");
+        expect32(restore_start_count, expected_windowed_restore_start_count,
+                 "restore_start_count");
         expect_o_memory_dense_qk();
 
         if (error_count == 0) begin
-            $display("PASS: fa_top_optim_windowed_tb numeric=dense_qk_reference causal=%0d cycles=%0d rd_bytes=%0d wr_bytes=%0d ar_count=%0d r_beat_count=%0d aw_count=%0d w_beat_count=%0d kv_tiles=%0d qk_tasks=%0d pv_tasks=%0d",
+            $display("PASS: fa_top_optim_windowed_tb numeric=dense_qk_reference causal=%0d cycles=%0d rd_bytes=%0d wr_bytes=%0d ar_count=%0d r_beat_count=%0d aw_count=%0d w_beat_count=%0d kv_windows=%0d q_reqs=%0d k_reqs=%0d v_reqs=%0d core_starts=%0d restore_starts=%0d kv_tiles=%0d qk_tasks=%0d pv_tasks=%0d",
                      CAUSAL_MODE, cycles_data, rd_bytes_data, wr_bytes_data, ar_count,
-                     r_beat_count, aw_count, w_beat_count, dut.windowed_kv_tile_count,
+                     r_beat_count, aw_count, w_beat_count, dut.windowed_kv_window_count,
+                     dut.windowed_q_tile_req_count, dut.windowed_k_tile_req_count,
+                     dut.windowed_v_tile_req_count, core_start_count, restore_start_count,
+                     dut.windowed_kv_tile_count,
                      dut.windowed_qk_task_count, dut.windowed_pv_task_count);
             $finish;
         end

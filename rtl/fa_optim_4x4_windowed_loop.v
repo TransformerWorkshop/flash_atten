@@ -134,9 +134,12 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     wire [4:0] kv_load_tile_idx_w = kv_window_base_idx_w + {3'd0, kv_load_slot_idx_r};
     wire [4:0] core_kv_base_idx_w = kv_window_base_idx_w;
     wire core_first_kv_window_w = (kv_window_idx_r == 2'd0);
-    wire core_last_kv_window_w = (kv_window_idx_r == (KV_WINDOWS_PER_GROUP - 1));
     wire window_is_last_q_tile_w = (q_tile_in_group_idx_r == (Q_TILES_PER_GROUP - 1));
     wire group_is_last_window_w = (kv_window_idx_r == (KV_WINDOWS_PER_GROUP - 1));
+    wire causal_kv_window_needed_w = (!causal_en) || (kv_window_idx_r <= q_group_idx_r);
+    wire group_effective_last_window_w =
+        group_is_last_window_w || (causal_en && (kv_window_idx_r == q_group_idx_r));
+    wire core_last_kv_window_w = group_effective_last_window_w;
     wire group_is_last_group_w = (q_group_idx_r == (Q_GROUP_COUNT - 1));
     wire o_dump_fire_w = o_dump_valid && o_dump_ready;
     wire o_dump_last_word_w = (o_dump_word_idx_r == (O_DUMP_WORDS_PER_GROUP - 1));
@@ -413,7 +416,11 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
                 end
             end
             ST_GROUP_START: begin
-                state_n = ST_K_LOAD_REQ;
+                if (!causal_kv_window_needed_w) begin
+                    state_n = ST_DUMP_GROUP;
+                end else begin
+                    state_n = ST_K_LOAD_REQ;
+                end
             end
             ST_K_LOAD_REQ: begin
                 if (k_tile_req_fire_w) begin
@@ -463,7 +470,7 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
                     if (micro_error_w) begin
                         state_n = ST_DONE;
                     end else if (window_is_last_q_tile_w) begin
-                        if (group_is_last_window_w) begin
+                        if (group_effective_last_window_w) begin
                             state_n = ST_DUMP_GROUP;
                         end else begin
                             state_n = ST_K_LOAD_REQ;
@@ -736,7 +743,7 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
                     if (window_is_last_q_tile_w) begin
                         q_tile_in_group_idx_r <= 4'd0;
                         kv_window_resident_valid_r <= {KV_WINDOW_TILES{1'b0}};
-                        if (group_is_last_window_w) begin
+                        if (group_effective_last_window_w) begin
                             kv_window_idx_r <= 2'd0;
                             o_dump_group_idx_r <= q_group_idx_r;
                             o_dump_word_idx_r <= 11'd0;

@@ -50,13 +50,45 @@ class WindowedRtlContractModelTest(unittest.TestCase):
         contract = build_windowed_rtl_contract(cfg)
         metrics = axi_read_metrics_for_windowed_contract(contract)
 
+        self.assertEqual(contract.counters.q_group_count, 4)
+        self.assertEqual(contract.counters.kv_window_count, 10)
+        self.assertEqual(contract.counters.q_tile_visit_count, 160)
+        self.assertEqual(contract.counters.q_tile_req_count, 160)
+        self.assertEqual(contract.counters.q_tile_beat_count, 10240)
+        self.assertEqual(contract.counters.k_tile_req_count, 40)
+        self.assertEqual(contract.counters.k_tile_beat_count, 10240)
+        self.assertEqual(contract.counters.v_tile_req_count, 40)
+        self.assertEqual(contract.counters.v_tile_beat_count, 10240)
         self.assertEqual(contract.counters.micro_tile_count, 544)
         self.assertEqual(contract.counters.kv_tile_count, 544)
+        self.assertEqual(contract.counters.state_fill_count, 160)
+        self.assertEqual(contract.counters.state_spill_count, 160)
+        self.assertEqual(contract.counters.core_start_count, 160)
+        self.assertEqual(contract.counters.restore_start_count, 96)
         self.assertEqual(contract.counters.skipped_future_kv_tiles, 480)
         self.assertEqual(contract.counters.qk_task_count, 69632)
         self.assertEqual(contract.counters.pv_task_count, 69632)
         self.assertEqual(contract.counters.oacc_task_count, 544)
-        self.assertEqual(metrics.rd_bytes, 393216)
+        self.assertEqual(metrics.ar_count, 960)
+        self.assertEqual(metrics.r_beat_count, 15360)
+        self.assertEqual(metrics.rd_bytes, 245760)
+
+    def test_causal_request_sequences_skip_group_future_windows(self):
+        cfg = WindowedRtlContractConfig(causal=True)
+
+        contract = build_windowed_rtl_contract(cfg)
+
+        self.assertEqual(contract.k_tile_requests, (
+            list(range(0, 4))
+            + list(range(0, 8))
+            + list(range(0, 12))
+            + list(range(0, 16))
+        ))
+        self.assertEqual(contract.v_tile_requests, contract.k_tile_requests)
+        self.assertEqual(contract.q_tile_requests[:16], list(range(0, 16)))
+        self.assertEqual(contract.q_tile_requests[16:48], list(range(16, 32)) * 2)
+        self.assertEqual(contract.q_tile_requests[48:96], list(range(32, 48)) * 3)
+        self.assertEqual(contract.q_tile_requests[96:160], list(range(48, 64)) * 4)
 
     def test_request_sequences_match_windowed_rtl_loop_order(self):
         contract = build_windowed_rtl_contract(WindowedRtlContractConfig())
