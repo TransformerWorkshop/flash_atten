@@ -325,6 +325,10 @@ module FA_OPTIM_4X4_MICRO_PIPELINE (
         .p_tile_flat(p_tile_flat_w),
         .rescale_vec_flat(rescale_vec_flat_w),
         .done_pulse(row_done_pulse_w),
+        .restore_valid(1'b0),
+        .restore_m_state_flat(512'd0),
+        .restore_l_state_flat(512'd0),
+        .restore_row_seen(16'd0),
         .debug_m_state_flat(unused_m_state_flat_w),
         .debug_l_state_flat(unused_l_state_flat_w),
         .debug_row_seen(unused_row_seen_w)

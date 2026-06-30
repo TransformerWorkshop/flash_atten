@@ -25,7 +25,7 @@ Local evidence:
 
 ```text
 python -m unittest discover model -v
-33 tests OK
+36 tests OK
 ```
 
 The correctness regression includes one negative-control check:
@@ -50,11 +50,23 @@ window, starts the real core once per `{q4 tile, KV window}`, and drives
 core. Its K/V SRAM layout is window-local, not full-matrix resident: the local
 SRAM row encodes the resident window slot.
 
-This is still not a complete numerical product RTL claim. The current core
-still clears internal row-state/OACC storage at each `start` and does not yet
-restore/spill the full row-state/OACC snapshot across KV windows. Therefore
-`FA_OPTIM_4X4_WINDOWED_LOOP` is a real-core scheduler landing point, while
-cross-window numerical correctness remains an RTL gap.
+The current RTL now exposes a structural state snapshot path for cross-window
+correctness:
+
+- `FA_ROW_STATE_REAL` can load `m_state`, `l_state`, and `row_seen` from restore
+  inputs during its init handshake.
+- `FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE` exports row-state snapshots and accepts
+  row-state/OACC restore inputs. On `start`, it either clears OACC for the first
+  KV window or restores the previous OACC snapshot for later windows.
+- `FA_OPTIM_4X4_WINDOWED_LOOP` stores one snapshot per q4 tile inside the active
+  Q group and reconnects it on later KV windows. One q4 snapshot is
+  `512b m + 512b l + 16b seen + 4096b OACC = 5136b`; 16 q4 tiles require
+  `82176b`, or `10272B`, before any later area-oriented compression.
+
+This is still not a complete numerical product RTL claim. The model proves the
+math contract, and the RTL structural contract is now present, but the
+windowed real-core top still needs a remote VCS numerical directed test before
+claiming end-to-end RTL correctness or performance.
 
 TABLE I
 Module Parameters
@@ -116,11 +128,10 @@ anchor.
 
 Remaining RTL landing items:
 
-1. Complete row-state/OACC restore and spill around `first_kv_window` and
-   `last_kv_window`. The core now exposes `kv_base_idx`, `kv_count`,
-   `first_kv_window`, and `last_kv_window`, but only the KV range and first
-   window row-state init control are landed.
-2. Add row-state/OACC fill and spill storage for the 64-row Q group lifetime.
-3. Convert score post and OACC update to the sliced widths used by the contract.
+1. Add a numerical VCS directed bench for `FA_OPTIM_4X4_WINDOWED_LOOP` that
+   checks S=256,d=64 against the model-generated dense/windowed reference.
+2. Convert score post and OACC update to the sliced widths used by the contract.
+3. Decide whether the q4 snapshot table remains flops for the first functional
+   anchor or is moved into small SRAM/RF storage before area work.
 4. Run remote VCS on `fa_optim_windowed_sched_contract_tb` and then a full
    numerical windowed top once the real compute path is connected.

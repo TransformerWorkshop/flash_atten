@@ -112,6 +112,10 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     reg [31:0] oacc_task_count_r;
     reg [4095:0] q_block_flat_r;
     reg [KV_WINDOW_TILES-1:0] kv_window_resident_valid_r;
+    reg [511:0] q_tile_m_state_r [0:Q_TILES_PER_GROUP-1];
+    reg [511:0] q_tile_l_state_r [0:Q_TILES_PER_GROUP-1];
+    reg [15:0] q_tile_row_seen_r [0:Q_TILES_PER_GROUP-1];
+    reg [4095:0] q_tile_o_state_r [0:Q_TILES_PER_GROUP-1];
 
     wire [5:0] q_group_base_tile_idx_w = {q_group_idx_r, 4'd0};
     wire [5:0] q_current_tile_idx_w = q_group_base_tile_idx_w + {2'd0, q_tile_in_group_idx_r};
@@ -193,6 +197,9 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     wire [31:0] micro_row_state_task_count_w;
     wire [31:0] micro_pv_task_count_w;
     wire [31:0] micro_oacc_task_count_w;
+    wire [511:0] micro_snapshot_m_state_w;
+    wire [511:0] micro_snapshot_l_state_w;
+    wire [15:0] micro_snapshot_row_seen_w;
     wire window_resident_valid_w = &kv_window_resident_valid_r;
     wire [1:0] micro_k_rd_window_slot_idx_w = k_sram_rd_slot_idx_w[1:0];
     wire [1:0] micro_v_rd_window_slot_idx_w = v_sram_rd_slot_idx_w[1:0];
@@ -210,6 +217,8 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
                           || (Q_TILE_ROWS != 4)
                           || (KV_TILE_COUNT != 16)
                           || unused_micro_counts_w;
+
+    integer q_tile_state_i;
 
     assign q_tile_req_valid = (state_r == ST_Q_LOAD_REQ);
     assign q_tile_req_q_idx = q_current_tile_idx_w;
@@ -251,6 +260,11 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
         .kv_count(5'd4),
         .first_kv_window(core_first_kv_window_w),
         .last_kv_window(core_last_kv_window_w),
+        .restore_state_valid(!core_first_kv_window_w),
+        .restore_m_state_flat(q_tile_m_state_r[q_tile_in_group_idx_r]),
+        .restore_l_state_flat(q_tile_l_state_r[q_tile_in_group_idx_r]),
+        .restore_row_seen(q_tile_row_seen_r[q_tile_in_group_idx_r]),
+        .restore_o_tile_flat(q_tile_o_state_r[q_tile_in_group_idx_r]),
         .k_rd_req_valid(micro_k_rd_req_valid_w),
         .k_rd_req_ready(micro_k_rd_req_ready_w),
         .k_rd_req_kv_idx(micro_k_rd_req_kv_idx_w),
@@ -275,7 +289,10 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
         .score_task_count(micro_score_task_count_w),
         .row_state_task_count(micro_row_state_task_count_w),
         .pv_task_count(micro_pv_task_count_w),
-        .oacc_task_count(micro_oacc_task_count_w)
+        .oacc_task_count(micro_oacc_task_count_w),
+        .snapshot_m_state_flat(micro_snapshot_m_state_w),
+        .snapshot_l_state_flat(micro_snapshot_l_state_w),
+        .snapshot_row_seen(micro_snapshot_row_seen_w)
     );
 
     assign micro_k_rd_req_ready_w = (state_r == ST_WAIT_TILE) && current_k_rd_resident_w;
@@ -489,6 +506,12 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
             kv_window_resident_valid_r <= {KV_WINDOW_TILES{1'b0}};
             k_sram_rd_resp_pair_idx_r <= 5'd0;
             v_sram_rd_resp_kv_idx_r <= 5'd0;
+            for (q_tile_state_i = 0; q_tile_state_i < Q_TILES_PER_GROUP; q_tile_state_i = q_tile_state_i + 1) begin
+                q_tile_m_state_r[q_tile_state_i] <= 512'd0;
+                q_tile_l_state_r[q_tile_state_i] <= 512'd0;
+                q_tile_row_seen_r[q_tile_state_i] <= 16'd0;
+                q_tile_o_state_r[q_tile_state_i] <= 4096'd0;
+            end
         end else if (clear) begin
             busy_r <= 1'b0;
             done_r <= 1'b0;
@@ -522,6 +545,12 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
             kv_window_resident_valid_r <= {KV_WINDOW_TILES{1'b0}};
             k_sram_rd_resp_pair_idx_r <= 5'd0;
             v_sram_rd_resp_kv_idx_r <= 5'd0;
+            for (q_tile_state_i = 0; q_tile_state_i < Q_TILES_PER_GROUP; q_tile_state_i = q_tile_state_i + 1) begin
+                q_tile_m_state_r[q_tile_state_i] <= 512'd0;
+                q_tile_l_state_r[q_tile_state_i] <= 512'd0;
+                q_tile_row_seen_r[q_tile_state_i] <= 16'd0;
+                q_tile_o_state_r[q_tile_state_i] <= 4096'd0;
+            end
         end else begin
             done_r <= 1'b0;
             core_start_r <= 1'b0;
@@ -566,6 +595,12 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
                 k_tile_load_count_r <= 9'd0;
                 v_tile_load_count_r <= 9'd0;
                 kv_window_resident_valid_r <= {KV_WINDOW_TILES{1'b0}};
+                for (q_tile_state_i = 0; q_tile_state_i < Q_TILES_PER_GROUP; q_tile_state_i = q_tile_state_i + 1) begin
+                    q_tile_m_state_r[q_tile_state_i] <= 512'd0;
+                    q_tile_l_state_r[q_tile_state_i] <= 512'd0;
+                    q_tile_row_seen_r[q_tile_state_i] <= 16'd0;
+                    q_tile_o_state_r[q_tile_state_i] <= 4096'd0;
+                end
             end
 
             if (state_r == ST_GROUP_START) begin
@@ -574,6 +609,12 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
                 kv_load_slot_idx_r <= 2'd0;
                 q_tile_in_group_idx_r <= 4'd0;
                 kv_window_resident_valid_r <= {KV_WINDOW_TILES{1'b0}};
+                for (q_tile_state_i = 0; q_tile_state_i < Q_TILES_PER_GROUP; q_tile_state_i = q_tile_state_i + 1) begin
+                    q_tile_m_state_r[q_tile_state_i] <= 512'd0;
+                    q_tile_l_state_r[q_tile_state_i] <= 512'd0;
+                    q_tile_row_seen_r[q_tile_state_i] <= 16'd0;
+                    q_tile_o_state_r[q_tile_state_i] <= 4096'd0;
+                end
             end
 
             if (k_tile_req_fire_w) begin
@@ -649,22 +690,28 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
                 qk_task_count_r <= qk_task_count_r + micro_qk_task_count_w;
                 pv_task_count_r <= pv_task_count_r + micro_pv_task_count_w;
                 oacc_task_count_r <= oacc_task_count_r + micro_oacc_task_count_w;
-                state_spill_count_r <= state_spill_count_r + 32'd1;
                 if (micro_error_w) begin
                     error_r <= 1'b1;
-                end else if (window_is_last_q_tile_w) begin
-                    q_tile_in_group_idx_r <= 4'd0;
-                    if (group_is_last_window_w) begin
-                        kv_window_idx_r <= 2'd0;
-                        if (!group_is_last_group_w) begin
-                            q_group_idx_r <= q_group_idx_r + 1'b1;
+                end else begin
+                    state_spill_count_r <= state_spill_count_r + 32'd1;
+                    q_tile_m_state_r[q_tile_in_group_idx_r] <= micro_snapshot_m_state_w;
+                    q_tile_l_state_r[q_tile_in_group_idx_r] <= micro_snapshot_l_state_w;
+                    q_tile_row_seen_r[q_tile_in_group_idx_r] <= micro_snapshot_row_seen_w;
+                    q_tile_o_state_r[q_tile_in_group_idx_r] <= o_block_flat;
+                    if (window_is_last_q_tile_w) begin
+                        q_tile_in_group_idx_r <= 4'd0;
+                        kv_window_resident_valid_r <= {KV_WINDOW_TILES{1'b0}};
+                        if (group_is_last_window_w) begin
+                            kv_window_idx_r <= 2'd0;
+                            if (!group_is_last_group_w) begin
+                                q_group_idx_r <= q_group_idx_r + 1'b1;
+                            end
+                        end else begin
+                            kv_window_idx_r <= kv_window_idx_r + 1'b1;
                         end
                     end else begin
-                        kv_window_idx_r <= kv_window_idx_r + 1'b1;
+                        q_tile_in_group_idx_r <= q_tile_in_group_idx_r + 1'b1;
                     end
-                    kv_window_resident_valid_r <= {KV_WINDOW_TILES{1'b0}};
-                end else begin
-                    q_tile_in_group_idx_r <= q_tile_in_group_idx_r + 1'b1;
                 end
             end
 

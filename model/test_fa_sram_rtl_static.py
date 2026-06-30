@@ -351,6 +351,55 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("wire [3:0] v_sram_rd_chunk_idx_w = {micro_v_rd_req_pair_idx_w[1:0], micro_v_rd_req_wave_idx_w}", text)
         self.assertIn("v_sram_rd_resp_kv_idx_r <= {3'd0, micro_v_rd_window_slot_idx_w}", text)
 
+    def test_optim_staggered_core_exposes_window_state_snapshot_ports(self):
+        text = read_rtl("fa_optim_4x4_q_tile_staggered_core.v")
+
+        for port_decl in (
+            "input  wire          restore_state_valid",
+            "input  wire [511:0]  restore_m_state_flat",
+            "input  wire [511:0]  restore_l_state_flat",
+            "input  wire [15:0]   restore_row_seen",
+            "input  wire [4095:0] restore_o_tile_flat",
+            "output wire [511:0]  snapshot_m_state_flat",
+            "output wire [511:0]  snapshot_l_state_flat",
+            "output wire [15:0]   snapshot_row_seen",
+        ):
+            self.assertIn(port_decl, text)
+
+        self.assertIn("row_init_valid_r <= first_kv_window || restore_state_valid", text)
+        self.assertIn(".restore_valid(restore_state_valid)", text)
+        self.assertIn(".restore_m_state_flat(restore_m_state_flat)", text)
+        self.assertIn(".debug_m_state_flat(snapshot_m_state_flat)", text)
+        self.assertIn("o_tile_row_r[o_row_i] <= restore_o_tile_flat[(o_row_i * 1024) +: 1024]", text)
+
+    def test_row_state_real_can_restore_snapshot(self):
+        text = read_rtl("fa_row_state_real.v")
+
+        for port_decl in (
+            "input  wire          restore_valid",
+            "input  wire [511:0]  restore_m_state_flat",
+            "input  wire [511:0]  restore_l_state_flat",
+            "input  wire [15:0]   restore_row_seen",
+        ):
+            self.assertIn(port_decl, text)
+
+        self.assertIn("m_state_r[row_i] <= restore_m_state_flat[(row_i * 32) +: 32]", text)
+        self.assertIn("l_state_r[row_i] <= restore_l_state_flat[(row_i * 32) +: 32]", text)
+        self.assertIn("row_seen_r[row_i] <= restore_row_seen[row_i]", text)
+
+    def test_optim_windowed_top_persists_q_tile_state_snapshots(self):
+        text = read_rtl("fa_optim_4x4_windowed_loop.v")
+
+        self.assertIn("reg [511:0] q_tile_m_state_r [0:Q_TILES_PER_GROUP-1]", text)
+        self.assertIn("reg [511:0] q_tile_l_state_r [0:Q_TILES_PER_GROUP-1]", text)
+        self.assertIn("reg [15:0] q_tile_row_seen_r [0:Q_TILES_PER_GROUP-1]", text)
+        self.assertIn("reg [4095:0] q_tile_o_state_r [0:Q_TILES_PER_GROUP-1]", text)
+        self.assertIn(".restore_state_valid(!core_first_kv_window_w)", text)
+        self.assertIn(".restore_m_state_flat(q_tile_m_state_r[q_tile_in_group_idx_r])", text)
+        self.assertIn(".restore_o_tile_flat(q_tile_o_state_r[q_tile_in_group_idx_r])", text)
+        self.assertIn("q_tile_m_state_r[q_tile_in_group_idx_r] <= micro_snapshot_m_state_w", text)
+        self.assertIn("q_tile_o_state_r[q_tile_in_group_idx_r] <= o_block_flat", text)
+
     def test_optim_4x4_full_loop_smoke_checks_s256(self):
         smoke_path = RTL_SMOKE_DIR / "fa_optim_4x4_full_loop_tb.v"
         self.assertTrue(smoke_path.exists(), "fa_optim_4x4_full_loop_tb.v must exist")

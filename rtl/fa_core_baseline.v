@@ -583,6 +583,10 @@ module FA_CORE_BASELINE #(
         .p_tile_flat(row_p_tile_flat),
         .rescale_vec_flat(row_rescale_vec_flat),
         .done_pulse(row_stream_done_pulse_w),
+        .restore_valid(1'b0),
+        .restore_m_state_flat(512'd0),
+        .restore_l_state_flat(512'd0),
+        .restore_row_seen(16'd0),
         //debug
         .debug_m_state_flat(row_debug_m_state_flat),
         .debug_l_state_flat(row_debug_l_state_flat),

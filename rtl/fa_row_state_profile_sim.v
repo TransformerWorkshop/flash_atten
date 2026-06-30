@@ -70,6 +70,10 @@ module FA_ROW_STATE_PROFILE_SIM #(
         .p_tile_flat(p_tile_flat),
         .rescale_vec_flat(rescale_vec_flat),
         .done_pulse(done_pulse),
+        .restore_valid(1'b0),
+        .restore_m_state_flat(512'd0),
+        .restore_l_state_flat(512'd0),
+        .restore_row_seen(16'd0),
         //debug
         .debug_m_state_flat(debug_m_state_flat),
         .debug_l_state_flat(debug_l_state_flat),

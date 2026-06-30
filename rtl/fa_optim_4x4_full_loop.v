@@ -164,9 +164,15 @@ module FA_OPTIM_4X4_FULL_LOOP (
     wire [31:0] micro_row_state_task_count_w;
     wire [31:0] micro_pv_task_count_w;
     wire [31:0] micro_oacc_task_count_w;
+    wire [511:0] micro_snapshot_m_state_w;
+    wire [511:0] micro_snapshot_l_state_w;
+    wire [15:0] micro_snapshot_row_seen_w;
     wire unused_micro_counts_w = ((|micro_cycles_w) & 1'b0)
                                | ((|micro_score_task_count_w) & 1'b0)
                                | ((|micro_row_state_task_count_w) & 1'b0)
+                               | ((|micro_snapshot_m_state_w) & 1'b0)
+                               | ((|micro_snapshot_l_state_w) & 1'b0)
+                               | ((|micro_snapshot_row_seen_w) & 1'b0)
                                | (micro_busy_w & 1'b0);
 
     assign q_tile_req_valid = (state_r == ST_Q_LOAD_REQ);
@@ -205,6 +211,11 @@ module FA_OPTIM_4X4_FULL_LOOP (
         .kv_count(5'd0),
         .first_kv_window(1'b1),
         .last_kv_window(1'b1),
+        .restore_state_valid(1'b0),
+        .restore_m_state_flat(512'd0),
+        .restore_l_state_flat(512'd0),
+        .restore_row_seen(16'd0),
+        .restore_o_tile_flat(4096'd0),
         .k_rd_req_valid(micro_k_rd_req_valid_w),
         .k_rd_req_ready(micro_k_rd_req_ready_w),
         .k_rd_req_kv_idx(micro_k_rd_req_kv_idx_w),
@@ -229,7 +240,10 @@ module FA_OPTIM_4X4_FULL_LOOP (
         .score_task_count(micro_score_task_count_w),
         .row_state_task_count(micro_row_state_task_count_w),
         .pv_task_count(micro_pv_task_count_w),
-        .oacc_task_count(micro_oacc_task_count_w)
+        .oacc_task_count(micro_oacc_task_count_w),
+        .snapshot_m_state_flat(micro_snapshot_m_state_w),
+        .snapshot_l_state_flat(micro_snapshot_l_state_w),
+        .snapshot_row_seen(micro_snapshot_row_seen_w)
     );
 
     assign micro_k_rd_req_ready_w = (state_r == ST_WAIT_TILE) && current_k_rd_resident_w;

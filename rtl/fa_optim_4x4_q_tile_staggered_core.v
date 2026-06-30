@@ -8,6 +8,11 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
     input  wire [4:0]    kv_count,
     input  wire          first_kv_window,
     input  wire          last_kv_window,
+    input  wire          restore_state_valid,
+    input  wire [511:0]  restore_m_state_flat,
+    input  wire [511:0]  restore_l_state_flat,
+    input  wire [15:0]   restore_row_seen,
+    input  wire [4095:0] restore_o_tile_flat,
     output wire          k_rd_req_valid,
     input  wire          k_rd_req_ready,
     output wire [4:0]    k_rd_req_kv_idx,
@@ -32,7 +37,10 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
     output reg  [31:0]   score_task_count,
     output reg  [31:0]   row_state_task_count,
     output reg  [31:0]   pv_task_count,
-    output reg  [31:0]   oacc_task_count
+    output reg  [31:0]   oacc_task_count,
+    output wire [511:0]  snapshot_m_state_flat,
+    output wire [511:0]  snapshot_l_state_flat,
+    output wire [15:0]   snapshot_row_seen
 );
 
     localparam integer SLOT_COUNT = 4;
@@ -197,9 +205,6 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
     wire row_done_pulse_w;
     wire [4095:0] p_tile_flat_w;
     wire [511:0] rescale_vec_flat_w;
-    wire [511:0] unused_m_state_flat_w;
-    wire [511:0] unused_l_state_flat_w;
-    wire [15:0] unused_row_seen_w;
     wire row_update_valid_w = score_active_valid_r && score_resp_valid_w && !kv_range_invalid_w;
     wire row_update_fire_w = row_update_valid_w && row_update_ready_w;
 
@@ -507,9 +512,13 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
         .p_tile_flat(p_tile_flat_w),
         .rescale_vec_flat(rescale_vec_flat_w),
         .done_pulse(row_done_pulse_w),
-        .debug_m_state_flat(unused_m_state_flat_w),
-        .debug_l_state_flat(unused_l_state_flat_w),
-        .debug_row_seen(unused_row_seen_w)
+        .restore_valid(restore_state_valid),
+        .restore_m_state_flat(restore_m_state_flat),
+        .restore_l_state_flat(restore_l_state_flat),
+        .restore_row_seen(restore_row_seen),
+        .debug_m_state_flat(snapshot_m_state_flat),
+        .debug_l_state_flat(snapshot_l_state_flat),
+        .debug_row_seen(snapshot_row_seen)
     );
 
     FA_OACC_UPDATE_REAL #(
@@ -750,7 +759,11 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
                         pv_task_count <= 32'd0;
                         oacc_task_count <= 32'd0;
                         for (o_row_i = 0; o_row_i < 4; o_row_i = o_row_i + 1) begin
-                            o_tile_row_r[o_row_i] <= 1024'd0;
+                            if (restore_state_valid) begin
+                                o_tile_row_r[o_row_i] <= restore_o_tile_flat[(o_row_i * 1024) +: 1024];
+                            end else begin
+                                o_tile_row_r[o_row_i] <= 1024'd0;
+                            end
                         end
                         feed_count_r <= 6'd0;
                         qk_issue_kv_idx_r <= kv_base_idx_w;
@@ -767,14 +780,14 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
                         p_feed_valid_r <= 1'b0;
                         v_feed_valid_r <= 1'b0;
                         k_feed_valid_r <= 1'b0;
-                        row_init_valid_r <= first_kv_window;
+                        row_init_valid_r <= first_kv_window || restore_state_valid;
                     end
                 end
                 CORE_INIT: begin
                     if (row_init_valid_r && row_init_ready_w) begin
                         row_init_valid_r <= 1'b0;
                     end
-                    if (row_init_done_pulse_w || !first_kv_window) begin
+                    if (row_init_done_pulse_w || !row_init_valid_r) begin
                         core_state_r <= CORE_RUN;
                     end
                 end

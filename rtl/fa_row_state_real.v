@@ -20,6 +20,10 @@ module FA_ROW_STATE_REAL #(
     output reg  [4095:0] p_tile_flat,
     output reg  [511:0]  rescale_vec_flat,
     output reg           done_pulse,
+    input  wire          restore_valid,
+    input  wire [511:0]  restore_m_state_flat,
+    input  wire [511:0]  restore_l_state_flat,
+    input  wire [15:0]   restore_row_seen,
     //debug
     output wire [511:0]  debug_m_state_flat,
     output wire [511:0]  debug_l_state_flat,
@@ -439,9 +443,15 @@ module FA_ROW_STATE_REAL #(
                         rescale_vec_flat <= 512'd0;
 `endif
                         for (row_i = 0; row_i < 16; row_i = row_i + 1) begin
-                            m_state_r[row_i] <= neg_large_word;
-                            l_state_r[row_i] <= Q16_ZERO;
-                            row_seen_r[row_i] <= 1'b0;
+                            if (restore_valid) begin
+                                m_state_r[row_i] <= restore_m_state_flat[(row_i * 32) +: 32];
+                                l_state_r[row_i] <= restore_l_state_flat[(row_i * 32) +: 32];
+                                row_seen_r[row_i] <= restore_row_seen[row_i];
+                            end else begin
+                                m_state_r[row_i] <= neg_large_word;
+                                l_state_r[row_i] <= Q16_ZERO;
+                                row_seen_r[row_i] <= 1'b0;
+                            end
                         end
                     end else if (update_valid && update_ready) begin
                         neg_large_word_r <= neg_large_word;
