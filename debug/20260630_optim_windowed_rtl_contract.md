@@ -25,7 +25,7 @@ Local evidence:
 
 ```text
 python -m unittest discover model -v
-31 tests OK
+33 tests OK
 ```
 
 The correctness regression includes one negative-control check:
@@ -41,6 +41,20 @@ model-level requirement that row-state and OACC must survive across KV windows.
 schedule. It implements the loop nest and exposes request and accounting
 counters. It does not yet instantiate the real `FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE`
 or perform numerical QK/softmax/PV/OACC computation.
+
+`FA_OPTIM_4X4_WINDOWED_LOOP` is the first RTL landing module that connects the
+windowed loop nest to the real `FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE`. It keeps
+the external Q/K/V 64-bit beat interfaces, loads four K/V tiles per resident
+window, starts the real core once per `{q4 tile, KV window}`, and drives
+`kv_base_idx`, `kv_count=4`, `first_kv_window`, and `last_kv_window` into the
+core. Its K/V SRAM layout is window-local, not full-matrix resident: the local
+SRAM row encodes the resident window slot.
+
+This is still not a complete numerical product RTL claim. The current core
+still clears internal row-state/OACC storage at each `start` and does not yet
+restore/spill the full row-state/OACC snapshot across KV windows. Therefore
+`FA_OPTIM_4X4_WINDOWED_LOOP` is a real-core scheduler landing point, while
+cross-window numerical correctness remains an RTL gap.
 
 TABLE I
 Module Parameters
@@ -102,14 +116,11 @@ anchor.
 
 Remaining RTL landing items:
 
-1. Replace the contract-only compute event with the real 4x4 staggered core.
-2. Complete row-state/OACC restore and spill around `first_kv_window` and
+1. Complete row-state/OACC restore and spill around `first_kv_window` and
    `last_kv_window`. The core now exposes `kv_base_idx`, `kv_count`,
    `first_kv_window`, and `last_kv_window`, but only the KV range and first
    window row-state init control are landed.
-3. Add row-state/OACC fill and spill storage for the 64-row Q group lifetime.
-4. Rework K/V SRAM addressing so resident slots carry `{window_slot, local row,
-   chunk}` rather than full-matrix resident coverage.
-5. Convert score post and OACC update to the sliced widths used by the contract.
-6. Run remote VCS on `fa_optim_windowed_sched_contract_tb` and then a full
+2. Add row-state/OACC fill and spill storage for the 64-row Q group lifetime.
+3. Convert score post and OACC update to the sliced widths used by the contract.
+4. Run remote VCS on `fa_optim_windowed_sched_contract_tb` and then a full
    numerical windowed top once the real compute path is connected.

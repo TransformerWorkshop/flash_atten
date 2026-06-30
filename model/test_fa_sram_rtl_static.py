@@ -310,6 +310,47 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("expect32(state_spill_count, 32'd256", text)
         self.assertIn("PASS: fa_optim_windowed_sched_contract_tb", text)
 
+    def test_optim_windowed_real_core_top_lands_scheduler_into_staggered_core(self):
+        rtl_path = RTL_DIR / "fa_optim_4x4_windowed_loop.v"
+        self.assertTrue(rtl_path.exists(), "windowed real-core loop RTL must exist")
+        text = rtl_path.read_text(encoding="utf-8")
+
+        self.assertRegex(text, r"module\s+FA_OPTIM_4X4_WINDOWED_LOOP\b")
+        self.assertIn("localparam integer Q_GROUP_ROWS = 64", text)
+        self.assertIn("localparam integer KV_WINDOW_TILES = 4", text)
+        self.assertIn("FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE u_q_tile_core", text)
+        self.assertIn(".kv_base_idx(core_kv_base_idx_w)", text)
+        self.assertIn(".kv_count(5'd4)", text)
+        self.assertIn(".first_kv_window(core_first_kv_window_w)", text)
+        self.assertIn(".last_kv_window(core_last_kv_window_w)", text)
+        self.assertIn("wire [4:0] core_kv_base_idx_w", text)
+        self.assertIn("wire core_first_kv_window_w", text)
+        self.assertIn("wire core_last_kv_window_w", text)
+        self.assertIn("reg [1:0] q_group_idx_r", text)
+        self.assertIn("reg [1:0] kv_window_idx_r", text)
+        self.assertIn("reg [3:0] q_tile_in_group_idx_r", text)
+        self.assertIn("q_tile_visit_count", text)
+        self.assertIn("state_fill_count", text)
+        self.assertIn("state_spill_count", text)
+        self.assertIn("kv_tile_count_r <= kv_tile_count_r + micro_kv_block_issue_count_w", text)
+        self.assertIn("q_tile_visit_count_r <= q_tile_visit_count_r + 32'd1", text)
+        self.assertNotIn("FA_OPTIM_WINDOWED_SCHED_CONTRACT", text)
+
+    def test_optim_windowed_real_core_top_uses_window_local_sram_layout(self):
+        text = read_rtl("fa_optim_4x4_windowed_loop.v")
+
+        self.assertIn("wire [3:0] k_sram_wr_bank_idx_w = k_tile_beat_row_idx", text)
+        self.assertIn("wire [3:0] k_sram_wr_row_idx_w = {2'd0, kv_load_slot_idx_r}", text)
+        self.assertIn("wire [3:0] k_sram_wr_chunk_idx_w = k_tile_beat_chunk_idx", text)
+        self.assertIn("wire [3:0] k_sram_rd_row_idx_w = {2'd0, k_sram_rd_slot_idx_w[1:0]}", text)
+        self.assertIn("wire [3:0] k_sram_rd_chunk_idx_w = micro_k_rd_req_pair_idx_w[4:1]", text)
+        self.assertIn("wire [3:0] v_sram_wr_bank_idx_w = {1'b0, v_tile_beat_row_idx[0], v_tile_beat_chunk_idx[1:0]}", text)
+        self.assertIn("wire [3:0] v_sram_wr_row_idx_w = {1'b0, kv_load_slot_idx_r, v_tile_beat_row_idx[3]}", text)
+        self.assertIn("wire [3:0] v_sram_wr_chunk_idx_w = {v_tile_beat_row_idx[2:1], v_tile_beat_chunk_idx[3:2]}", text)
+        self.assertIn("wire [3:0] v_sram_rd_row_idx_w = {1'b0, v_sram_rd_slot_idx_w[1:0], micro_v_rd_req_pair_idx_w[2]}", text)
+        self.assertIn("wire [3:0] v_sram_rd_chunk_idx_w = {micro_v_rd_req_pair_idx_w[1:0], micro_v_rd_req_wave_idx_w}", text)
+        self.assertIn("v_sram_rd_resp_kv_idx_r <= {3'd0, micro_v_rd_window_slot_idx_w}", text)
+
     def test_optim_4x4_full_loop_smoke_checks_s256(self):
         smoke_path = RTL_SMOKE_DIR / "fa_optim_4x4_full_loop_tb.v"
         self.assertTrue(smoke_path.exists(), "fa_optim_4x4_full_loop_tb.v must exist")
@@ -354,6 +395,7 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("fa_sram_tile_buffers.v", text)
         self.assertIn("fa_optim_windowed_sched_contract.v", text)
         self.assertIn("fa_optim_4x4_full_loop.v", text)
+        self.assertIn("fa_optim_4x4_windowed_loop.v", text)
         self.assertIn("fa_optim_4x4_q_tile_staggered_core.v", text)
         self.assertNotIn("fa_optim_4x4_micro_pipeline.v", text)
         self.assertIn("report_area -hierarchy", text)

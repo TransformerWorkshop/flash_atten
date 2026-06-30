@@ -116,6 +116,7 @@ set rtl_files [list \
     [file join $repo_root rtl fa_sram_tile_buffers.v] \
     [file join $repo_root rtl fa_optim_windowed_sched_contract.v] \
     [file join $repo_root rtl fa_optim_4x4_full_loop.v] \
+    [file join $repo_root rtl fa_optim_4x4_windowed_loop.v] \
     [file join $repo_root rtl fa_optim_4x4_q_tile_staggered_core.v] \
     [file join $repo_root rtl gemm_v3.v] \
     [file join $repo_root rtl gemu_v3.v] \
