@@ -7,6 +7,9 @@ from model.fa_windowed_attention_model import (
     WindowedAttentionCounters,
     compare_outputs,
     dense_attention,
+    expected_dense_qk_fixed_o_word,
+    fixed_dense_qk_window_output,
+    fixed_dense_qk_score_q16,
     make_qkv,
     windowed_attention,
 )
@@ -98,6 +101,26 @@ class WindowedAttentionModelTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             cfg.validate()
+
+    def test_fixed_dense_qk_model_matches_rtl_bench_reference_points(self):
+        self.assertEqual(fixed_dense_qk_score_q16(63, 0, 0, 0), 960)
+        self.assertEqual(fixed_dense_qk_score_q16(63, 3, 15, 15), 1376)
+        self.assertEqual(expected_dense_qk_fixed_o_word(0, 0), 0x082C)
+        self.assertEqual(expected_dense_qk_fixed_o_word(2, 31), 0x0A1F)
+        self.assertEqual(expected_dense_qk_fixed_o_word(3, 63), 0x0C07)
+
+        output = fixed_dense_qk_window_output()
+        checksum = sum(
+            (row_idx + 1) * (col_idx + 1) * output[row_idx][col_idx]
+            for row_idx in range(4)
+            for col_idx in range(64)
+        ) & 0xFFFFFFFF
+
+        self.assertEqual(len(output), 4)
+        self.assertEqual(len(output[0]), 64)
+        self.assertEqual(output[0][0], expected_dense_qk_fixed_o_word(0, 0))
+        self.assertEqual(output[3][63], expected_dense_qk_fixed_o_word(3, 63))
+        self.assertEqual(checksum, 0x03735A74)
 
 
 def _last_window_only_attention(q_matrix, k_matrix, v_matrix, cfg):

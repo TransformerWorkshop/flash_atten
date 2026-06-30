@@ -84,6 +84,7 @@ module fa_optim_4x4_windowed_loop_tb;
     integer col_i;
     reg expected_v_resp_valid_r;
     reg [511:0] expected_v_resp_data_r;
+    reg [31:0] dense_qk_o_checksum;
 
     FA_OPTIM_4X4_WINDOWED_LOOP dut (
         .clk(clk),
@@ -950,6 +951,7 @@ module fa_optim_4x4_windowed_loop_tb;
         q_req_seen_count = 0;
         k_req_seen_count = 0;
         v_req_seen_count = 0;
+        dense_qk_o_checksum = 32'd0;
         expected_v_resp_valid_r = 1'b0;
         expected_v_resp_data_r = 512'd0;
         rstn = 1'b0;
@@ -1022,7 +1024,18 @@ module fa_optim_4x4_windowed_loop_tb;
         for (row_i = 0; row_i < 4; row_i = row_i + 1) begin
             for (col_i = 0; col_i < 64; col_i = col_i + 1) begin
                 expect_o_word_all_tiles(row_i, col_i);
+                if (NUMERIC_MODE == NUMERIC_MODE_DENSE_QK) begin
+                    dense_qk_o_checksum = dense_qk_o_checksum
+                                         + ((row_i + 1) * (col_i + 1)
+                                            * expected_o_word_dense_qk(row_i, col_i));
+                end
             end
+        end
+        if ((NUMERIC_MODE == NUMERIC_MODE_DENSE_QK) &&
+            (dense_qk_o_checksum !== 32'h0373_5A74)) begin
+            $display("FAIL: dense-QK fixed reference checksum expected 0x03735a74 got 0x%08h",
+                     dense_qk_o_checksum);
+            error_count = error_count + 1;
         end
 
         if (error_count == 0) begin

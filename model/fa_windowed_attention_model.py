@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import math
 import random
+import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Sequence, Tuple
 
 
 Matrix = List[List[float]]
+
+Q16_MAX = 0x7FFF_FFFF
 
 
 @dataclass(frozen=True)
@@ -284,6 +288,68 @@ def compare_outputs(actual: AttentionResult, expected: AttentionResult) -> Error
     )
 
 
+def fixed_dense_qk_score_q16(
+    q_tile_idx: int, q_row: int, kv_tile_idx: int, kv_col: int
+) -> int:
+    acc_q16 = 0
+    for dim_idx in range(64):
+        q_q88 = _dense_qk_q_word(q_tile_idx, q_row, dim_idx)
+        k_q88 = _dense_qk_k_word(kv_tile_idx, kv_col, dim_idx)
+        acc_q16 += q_q88 * k_q88
+    return _sat_signed(acc_q16, 32)
+
+
+def expected_dense_qk_fixed_o_word(row: int, col: int) -> int:
+    old_m_q16 = _to_signed(0xFFC0_0000, 32)
+    old_l_q16 = 0
+    old_o_q412 = 0
+
+    for kv_idx in range(16):
+        scores_q16 = [
+            fixed_dense_qk_score_q16(63, row, kv_idx, key_col_idx)
+            for key_col_idx in range(16)
+        ]
+        new_m_q16 = max(scores_q16)
+        if old_l_q16 != 0:
+            new_m_q16 = max(old_m_q16, new_m_q16)
+            alpha_q16 = _exp_lut_q16_16(_q16_delta_to_exp_idx(old_m_q16 - new_m_q16))
+            alpha_l_old_q16 = _q16_mul_rn_sat(alpha_q16, old_l_q16)
+        else:
+            alpha_l_old_q16 = 0
+
+        beta_q16 = [
+            _exp_lut_q16_16(_q16_delta_to_exp_idx(score_q16 - new_m_q16))
+            for score_q16 in scores_q16
+        ]
+        beta_sum_q16 = 0
+        for beta in beta_q16:
+            beta_sum_q16 = _q16_add_sat(beta_sum_q16, beta)
+
+        new_l_q16 = _q16_add_sat(alpha_l_old_q16, beta_sum_q16)
+        recip_q16 = _recip_q16_16(new_l_q16)
+        scale_q16 = 0 if old_l_q16 == 0 else _q16_mul_rn_sat(alpha_l_old_q16, recip_q16)
+
+        partial_acc_q16 = 0
+        for key_col_idx, beta in enumerate(beta_q16):
+            p_q16 = _q16_mul_rn_sat(beta, recip_q16)
+            p_q88 = _q16_to_q88_rn_sat(p_q16)
+            v_q88 = _dense_qk_v_word(kv_idx, key_col_idx, col)
+            partial_acc_q16 += p_q88 * v_q88
+        partial_q88 = _q16_16_to_q88_sat128(partial_acc_q16)
+        old_o_q412 = _update_oacc_elem(old_o_q412, scale_q16, partial_q88)
+        old_m_q16 = new_m_q16
+        old_l_q16 = new_l_q16
+
+    return _to_unsigned(old_o_q412, 16)
+
+
+def fixed_dense_qk_window_output() -> List[List[int]]:
+    return [
+        [expected_dense_qk_fixed_o_word(row, col) for col in range(64)]
+        for row in range(4)
+    ]
+
+
 def _random_matrix(
     cfg: WindowedAttentionConfig, rng: random.Random, amplitude: int
 ) -> Matrix:
@@ -330,3 +396,111 @@ def _causal_tile_fully_future(
 
 def _zero_matrix(rows: int, cols: int) -> Matrix:
     return [[0.0 for _ in range(cols)] for _ in range(rows)]
+
+
+def _dense_qk_q_word(q_tile_idx: int, row_idx: int, col_idx: int) -> int:
+    row_tile_sum = ((row_idx & 0x3) + (q_tile_idx & 0x3)) & 0x3
+    return 1 + row_tile_sum + (col_idx & 0x3)
+
+
+def _dense_qk_k_word(kv_tile_idx: int, row_idx: int, col_idx: int) -> int:
+    row_tile_sum = ((row_idx & 0x3) + (kv_tile_idx & 0x3)) & 0x3
+    return 1 + row_tile_sum + (col_idx & 0x3)
+
+
+def _dense_qk_v_word(kv_tile_idx: int, row_idx: int, col_idx: int) -> int:
+    return 0x0010 + ((kv_tile_idx & 0xF) << 4) + (row_idx & 0xF) + col_idx
+
+
+def _q16_add_sat(lhs: int, rhs: int) -> int:
+    return _sat_signed(lhs + rhs, 32)
+
+
+def _q16_mul_rn_sat(lhs: int, rhs: int) -> int:
+    prod = lhs * rhs
+    rounded = prod + 32768 if prod >= 0 else prod - 32768
+    return _sat_signed(_arith_shift_right(rounded, 16), 32)
+
+
+def _q16_delta_to_exp_idx(delta: int) -> int:
+    clamped = min(0, max(delta, -524288))
+    abs_mag = -clamped
+    shifted = (abs_mag + 1024) >> 11
+    return min(shifted, 256)
+
+
+def _exp_lut_q16_16(idx: int) -> int:
+    table = _exp_lut_table()
+    return table.get(idx, 0x00000016)
+
+
+def _q16_to_q88_rn_sat(value: int) -> int:
+    rounded = value + 128 if value >= 0 else value - 128
+    return _sat_signed(_arith_shift_right(rounded, 8), 16)
+
+
+def _q16_to_q412_rn_sat(value: int) -> int:
+    rounded = value + 8 if value >= 0 else value - 8
+    return _sat_signed(_arith_shift_right(rounded, 4), 16)
+
+
+def _q16_16_to_q88_sat128(value: int) -> int:
+    rounded = value + 128 if value >= 0 else value - 128
+    return _sat_signed(_arith_shift_right(rounded, 8), 16)
+
+
+def _q88_to_q16(value: int) -> int:
+    return _to_signed(value, 16) << 8
+
+
+def _q412_to_q16(value: int) -> int:
+    return _to_signed(value, 16) << 4
+
+
+def _recip_q16_16(in_value: int) -> int:
+    in_value = _to_unsigned(in_value, 32)
+    if (in_value & 0x8000_0000) != 0 or in_value == 0:
+        return 0
+    quotient = 0x1_0000_0000 // in_value
+    return min(quotient, Q16_MAX)
+
+
+def _update_oacc_elem(old_q412_word: int, scale_word: int, partial_q88_word: int) -> int:
+    old_q16 = _q412_to_q16(old_q412_word)
+    scaled_old_q16 = _q16_mul_rn_sat(old_q16, scale_word)
+    partial_q16 = _q88_to_q16(partial_q88_word)
+    next_q16 = _q16_add_sat(scaled_old_q16, partial_q16)
+    return _q16_to_q412_rn_sat(next_q16)
+
+
+def _sat_signed(value: int, bits: int) -> int:
+    min_value = -(1 << (bits - 1))
+    max_value = (1 << (bits - 1)) - 1
+    return min(max(value, min_value), max_value)
+
+
+def _to_unsigned(value: int, bits: int) -> int:
+    return value & ((1 << bits) - 1)
+
+
+def _to_signed(value: int, bits: int) -> int:
+    mask = (1 << bits) - 1
+    value &= mask
+    sign = 1 << (bits - 1)
+    return value - (1 << bits) if value & sign else value
+
+
+def _arith_shift_right(value: int, amount: int) -> int:
+    return value >> amount
+
+
+def _exp_lut_table() -> dict[int, int]:
+    if not hasattr(_exp_lut_table, "_cache"):
+        lut_path = Path(__file__).resolve().parents[1] / "rtl" / "fa_exp_lut_q16_16.vh"
+        entries: dict[int, int] = {}
+        for line in lut_path.read_text().splitlines():
+            match = re.search(r"9'd(\d+):\s+fa_exp_lut_q16_16\s+=\s+32'h([0-9a-fA-F_]+)", line)
+            if match:
+                entries[int(match.group(1))] = int(match.group(2).replace("_", ""), 16)
+        _exp_lut_table._cache = entries
+    return _exp_lut_table._cache

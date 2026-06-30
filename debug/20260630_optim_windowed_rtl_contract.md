@@ -25,7 +25,7 @@ Local evidence:
 
 ```text
 python -m unittest discover model -v
-47 tests OK
+48 tests OK
 ```
 
 The correctness regression includes one negative-control check:
@@ -94,6 +94,28 @@ The Python RTL-contract model reproduces that failure mode with
 `count_v_layout_roundtrip_errors(..., v_write_bank_uses_slot_high=False) > 0`
 and requires the corrected mapping to have zero K/V layout roundtrip errors.
 
+The Python model now also has an RTL-bench-aligned fixed-point dense-QK golden
+path. `fixed_dense_qk_score_q16`, `expected_dense_qk_fixed_o_word`, and
+`fixed_dense_qk_window_output` reproduce the directed Verilog bench reference
+for the deterministic dense-QK Q/K/V stream, including Q8.8 input generation,
+Q16 score accumulation, exp LUT index quantization, reciprocal, Q8.8 PV
+partial conversion, and Q4.12 OACC update. The model intentionally preserves
+the Verilog expression width behavior in the dense Q/K pattern:
+`row_idx[1:0] + tile_idx[1:0]` wraps as a 2-bit sum before being zero-extended.
+This was caught by a cross-checksum mismatch during model calibration, so the
+checksum is now a real guard against Python/Verilog reference drift.
+
+Reference points:
+
+```text
+fixed_dense_qk_score_q16(63, 0, 0, 0) = 960
+fixed_dense_qk_score_q16(63, 3, 15, 15) = 1376
+expected_dense_qk_fixed_o_word(0, 0) = 0x082c
+expected_dense_qk_fixed_o_word(2, 31) = 0x0a1f
+expected_dense_qk_fixed_o_word(3, 63) = 0x0c07
+4x64 weighted O checksum = 0x03735a74
+```
+
 Remote VCS now also proves a fixed-point directed numerical case for the same
 shape. The test drives zero Q, a deterministic low-range V pattern, and full
 K/V traffic through the 64-bit beat interfaces. With zero Q, every score in a
@@ -126,6 +148,16 @@ This proves the non-uniform score path, not only the uniform-softmax shortcut.
 
 ```text
 RUN=/home/host/codex_runs/fa_optim_windowed_dense_20260630_142028
+VCS compile: CODEX_VCS_COMPILE_STATUS=0
+VCS run: CODEX_VCS_RUN_STATUS=0
+PASS: fa_optim_4x4_windowed_loop_tb shape=S256_D64_B1_H1 numeric=dense_qk_reference perf_max_cycles=600000 cycles=154245 q_groups=4 kv_windows=16 micro_tiles=1024 q_visits=256 kv_tiles=1024 q_reqs=256 q_beats=16384 k_reqs=64 k_beats=16384 v_reqs=64 v_beats=16384 qk_tasks=131072 pv_tasks=131072 restore_starts=192
+```
+
+The dense-QK Verilog bench now also checks the same `4x64` weighted reference
+checksum as the Python fixed-point model:
+
+```text
+RUN=/home/host/codex_runs/fa_optim_windowed_modelcheck_20260630_144444
 VCS compile: CODEX_VCS_COMPILE_STATUS=0
 VCS run: CODEX_VCS_RUN_STATUS=0
 PASS: fa_optim_4x4_windowed_loop_tb shape=S256_D64_B1_H1 numeric=dense_qk_reference perf_max_cycles=600000 cycles=154245 q_groups=4 kv_windows=16 micro_tiles=1024 q_visits=256 kv_tiles=1024 q_reqs=256 q_beats=16384 k_reqs=64 k_beats=16384 v_reqs=64 v_beats=16384 qk_tasks=131072 pv_tasks=131072 restore_starts=192
