@@ -233,6 +233,70 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("qk_can_issue_w", text)
         self.assertIn("KV_TILE_COUNT_W = 5'd16", text)
 
+    def test_optim_windowed_scheduler_contract_exists(self):
+        rtl_path = RTL_DIR / "fa_optim_windowed_sched_contract.v"
+        self.assertTrue(rtl_path.exists(), "windowed scheduler contract RTL must exist")
+        text = rtl_path.read_text(encoding="utf-8")
+
+        self.assertRegex(text, r"module\s+FA_OPTIM_WINDOWED_SCHED_CONTRACT\b")
+        for param_name in (
+            "SEQ_LEN = 256",
+            "HEAD_DIM = 64",
+            "Q_GROUP_ROWS = 64",
+            "Q_TILE_ROWS = 4",
+            "KV_TILE_ROWS = 16",
+            "KV_WINDOW_TILES = 4",
+            "SCORE_SLICE_COLS = 4",
+            "OACC_SLICE_COLS = 16",
+        ):
+            self.assertIn(param_name, text)
+
+        for port_name in (
+            "q_tile_req_valid",
+            "q_tile_req_ready",
+            "q_tile_req_q_idx",
+            "k_tile_req_valid",
+            "k_tile_req_ready",
+            "k_tile_req_kv_idx",
+            "v_tile_req_valid",
+            "v_tile_req_ready",
+            "v_tile_req_kv_idx",
+            "q_group_count",
+            "kv_window_count",
+            "q_tile_visit_count",
+            "kv_tile_compute_count",
+            "skipped_future_kv_tiles",
+            "score_slice_count",
+            "oacc_slice_count",
+            "state_fill_count",
+            "state_spill_count",
+        ):
+            self.assertIn(port_name, text)
+
+        self.assertIn("wire current_kv_tile_fully_future_w", text)
+        self.assertIn("kv_window_base_idx_w", text)
+        self.assertIn("q_group_idx_r", text)
+        self.assertIn("q_tile_in_group_idx_r", text)
+
+    def test_optim_windowed_scheduler_smoke_checks_contract_counters(self):
+        text = read_rtl_smoke("fa_optim_windowed_sched_contract_tb.v")
+
+        self.assertRegex(text, r"module\s+fa_optim_windowed_sched_contract_tb\b")
+        self.assertIn("FA_OPTIM_WINDOWED_SCHED_CONTRACT dut", text)
+        self.assertIn("run_case(1'b0", text)
+        self.assertIn("run_case(1'b1", text)
+        self.assertIn("expect32(q_group_count, 32'd4", text)
+        self.assertIn("expect32(kv_window_count, 32'd16", text)
+        self.assertIn("expect32(q_tile_visit_count, 32'd256", text)
+        self.assertIn("expect32(kv_tile_compute_count, 32'd1024", text)
+        self.assertIn("expect32(kv_tile_compute_count, 32'd544", text)
+        self.assertIn("expect32(skipped_future_kv_tiles, 32'd480", text)
+        self.assertIn("expect32(score_slice_count, 32'd4096", text)
+        self.assertIn("expect32(oacc_slice_count, 32'd4096", text)
+        self.assertIn("expect32(state_fill_count, 32'd256", text)
+        self.assertIn("expect32(state_spill_count, 32'd256", text)
+        self.assertIn("PASS: fa_optim_windowed_sched_contract_tb", text)
+
     def test_optim_4x4_full_loop_smoke_checks_s256(self):
         smoke_path = RTL_SMOKE_DIR / "fa_optim_4x4_full_loop_tb.v"
         self.assertTrue(smoke_path.exists(), "fa_optim_4x4_full_loop_tb.v must exist")
@@ -275,6 +339,7 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("total_sram_nand2", text)
         self.assertIn("fa_sram_hard.v", text)
         self.assertIn("fa_sram_tile_buffers.v", text)
+        self.assertIn("fa_optim_windowed_sched_contract.v", text)
         self.assertIn("fa_optim_4x4_full_loop.v", text)
         self.assertIn("fa_optim_4x4_q_tile_staggered_core.v", text)
         self.assertNotIn("fa_optim_4x4_micro_pipeline.v", text)
