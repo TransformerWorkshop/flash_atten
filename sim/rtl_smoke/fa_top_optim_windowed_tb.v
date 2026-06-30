@@ -7,6 +7,8 @@ module fa_top_optim_windowed_tb;
     localparam [63:0] O_BASE = 64'h0003_0000;
     localparam integer Q_TILE_BYTES = 512;
     localparam integer KV_TILE_BYTES = 2048;
+    localparam integer O_TOTAL_BYTES = 32768;
+    localparam integer O_TOTAL_WORDS = 8192;
 
     reg         clk;
     reg         rstn;
@@ -61,11 +63,24 @@ module fa_top_optim_windowed_tb;
     reg [31:0] status_data;
     reg [31:0] cycles_data;
     reg [31:0] rd_bytes_data;
+    reg [31:0] wr_bytes_data;
     integer ar_count;
     integer r_beat_count;
+    integer aw_count;
+    integer w_beat_count;
+    integer b_count;
     integer current_burst_idx;
     integer current_burst_beats;
+    integer current_write_burst_idx;
+    integer current_write_burst_beats;
     reg [63:0] current_araddr;
+    reg [63:0] current_awaddr;
+    reg [31:0] o_mem [0:O_TOTAL_WORDS-1];
+    reg [15:0] expected_o_cache [0:1023];
+    integer init_i;
+    integer row_i;
+    integer col_i;
+    integer qmod_i;
 
     FA_TOP_OPTIM_WINDOWED dut (
         .clk(clk),
@@ -286,6 +301,386 @@ module fa_top_optim_windowed_tb;
         end
     endfunction
 
+    function signed [31:0] tb_q16_add_sat;
+        input signed [31:0] lhs;
+        input signed [31:0] rhs;
+        reg signed [32:0] sum_ext;
+        begin
+            sum_ext = lhs + rhs;
+            if (sum_ext > 33'sh0_7FFF_FFFF) begin
+                tb_q16_add_sat = 32'sh7FFF_FFFF;
+            end else if (sum_ext < -33'sh0_8000_0000) begin
+                tb_q16_add_sat = -32'sh8000_0000;
+            end else begin
+                tb_q16_add_sat = sum_ext[31:0];
+            end
+        end
+    endfunction
+
+    function signed [31:0] tb_q16_mul_rn_sat;
+        input signed [31:0] lhs;
+        input signed [31:0] rhs;
+        reg signed [63:0] prod;
+        reg signed [63:0] rounded;
+        reg signed [63:0] shifted;
+        begin
+            prod = lhs * rhs;
+            if (prod >= 0) begin
+                rounded = prod + 64'sd32768;
+            end else begin
+                rounded = prod - 64'sd32768;
+            end
+            shifted = rounded >>> 16;
+            if (shifted > 64'sh0000_0000_7FFF_FFFF) begin
+                tb_q16_mul_rn_sat = 32'sh7FFF_FFFF;
+            end else if (shifted < -64'sh0000_0000_8000_0000) begin
+                tb_q16_mul_rn_sat = -32'sh8000_0000;
+            end else begin
+                tb_q16_mul_rn_sat = shifted[31:0];
+            end
+        end
+    endfunction
+
+    function signed [31:0] tb_q16_clamp_nonpos_neg8;
+        input signed [31:0] value;
+        begin
+            if (value > 32'sd0) begin
+                tb_q16_clamp_nonpos_neg8 = 32'sd0;
+            end else if (value < -32'sd524288) begin
+                tb_q16_clamp_nonpos_neg8 = -32'sd524288;
+            end else begin
+                tb_q16_clamp_nonpos_neg8 = value;
+            end
+        end
+    endfunction
+
+    function [8:0] tb_q16_delta_to_exp_idx;
+        input signed [31:0] delta;
+        reg signed [31:0] clamped;
+        reg [31:0] abs_mag;
+        reg [31:0] rounded;
+        reg [31:0] shifted;
+        begin
+            clamped = tb_q16_clamp_nonpos_neg8(delta);
+            abs_mag = -clamped;
+            rounded = abs_mag + 32'd1024;
+            shifted = rounded >> 11;
+            if (shifted > 32'd256) begin
+                tb_q16_delta_to_exp_idx = 9'd256;
+            end else begin
+                tb_q16_delta_to_exp_idx = shifted[8:0];
+            end
+        end
+    endfunction
+
+    function [31:0] fa_exp_lut_q16_16;
+        input [8:0] idx;
+        begin
+            case (idx)
+`include "fa_exp_lut_q16_16.vh"
+                default: fa_exp_lut_q16_16 = 32'h00000016;
+            endcase
+        end
+    endfunction
+
+    function signed [15:0] tb_q16_to_q88_rn_sat;
+        input signed [31:0] value;
+        reg signed [31:0] rounded;
+        reg signed [31:0] shifted;
+        begin
+            if (value >= 0) begin
+                rounded = value + 32'sd128;
+            end else begin
+                rounded = value - 32'sd128;
+            end
+            shifted = rounded >>> 8;
+            if (shifted > 32'sd32767) begin
+                tb_q16_to_q88_rn_sat = 16'sh7FFF;
+            end else if (shifted < -32'sd32768) begin
+                tb_q16_to_q88_rn_sat = -16'sh8000;
+            end else begin
+                tb_q16_to_q88_rn_sat = shifted[15:0];
+            end
+        end
+    endfunction
+
+    function signed [15:0] tb_q16_to_q412_rn_sat;
+        input signed [31:0] value;
+        reg signed [31:0] rounded;
+        reg signed [31:0] shifted;
+        begin
+            if (value >= 0) begin
+                rounded = value + 32'sd8;
+            end else begin
+                rounded = value - 32'sd8;
+            end
+            shifted = rounded >>> 4;
+            if (shifted > 32'sd32767) begin
+                tb_q16_to_q412_rn_sat = 16'sh7FFF;
+            end else if (shifted < -32'sd32768) begin
+                tb_q16_to_q412_rn_sat = -16'sh8000;
+            end else begin
+                tb_q16_to_q412_rn_sat = shifted[15:0];
+            end
+        end
+    endfunction
+
+    function signed [15:0] tb_q16_16_to_q88_sat128;
+        input signed [127:0] value;
+        reg signed [127:0] rounded;
+        reg signed [127:0] shifted;
+        begin
+            if (value >= 0) begin
+                rounded = value + 128'sd128;
+            end else begin
+                rounded = value - 128'sd128;
+            end
+            shifted = rounded >>> 8;
+            if (shifted > 128'sd32767) begin
+                tb_q16_16_to_q88_sat128 = 16'sh7FFF;
+            end else if (shifted < -128'sd32768) begin
+                tb_q16_16_to_q88_sat128 = -16'sh8000;
+            end else begin
+                tb_q16_16_to_q88_sat128 = shifted[15:0];
+            end
+        end
+    endfunction
+
+    function signed [31:0] tb_q88_to_q16;
+        input signed [15:0] value;
+        begin
+            tb_q88_to_q16 = {{8{value[15]}}, value, 8'd0};
+        end
+    endfunction
+
+    function signed [31:0] tb_q412_to_q16;
+        input signed [15:0] value;
+        begin
+            tb_q412_to_q16 = {{12{value[15]}}, value, 4'd0};
+        end
+    endfunction
+
+    function [31:0] tb_recip_q16_16;
+        input [31:0] in_value;
+        reg [63:0] dividend;
+        reg [63:0] divisor;
+        reg [63:0] quotient;
+        begin
+            dividend = 64'h1_0000_0000;
+            divisor = {32'd0, in_value};
+            if ((in_value[31] == 1'b1) || (in_value == 32'd0)) begin
+                quotient = 64'd0;
+            end else begin
+                quotient = dividend / divisor;
+            end
+            if (quotient > 64'h7FFF_FFFF) begin
+                tb_recip_q16_16 = 32'h7FFF_FFFF;
+            end else begin
+                tb_recip_q16_16 = quotient[31:0];
+            end
+        end
+    endfunction
+
+    function [15:0] tb_update_oacc_elem;
+        input signed [15:0] old_q412_word;
+        input signed [31:0] scale_word;
+        input signed [15:0] partial_q88_word;
+        reg signed [31:0] old_q16_v;
+        reg signed [31:0] scaled_old_q16_v;
+        reg signed [31:0] partial_q16_v;
+        reg signed [31:0] next_q16_v;
+        begin
+            old_q16_v = tb_q412_to_q16(old_q412_word);
+            scaled_old_q16_v = tb_q16_mul_rn_sat(old_q16_v, scale_word);
+            partial_q16_v = tb_q88_to_q16(partial_q88_word);
+            next_q16_v = tb_q16_add_sat(scaled_old_q16_v, partial_q16_v);
+            tb_update_oacc_elem = tb_q16_to_q412_rn_sat(next_q16_v);
+        end
+    endfunction
+
+    function signed [31:0] expected_score_q16;
+        input integer q_tile_idx;
+        input integer q_row;
+        input integer kv_tile_idx;
+        input integer kv_col;
+        integer dim_i;
+        reg [5:0] dim_idx;
+        reg signed [15:0] q_q88;
+        reg signed [15:0] k_q88;
+        reg signed [127:0] acc_q16;
+        begin
+            acc_q16 = 128'sd0;
+            for (dim_i = 0; dim_i < 64; dim_i = dim_i + 1) begin
+                dim_idx = dim_i;
+                q_q88 = make_q_word(q_tile_idx[5:0], q_row[1:0], dim_idx);
+                k_q88 = make_k_word(kv_tile_idx[4:0], kv_col[3:0], dim_idx);
+                acc_q16 = acc_q16 + ($signed(q_q88) * $signed(k_q88));
+            end
+            if (acc_q16 > 128'sh0000000000000000000000007FFF_FFFF) begin
+                expected_score_q16 = 32'sh7FFF_FFFF;
+            end else if (acc_q16 < -128'sh0000000000000000000000008000_0000) begin
+                expected_score_q16 = -32'sh8000_0000;
+            end else begin
+                expected_score_q16 = acc_q16[31:0];
+            end
+        end
+    endfunction
+
+    function [15:0] expected_o_word_dense_qk;
+        input integer q_tile_idx;
+        input integer row;
+        input integer col;
+        reg [5:0] q_tile_idx_narrow;
+        reg [1:0] row_idx_narrow;
+        reg [5:0] col_idx_narrow;
+        integer kv_i;
+        integer key_col_i;
+        reg signed [31:0] old_m_q16;
+        reg signed [31:0] old_l_q16;
+        reg signed [31:0] new_m_q16;
+        reg signed [31:0] old_score_q16;
+        reg signed [31:0] score_q16;
+        reg signed [31:0] alpha_q16;
+        reg signed [31:0] alpha_l_old_q16;
+        reg signed [31:0] beta_q16 [0:15];
+        reg signed [31:0] beta_sum_q16;
+        reg signed [31:0] new_l_q16;
+        reg signed [31:0] recip_q16;
+        reg signed [31:0] scale_q16;
+        reg signed [31:0] p_q16;
+        reg signed [15:0] p_q88;
+        reg signed [15:0] v_q88;
+        reg signed [15:0] partial_q88;
+        reg signed [15:0] old_o_q412;
+        reg signed [127:0] partial_acc_q16;
+        begin
+            q_tile_idx_narrow = q_tile_idx;
+            row_idx_narrow = row;
+            col_idx_narrow = col;
+            old_m_q16 = 32'hffc0_0000;
+            old_l_q16 = 32'sd0;
+            old_o_q412 = 16'sd0;
+            for (kv_i = 0; kv_i < 16; kv_i = kv_i + 1) begin
+                new_m_q16 = expected_score_q16(q_tile_idx_narrow, row_idx_narrow, kv_i, 0);
+                for (key_col_i = 1; key_col_i < 16; key_col_i = key_col_i + 1) begin
+                    score_q16 = expected_score_q16(q_tile_idx_narrow, row_idx_narrow,
+                                                   kv_i, key_col_i);
+                    if (score_q16 > new_m_q16) begin
+                        new_m_q16 = score_q16;
+                    end
+                end
+                if (old_l_q16 != 32'sd0) begin
+                    if (old_m_q16 > new_m_q16) begin
+                        new_m_q16 = old_m_q16;
+                    end
+                    alpha_q16 = fa_exp_lut_q16_16(
+                        tb_q16_delta_to_exp_idx(old_m_q16 - new_m_q16));
+                    alpha_l_old_q16 = tb_q16_mul_rn_sat(alpha_q16, old_l_q16);
+                end else begin
+                    alpha_l_old_q16 = 32'sd0;
+                end
+
+                beta_sum_q16 = 32'sd0;
+                for (key_col_i = 0; key_col_i < 16; key_col_i = key_col_i + 1) begin
+                    old_score_q16 = expected_score_q16(q_tile_idx_narrow, row_idx_narrow,
+                                                       kv_i, key_col_i);
+                    beta_q16[key_col_i] = fa_exp_lut_q16_16(
+                        tb_q16_delta_to_exp_idx(old_score_q16 - new_m_q16));
+                    beta_sum_q16 = tb_q16_add_sat(beta_sum_q16, beta_q16[key_col_i]);
+                end
+                new_l_q16 = tb_q16_add_sat(alpha_l_old_q16, beta_sum_q16);
+                recip_q16 = tb_recip_q16_16(new_l_q16);
+
+                if (old_l_q16 == 32'sd0) begin
+                    scale_q16 = 32'sd0;
+                end else begin
+                    scale_q16 = tb_q16_mul_rn_sat(alpha_l_old_q16, recip_q16);
+                end
+                partial_acc_q16 = 128'sd0;
+                for (key_col_i = 0; key_col_i < 16; key_col_i = key_col_i + 1) begin
+                    p_q16 = tb_q16_mul_rn_sat(beta_q16[key_col_i], recip_q16);
+                    p_q88 = tb_q16_to_q88_rn_sat(p_q16);
+                    v_q88 = make_v_word(kv_i[4:0], key_col_i[3:0], col_idx_narrow);
+                    partial_acc_q16 = partial_acc_q16 + ($signed(p_q88) * $signed(v_q88));
+                end
+                partial_q88 = tb_q16_16_to_q88_sat128(partial_acc_q16);
+                old_o_q412 = tb_update_oacc_elem(old_o_q412, scale_q16, partial_q88);
+                old_m_q16 = new_m_q16;
+                old_l_q16 = new_l_q16;
+            end
+            expected_o_word_dense_qk = old_o_q412;
+        end
+    endfunction
+
+    task init_expected_o_cache;
+        integer cache_qmod_i;
+        integer cache_row_i;
+        integer cache_col_i;
+        integer cache_idx;
+        begin
+            for (cache_qmod_i = 0; cache_qmod_i < 4; cache_qmod_i = cache_qmod_i + 1) begin
+                for (cache_row_i = 0; cache_row_i < 4; cache_row_i = cache_row_i + 1) begin
+                    for (cache_col_i = 0; cache_col_i < 64; cache_col_i = cache_col_i + 1) begin
+                        cache_idx = (cache_qmod_i * 256) + (cache_row_i * 64) + cache_col_i;
+                        expected_o_cache[cache_idx] =
+                            expected_o_word_dense_qk(cache_qmod_i, cache_row_i, cache_col_i);
+                    end
+                end
+            end
+        end
+    endtask
+
+    function [15:0] expected_cached_o_word;
+        input integer q_tile_idx;
+        input integer row;
+        input integer col;
+        integer cache_idx;
+        begin
+            cache_idx = ((q_tile_idx & 3) * 256) + ((row & 3) * 64) + (col & 63);
+            expected_cached_o_word = expected_o_cache[cache_idx];
+        end
+    endfunction
+
+    function [15:0] get_o_mem_word;
+        input integer row;
+        input integer col;
+        integer word_idx;
+        reg [31:0] packed_word;
+        begin
+            word_idx = ((row * 64) + col) >> 1;
+            packed_word = o_mem[word_idx];
+            if ((col & 1) == 0) begin
+                get_o_mem_word = packed_word[15:0];
+            end else begin
+                get_o_mem_word = packed_word[31:16];
+            end
+        end
+    endfunction
+
+    task expect_o_memory_dense_qk;
+        reg [15:0] actual;
+        reg [15:0] expected;
+        integer q_tile_idx;
+        integer local_row_idx;
+        begin
+            for (row_i = 0; row_i < 256; row_i = row_i + 1) begin
+                for (col_i = 0; col_i < 64; col_i = col_i + 1) begin
+                    q_tile_idx = row_i >> 2;
+                    local_row_idx = row_i & 3;
+                    actual = get_o_mem_word(row_i, col_i);
+                    expected = expected_cached_o_word(q_tile_idx, local_row_idx, col_i);
+                    if (actual !== expected) begin
+                        if (error_count < 16) begin
+                            $display("FAIL: O[%0d,%0d] expected 0x%04h got 0x%04h",
+                                     row_i, col_i, expected, actual);
+                        end
+                        error_count = error_count + 1;
+                    end
+                end
+            end
+        end
+    endtask
+
     task drive_axi_read_channel;
         integer safety_count;
         integer next_burst_idx;
@@ -371,9 +766,145 @@ module fa_top_optim_windowed_tb;
         end
     endtask
 
+    task store_axi_write_beat;
+        input [63:0] addr;
+        input [127:0] data;
+        input [15:0] strb;
+        integer byte_offset;
+        integer word_idx;
+        begin
+            if ((addr < O_BASE) || ((addr + 64'd16) > (O_BASE + O_TOTAL_BYTES))) begin
+                $display("FAIL: AXI write addr outside O region addr=0x%016h", addr);
+                error_count = error_count + 1;
+            end else begin
+                if (strb !== 16'hffff) begin
+                    $display("FAIL: AXI write strobe expected ffff got 0x%04h", strb);
+                    error_count = error_count + 1;
+                end
+                byte_offset = addr - O_BASE;
+                if ((byte_offset & 15) != 0) begin
+                    $display("FAIL: AXI write addr not 16B aligned addr=0x%016h", addr);
+                    error_count = error_count + 1;
+                end
+                word_idx = byte_offset >> 2;
+                o_mem[word_idx + 0] = data[31:0];
+                o_mem[word_idx + 1] = data[63:32];
+                o_mem[word_idx + 2] = data[95:64];
+                o_mem[word_idx + 3] = data[127:96];
+            end
+        end
+    endtask
+
+    task drive_axi_write_channel;
+        integer safety_count;
+        reg write_active;
+        reg aw_fire;
+        reg w_fire;
+        reg b_fire;
+        reg [63:0] awaddr_sample;
+        reg [7:0] awlen_sample;
+        begin
+            m_axi_awready = 1'b0;
+            m_axi_wready = 1'b0;
+            m_axi_bresp = 2'b00;
+            m_axi_bvalid = 1'b0;
+            aw_count = 0;
+            w_beat_count = 0;
+            b_count = 0;
+            current_write_burst_idx = 0;
+            current_write_burst_beats = 0;
+            current_awaddr = 64'd0;
+            write_active = 1'b0;
+            aw_fire = 1'b0;
+            w_fire = 1'b0;
+            b_fire = 1'b0;
+            awaddr_sample = 64'd0;
+            awlen_sample = 8'd0;
+            safety_count = 0;
+            wait (rstn === 1'b1);
+            forever begin
+                m_axi_awready = (!write_active && !m_axi_bvalid);
+                m_axi_wready = write_active;
+                aw_fire = m_axi_awvalid && m_axi_awready;
+                w_fire = m_axi_wvalid && m_axi_wready;
+                b_fire = m_axi_bvalid && m_axi_bready;
+
+                if (aw_fire) begin
+                    awaddr_sample = m_axi_awaddr;
+                    awlen_sample = m_axi_awlen;
+                    if (m_axi_awsize !== 3'd4) begin
+                        $display("FAIL: AXI awsize expected 4 got %0d", m_axi_awsize);
+                        error_count = error_count + 1;
+                    end
+                    if (m_axi_awburst !== 2'b01) begin
+                        $display("FAIL: AXI awburst expected INCR got %0d", m_axi_awburst);
+                        error_count = error_count + 1;
+                    end
+                    if (m_axi_awlen > 8'd15) begin
+                        $display("FAIL: AXI awlen expected <= 15 got %0d", m_axi_awlen);
+                        error_count = error_count + 1;
+                    end
+                end
+
+                if (w_fire) begin
+                    if (!write_active) begin
+                        $display("FAIL: AXI W beat without active AW");
+                        error_count = error_count + 1;
+                    end
+                    if (m_axi_wlast !== (current_write_burst_idx == current_write_burst_beats - 1)) begin
+                        $display("FAIL: AXI wlast mismatch beat=%0d beats=%0d wlast=%0d",
+                                 current_write_burst_idx, current_write_burst_beats,
+                                 m_axi_wlast);
+                        error_count = error_count + 1;
+                    end
+                    store_axi_write_beat(current_awaddr, m_axi_wdata, m_axi_wstrb);
+                end
+
+                tick();
+
+                if (aw_fire) begin
+                    current_awaddr = awaddr_sample;
+                    current_write_burst_beats = awlen_sample + 1;
+                    current_write_burst_idx = 0;
+                    aw_count = aw_count + 1;
+                    write_active = 1'b1;
+                end
+
+                if (w_fire) begin
+                    w_beat_count = w_beat_count + 1;
+                    if (current_write_burst_idx == current_write_burst_beats - 1) begin
+                        write_active = 1'b0;
+                        m_axi_bvalid = 1'b1;
+                        current_awaddr = 64'd0;
+                    end else begin
+                        current_write_burst_idx = current_write_burst_idx + 1;
+                        current_awaddr = current_awaddr + 64'd16;
+                    end
+                end
+
+                if (b_fire) begin
+                    b_count = b_count + 1;
+                    m_axi_bvalid = 1'b0;
+                end
+
+                safety_count = safety_count + 1;
+                if (safety_count > 2500000) begin
+                    $display("FAIL: AXI write channel driver timeout aw_count=%0d w_beat_count=%0d b_count=%0d",
+                             aw_count, w_beat_count, b_count);
+                    error_count = error_count + 1;
+                    $fatal(1);
+                end
+            end
+        end
+    endtask
+
     initial begin
         error_count = 0;
         wait_count = 0;
+        for (init_i = 0; init_i < O_TOTAL_WORDS; init_i = init_i + 1) begin
+            o_mem[init_i] = 32'hdead_beef;
+        end
+        init_expected_o_cache();
         rstn = 1'b0;
         clear = 1'b0;
         s_axil_awaddr = 7'd0;
@@ -438,8 +969,8 @@ module fa_top_optim_windowed_tb;
 
         axil_read(7'h40, read_data);
         cycles_data = read_data;
-        if (read_data !== 32'd155013) begin
-            $display("FAIL: CYCLES expected 155013 got %0d", read_data);
+        if (read_data !== 32'd165509) begin
+            $display("FAIL: CYCLES expected 165509 got %0d", read_data);
             error_count = error_count + 1;
         end
 
@@ -450,17 +981,24 @@ module fa_top_optim_windowed_tb;
             error_count = error_count + 1;
         end
 
-        expect32(ar_count, 32'd1536, "ar_count");
-        expect32(r_beat_count, 32'd24576, "r_beat_count");
-
-        if (m_axi_awvalid || m_axi_wvalid || m_axi_bready) begin
-            $display("FAIL: windowed top should keep AXI write master idle");
+        axil_read(7'h48, read_data);
+        wr_bytes_data = read_data;
+        if (read_data !== 32'd32768) begin
+            $display("FAIL: WR_BYTES expected 32768 got %0d", read_data);
             error_count = error_count + 1;
         end
 
+        expect32(ar_count, 32'd1536, "ar_count");
+        expect32(r_beat_count, 32'd24576, "r_beat_count");
+        expect32(aw_count, 32'd128, "aw_count");
+        expect32(w_beat_count, 32'd2048, "w_beat_count");
+        expect32(b_count, 32'd128, "b_count");
+        expect_o_memory_dense_qk();
+
         if (error_count == 0) begin
-            $display("PASS: fa_top_optim_windowed_tb numeric=dense_qk_reference cycles=%0d rd_bytes=%0d ar_count=%0d r_beat_count=%0d",
-                     cycles_data, rd_bytes_data, ar_count, r_beat_count);
+            $display("PASS: fa_top_optim_windowed_tb numeric=dense_qk_reference cycles=%0d rd_bytes=%0d wr_bytes=%0d ar_count=%0d r_beat_count=%0d aw_count=%0d w_beat_count=%0d",
+                     cycles_data, rd_bytes_data, wr_bytes_data, ar_count, r_beat_count,
+                     aw_count, w_beat_count);
             $finish;
         end
 
@@ -470,5 +1008,9 @@ module fa_top_optim_windowed_tb;
 
     initial begin
         drive_axi_read_channel();
+    end
+
+    initial begin
+        drive_axi_write_channel();
     end
 endmodule

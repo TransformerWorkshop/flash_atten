@@ -4,11 +4,17 @@ from model.fa_windowed_rtl_contract_model import (
     WindowedRtlContractConfig,
     WindowedTopAxiLayoutConfig,
     axi_read_metrics_for_windowed_contract,
+    axi_write_metrics_for_windowed_contract,
     build_windowed_rtl_contract,
     count_k_layout_roundtrip_errors,
     count_v_layout_roundtrip_errors,
+    dense_qk_o_write_word32,
     dense_qk_axi_tile_beat64,
     dense_qk_direct_tile_beat64,
+)
+from model.fa_windowed_attention_model import (
+    expected_dense_qk_fixed_o_word,
+    expected_dense_qk_fixed_o_word_for_tile,
 )
 
 
@@ -78,6 +84,15 @@ class WindowedRtlContractModelTest(unittest.TestCase):
         self.assertEqual(metrics.r_beat_count, 24576)
         self.assertEqual(metrics.rd_bytes, 393216)
 
+    def test_windowed_top_axi_write_metrics_match_full_o_output(self):
+        contract = build_windowed_rtl_contract(WindowedRtlContractConfig())
+
+        metrics = axi_write_metrics_for_windowed_contract(contract)
+
+        self.assertEqual(metrics.aw_count, 128)
+        self.assertEqual(metrics.w_beat_count, 2048)
+        self.assertEqual(metrics.wr_bytes, 32768)
+
     def test_dense_qk_axi_memory_layout_roundtrips_to_tile_beats(self):
         layout = WindowedTopAxiLayoutConfig()
 
@@ -97,8 +112,57 @@ class WindowedRtlContractModelTest(unittest.TestCase):
                             dense_qk_axi_tile_beat64(
                                 layout, kind, kv_tile_idx, row_idx, chunk_idx
                             ),
-                            dense_qk_direct_tile_beat64(kind, kv_tile_idx, row_idx, chunk_idx),
-                        )
+                        dense_qk_direct_tile_beat64(kind, kv_tile_idx, row_idx, chunk_idx),
+                    )
+
+    def test_dense_qk_o_write_layout_matches_group_dump_stream(self):
+        layout = WindowedTopAxiLayoutConfig()
+
+        def expected_o(q_tile_idx: int, row_idx: int, col_idx: int) -> int:
+            return expected_dense_qk_fixed_o_word_for_tile(q_tile_idx, row_idx, col_idx)
+
+        first_addr, first_word = dense_qk_o_write_word32(layout, 0, 0, 0, expected_o)
+        last_addr, last_word = dense_qk_o_write_word32(layout, 63, 3, 31, expected_o)
+        group1_addr, _ = dense_qk_o_write_word32(layout, 16, 0, 0, expected_o)
+
+        self.assertEqual(first_addr, layout.o_base)
+        self.assertEqual(first_word & 0xFFFF, expected_dense_qk_fixed_o_word_for_tile(0, 0, 0))
+        self.assertEqual(first_word >> 16, expected_dense_qk_fixed_o_word_for_tile(0, 0, 1))
+        self.assertEqual(group1_addr, layout.o_base + 8192)
+        self.assertEqual(last_addr, layout.o_base + 32764)
+        self.assertEqual(last_word & 0xFFFF, expected_dense_qk_fixed_o_word(3, 62))
+        self.assertEqual(last_word >> 16, expected_dense_qk_fixed_o_word(3, 63))
+
+    def test_o_write_layout_exhaustively_maps_every_q_tile_word(self):
+        layout = WindowedTopAxiLayoutConfig()
+        seen_addrs = set()
+
+        def unique_o(q_tile_idx: int, row_idx: int, col_idx: int) -> int:
+            return ((q_tile_idx & 0x3F) << 10) | ((row_idx & 0x3) << 8) | (col_idx & 0x3F)
+
+        for q_tile_idx in range(64):
+            for row_idx in range(4):
+                for col_pair_idx in range(32):
+                    addr, word = dense_qk_o_write_word32(
+                        layout, q_tile_idx, row_idx, col_pair_idx, unique_o
+                    )
+                    expected_word_idx = (
+                        ((q_tile_idx // 16) * 2048)
+                        + ((q_tile_idx % 16) * 128)
+                        + (row_idx * 32)
+                        + col_pair_idx
+                    )
+                    expected_addr = layout.o_base + (expected_word_idx * 4)
+                    col_idx = col_pair_idx * 2
+
+                    self.assertEqual(addr, expected_addr)
+                    self.assertEqual(word & 0xFFFF, unique_o(q_tile_idx, row_idx, col_idx))
+                    self.assertEqual(word >> 16, unique_o(q_tile_idx, row_idx, col_idx + 1))
+                    seen_addrs.add(addr)
+
+        self.assertEqual(len(seen_addrs), 8192)
+        self.assertEqual(min(seen_addrs), layout.o_base)
+        self.assertEqual(max(seen_addrs), layout.o_base + 32764)
 
 
 if __name__ == "__main__":

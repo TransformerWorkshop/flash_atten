@@ -69,6 +69,12 @@ module FA_TOP_OPTIM_WINDOWED #(
     localparam [1:0] FEED_Q    = 2'd1;
     localparam [1:0] FEED_K    = 2'd2;
     localparam [1:0] FEED_V    = 2'd3;
+    localparam [1:0] WR_IDLE   = 2'd0;
+    localparam [1:0] WR_DESC   = 2'd1;
+    localparam [1:0] WR_DATA   = 2'd2;
+    localparam [1:0] WR_DRAIN  = 2'd3;
+    localparam integer O_WORDS_PER_GROUP = 2048;
+    localparam [15:0] O_WORDS_PER_GROUP_W = 16'd2048;
 
     wire        csr_start_level;
     wire        csr_start_pulse;
@@ -134,6 +140,12 @@ module FA_TOP_OPTIM_WINDOWED #(
     wire [31:0] windowed_qk_task_count;
     wire [31:0] windowed_pv_task_count;
     wire [31:0] windowed_oacc_task_count;
+    wire        o_dump_valid_w;
+    wire        o_dump_ready_w;
+    wire [1:0]  o_dump_group_idx_w;
+    wire [10:0] o_dump_word_idx_w;
+    wire [31:0] o_dump_word_w;
+    wire        o_dump_last_w;
     wire [4095:0] windowed_o_block_flat;
 
     reg         windowed_done_sticky_r;
@@ -145,6 +157,10 @@ module FA_TOP_OPTIM_WINDOWED #(
     reg [4:0]   feeder_kv_idx_r;
     reg [127:0] feeder_axi_data_r;
     reg         feeder_upper_half_r;
+    reg [1:0]   wr_state_r;
+    reg [1:0]   wr_group_idx_r;
+    reg [31:0]  status_wr_bytes_r;
+    reg         windowed_done_pending_r;
 
     wire        top_rd_desc_valid_w;
     wire        top_rd_desc_ready_w;
@@ -158,6 +174,25 @@ module FA_TOP_OPTIM_WINDOWED #(
     wire        top_rd_beat_last_w;
     wire        top_axi_arvalid_w;
     wire        top_axi_error_pulse_w;
+    wire        top_wr_desc_valid_w;
+    wire        top_wr_desc_ready_w;
+    wire [63:0] top_wr_desc_addr_w;
+    wire [15:0] top_wr_desc_words_w;
+    wire        top_wr_data_valid_w;
+    wire        top_wr_data_ready_w;
+    wire [31:0] top_wr_data_w;
+    wire        top_wr_data_last_w;
+    wire        top_axi_awvalid_w;
+    wire        top_axi_wvalid_w;
+    wire        top_wr_axi_error_pulse_w;
+    wire [63:0] top_axi_awaddr_w;
+    wire [7:0]  top_axi_awlen_w;
+    wire [2:0]  top_axi_awsize_w;
+    wire [1:0]  top_axi_awburst_w;
+    wire [127:0] top_axi_wdata_w;
+    wire [15:0]  top_axi_wstrb_w;
+    wire         top_axi_wlast_w;
+    wire         top_axi_bready_w;
 
     wire feeder_idle_w = (feeder_state_r == FEED_IDLE);
     wire q_tile_req_fire_w = q_tile_req_valid_w && q_tile_req_ready_w;
@@ -172,6 +207,13 @@ module FA_TOP_OPTIM_WINDOWED #(
     wire feeder_axi_beat_accept_w = top_rd_beat_valid_w && top_rd_beat_ready_w;
     wire [63:0] feeder_tile_beat_data_w =
         feeder_upper_half_r ? feeder_axi_data_r[127:64] : top_rd_beat_data_w[63:0];
+    wire wr_idle_w = (wr_state_r == WR_IDLE);
+    wire wr_desc_fire_w = top_wr_desc_valid_w && top_wr_desc_ready_w;
+    wire wr_data_fire_w = top_wr_data_valid_w && top_wr_data_ready_w;
+    wire wr_drain_done_w = (wr_state_r == WR_DRAIN) && top_wr_desc_ready_w;
+    wire top_done_accept_w = (windowed_done_pulse && wr_idle_w) ||
+                             (windowed_done_pending_r && wr_idle_w);
+    wire top_busy_w = windowed_busy || !wr_idle_w || windowed_done_pending_r;
 
     wire [31:0] status_rd_bytes_w =
         (windowed_q_tile_beat_count + windowed_k_tile_beat_count +
@@ -201,13 +243,10 @@ module FA_TOP_OPTIM_WINDOWED #(
         | ((|windowed_qk_task_count) & 1'b0)
         | ((|windowed_pv_task_count) & 1'b0)
         | ((|windowed_oacc_task_count) & 1'b0)
+        | ((|o_dump_word_idx_w) & 1'b0)
         | ((|windowed_o_block_flat) & 1'b0)
         | ((|top_rd_beat_word_count_w) & 1'b0)
         | (top_rd_beat_last_w & 1'b0)
-        | (m_axi_awready & 1'b0)
-        | (m_axi_wready & 1'b0)
-        | ((|m_axi_bresp) & 1'b0)
-        | (m_axi_bvalid & 1'b0)
         | ((|DATA_WIDTH) & 1'b0)
         | ((|GEMM_X_DIM) & 1'b0)
         | ((|GEMM_Y_DIM) & 1'b0)
@@ -264,6 +303,13 @@ module FA_TOP_OPTIM_WINDOWED #(
                                  ((feeder_state_r == FEED_Q) ? q_tile_beat_ready_w :
                                   (feeder_state_r == FEED_K) ? k_tile_beat_ready_w :
                                   v_tile_beat_ready_w);
+    assign top_wr_desc_valid_w = (wr_state_r == WR_DESC);
+    assign top_wr_desc_addr_w = csr_o_base + ({62'd0, wr_group_idx_r} << 13);
+    assign top_wr_desc_words_w = O_WORDS_PER_GROUP_W;
+    assign top_wr_data_valid_w = (wr_state_r == WR_DATA) && o_dump_valid_w;
+    assign top_wr_data_w = o_dump_word_w;
+    assign top_wr_data_last_w = o_dump_last_w;
+    assign o_dump_ready_w = (wr_state_r == WR_DATA) && top_wr_data_ready_w;
 
     function [15:0] make_q_word;
         input [5:0] q_tile_idx;
@@ -368,13 +414,13 @@ module FA_TOP_OPTIM_WINDOWED #(
         .s_axi_rresp(s_axil_rresp),
         .s_axi_rvalid(s_axil_rvalid),
         .s_axi_rready(s_axil_rready),
-        .status_busy(windowed_busy),
+        .status_busy(top_busy_w),
         .status_done(windowed_done_sticky_r),
         .status_error(csr_config_error | windowed_error_sticky_r |
                       top_axi_error_sticky_r | windowed_top_unused_zero_w),
         .status_cycles(windowed_cycles),
         .status_rd_bytes(status_rd_bytes_w),
-        .status_wr_bytes(32'd0),
+        .status_wr_bytes(status_wr_bytes_r),
         .start_level(csr_start_level),
         .start_pulse(csr_start_pulse),
         .soft_reset_level(csr_soft_reset_level),
@@ -443,6 +489,12 @@ module FA_TOP_OPTIM_WINDOWED #(
         .qk_task_count(windowed_qk_task_count),
         .pv_task_count(windowed_pv_task_count),
         .oacc_task_count(windowed_oacc_task_count),
+        .o_dump_valid(o_dump_valid_w),
+        .o_dump_ready(o_dump_ready_w),
+        .o_dump_group_idx(o_dump_group_idx_w),
+        .o_dump_word_idx(o_dump_word_idx_w),
+        .o_dump_word(o_dump_word_w),
+        .o_dump_last(o_dump_last_w),
         .o_block_flat(windowed_o_block_flat)
     );
 
@@ -474,6 +526,35 @@ module FA_TOP_OPTIM_WINDOWED #(
         .error_pulse(top_axi_error_pulse_w)
     );
 
+    FA_AXI_WR_MASTER u_axi_wr (
+        .clk(clk),
+        .rstn(rstn),
+        .clear(runtime_clear),
+        .wr_desc_valid(top_wr_desc_valid_w),
+        .wr_desc_ready(top_wr_desc_ready_w),
+        .wr_desc_addr(top_wr_desc_addr_w),
+        .wr_desc_words(top_wr_desc_words_w),
+        .wr_data_valid(top_wr_data_valid_w),
+        .wr_data_ready(top_wr_data_ready_w),
+        .wr_data(top_wr_data_w),
+        .wr_data_last(top_wr_data_last_w),
+        .axi_awvalid(top_axi_awvalid_w),
+        .axi_awready(m_axi_awready),
+        .axi_awaddr(top_axi_awaddr_w),
+        .axi_awlen(top_axi_awlen_w),
+        .axi_awsize(top_axi_awsize_w),
+        .axi_awburst(top_axi_awburst_w),
+        .axi_wvalid(top_axi_wvalid_w),
+        .axi_wready(m_axi_wready),
+        .axi_wdata(top_axi_wdata_w),
+        .axi_wstrb(top_axi_wstrb_w),
+        .axi_wlast(top_axi_wlast_w),
+        .axi_bresp(m_axi_bresp),
+        .axi_bvalid(m_axi_bvalid),
+        .axi_bready(top_axi_bready_w),
+        .error_pulse(top_wr_axi_error_pulse_w)
+    );
+
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
             windowed_done_sticky_r <= 1'b0;
@@ -484,15 +565,66 @@ module FA_TOP_OPTIM_WINDOWED #(
             windowed_error_sticky_r <= 1'b0;
             top_axi_error_sticky_r <= 1'b0;
         end else begin
-            if (windowed_done_pulse) begin
+            if (top_done_accept_w) begin
                 windowed_done_sticky_r <= 1'b1;
             end
             if (windowed_error) begin
                 windowed_error_sticky_r <= 1'b1;
             end
-            if (top_axi_error_pulse_w) begin
+            if (top_axi_error_pulse_w || top_wr_axi_error_pulse_w) begin
                 top_axi_error_sticky_r <= 1'b1;
             end
+        end
+    end
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            wr_state_r <= WR_IDLE;
+            wr_group_idx_r <= 2'd0;
+            status_wr_bytes_r <= 32'd0;
+            windowed_done_pending_r <= 1'b0;
+        end else if (runtime_clear || csr_start_pulse) begin
+            wr_state_r <= WR_IDLE;
+            wr_group_idx_r <= 2'd0;
+            status_wr_bytes_r <= 32'd0;
+            windowed_done_pending_r <= 1'b0;
+        end else begin
+            if (wr_data_fire_w) begin
+                status_wr_bytes_r <= status_wr_bytes_r + 32'd4;
+            end
+
+            if (top_done_accept_w) begin
+                windowed_done_pending_r <= 1'b0;
+            end else if (windowed_done_pulse) begin
+                windowed_done_pending_r <= 1'b1;
+            end
+
+            case (wr_state_r)
+                WR_IDLE: begin
+                    if (o_dump_valid_w) begin
+                        wr_group_idx_r <= o_dump_group_idx_w;
+                        wr_state_r <= WR_DESC;
+                    end
+                end
+                WR_DESC: begin
+                    if (wr_desc_fire_w) begin
+                        wr_state_r <= WR_DATA;
+                    end
+                end
+                WR_DATA: begin
+                    if (wr_data_fire_w && o_dump_last_w) begin
+                        wr_state_r <= WR_DRAIN;
+                    end
+                end
+                WR_DRAIN: begin
+                    if (wr_drain_done_w) begin
+                        wr_state_r <= WR_IDLE;
+                    end
+                end
+                default: begin
+                    wr_state_r <= WR_IDLE;
+                end
+            endcase
         end
     end
 
@@ -590,19 +722,20 @@ module FA_TOP_OPTIM_WINDOWED #(
         end
     end
 
-    assign m_axi_awaddr = 64'd0;
-    assign m_axi_awlen = 8'd0;
-    assign m_axi_awsize = 3'd4;
-    assign m_axi_awburst = 2'b01;
-    assign m_axi_awvalid = 1'b0;
-    assign m_axi_wdata = 128'd0;
-    assign m_axi_wstrb = 16'd0;
-    assign m_axi_wlast = 1'b0;
-    assign m_axi_wvalid = 1'b0;
-    assign m_axi_bready = 1'b0;
+    assign m_axi_awaddr = top_axi_awaddr_w;
+    assign m_axi_awlen = top_axi_awlen_w;
+    assign m_axi_awsize = top_axi_awsize_w;
+    assign m_axi_awburst = top_axi_awburst_w;
+    assign m_axi_awvalid = top_axi_awvalid_w;
+    assign m_axi_wdata = top_axi_wdata_w;
+    assign m_axi_wstrb = top_axi_wstrb_w;
+    assign m_axi_wlast = top_axi_wlast_w;
+    assign m_axi_wvalid = top_axi_wvalid_w;
+    assign m_axi_bready = top_axi_bready_w;
     assign m_axi_arvalid = top_axi_arvalid_w;
     assign irq = csr_irq_en && (windowed_done_sticky_r ||
                                 windowed_error_sticky_r ||
+                                top_axi_error_sticky_r ||
                                 csr_config_error);
 
 endmodule

@@ -25,7 +25,7 @@ Local evidence:
 
 ```text
 python -m unittest discover model -v
-50 tests OK
+54 tests OK
 ```
 
 The correctness regression includes one negative-control check:
@@ -39,14 +39,18 @@ The RTL-contract model in `model/fa_windowed_rtl_contract_model.py` now also
 checks the non-numerical RTL correctness surface that the dense math model does
 not see: Q/K/V request order, fixed S=256,d=64 counters, core restore starts,
 and K/V window-local SRAM layout roundtrips. It also models the current
-`FA_TOP_OPTIM_WINDOWED` AXI-read layout: Q tiles occupy 512 B each, K/V tiles
-occupy 2048 B each, the external AXI read beat is 128 b, and each AXI beat is
-split into two 64 b tile beats for the existing Q/K/V interfaces. The model
-checks that the AXI memory layout roundtrips to the original dense-QK tile
-stream and that the top-level read traffic is `1536` AR bursts, `24576` R
-beats, and `393216` read bytes. It includes a negative-control for the V SRAM
-packing bug found by VCS: forcing the V write bank high bit to zero must
-produce layout roundtrip errors for resident slots 2 and 3.
+`FA_TOP_OPTIM_WINDOWED` AXI layout: Q tiles occupy 512 B each, K/V tiles occupy
+2048 B each, O is written as four 8192 B Q groups, the external AXI beat is
+128 b, and each read AXI beat is split into two 64 b tile beats for the
+existing Q/K/V interfaces. The model checks that the AXI memory layout
+roundtrips to the original dense-QK tile stream, that the top-level read
+traffic is `1536` AR bursts, `24576` R beats, and `393216` read bytes, and that
+the top-level write traffic is `128` AW bursts, `2048` W beats, and `32768`
+write bytes. It also checks that the O write word order matches the group dump
+stream: group, q4 tile in group, local row, then column pair. It includes a
+negative-control for the V SRAM packing bug found by VCS: forcing the V write
+bank high bit to zero must produce layout roundtrip errors for resident slots
+2 and 3.
 
 ## RTL Landing Status
 
@@ -79,9 +83,10 @@ correctness:
 This is still not a complete numerical product RTL claim. The model proves the
 math contract, and the RTL structural contract is now present. The windowed
 real-core top now has fixed-point directed numerical proof for both the earlier
-`Q=0` uniform-softmax case and a nonzero-Q/K dense-reference case. It still
-needs randomized/causal coverage and AXI O writeback before claiming general
-end-to-end product RTL signoff.
+`Q=0` uniform-softmax case and a nonzero-Q/K dense-reference case. The product
+top now also writes the full O buffer and checks it against the dense-QK
+fixed-point reference. It still needs randomized and causal coverage before
+claiming general end-to-end product RTL signoff.
 
 Remote VCS now proves the fixed-shape windowed real-core schedule smoke:
 
@@ -173,20 +178,37 @@ PASS: fa_optim_4x4_windowed_loop_tb shape=S256_D64_B1_H1 numeric=dense_qk_refere
 `FA_CSR` AXI-Lite control/status plane and uses `FA_AXI_RD_MASTER` to fetch
 Q/K/V tiles from the external 128-bit AXI read channel. The top converts each
 128-bit AXI beat into two 64-bit tile-interface beats, preserving the dense-QK
-Q/K/V stream already checked by the lower-level numerical bench. AXI writeback
-remains intentionally idle, so this is an AXI-read functional top anchor, not a
-complete product DMA signoff.
+Q/K/V stream already checked by the lower-level numerical bench.
+
+The loop now exposes a group O dump stream after each Q group's final KV window
+and before the group snapshot table is cleared for the next group. One dump is
+`64 rows x 64 columns x 16b = 8192 B`, or `2048` 32-bit words. The top-level
+write controller issues one AXI write descriptor per group at
+`csr_o_base + group_idx * 8192`, feeds the dump stream into `FA_AXI_WR_MASTER`,
+counts write bytes on accepted 32-bit words, and delays CSR `done` until the
+final write response has drained. This relies on the current `FA_AXI_WR_MASTER`
+contract that `wr_desc_ready` is only high in its idle state; after the final
+dump word the top enters `WR_DRAIN` and waits for `wr_desc_ready` before
+allowing CSR `done` to become sticky.
+
+The current top smoke drives both AXI read and write channels, stores all
+write data into a testbench O memory, and compares every `256 x 64` output word
+against the same dense-QK fixed-point reference used by the lower-level loop
+bench.
 
 ```text
-RUN=/home/host/codex_runs/fa_top_optim_windowed_axi_read_20260630_151634
+RUN=/home/host/codex_runs/fa_top_optim_windowed_writeback_20260630_154650
 VCS compile: CODEX_VCS_COMPILE_STATUS=0
 VCS run: CODEX_VCS_RUN_STATUS=0
-PASS: fa_top_optim_windowed_tb numeric=dense_qk_reference cycles=155013 rd_bytes=393216 ar_count=1536 r_beat_count=24576
+PASS: fa_top_optim_windowed_tb numeric=dense_qk_reference cycles=165509 rd_bytes=393216 wr_bytes=32768 ar_count=1536 r_beat_count=24576 aw_count=128 w_beat_count=2048
 ```
 
-The `768` cycle delta versus the `FA_OPTIM_4X4_WINDOWED_LOOP` direct-feed
-anchor (`154245` cycles) is the current serialized AXI-read feeder overhead for
-this smoke. It is a measured current-RTL cost, not a model rejection.
+The previous read-only top anchor measured `155013` cycles. The current
+writeback-complete top measures `165509` cycles, so full O dump plus AXI write
+response drain adds `10496` cycles in this serialized functional scaffold. The
+delta versus the `FA_OPTIM_4X4_WINDOWED_LOOP` direct-feed dense anchor
+(`154245` cycles) is `11264` cycles. This is a measured current-RTL cost, not a
+model rejection.
 
 TABLE I
 Module Parameters
@@ -255,4 +277,5 @@ Remaining RTL landing items:
 2. Convert score post and OACC update to the sliced widths used by the contract.
 3. Decide whether the q4 snapshot table remains flops for the first functional
    anchor or is moved into small SRAM/RF storage before area work.
-4. Add AXI O writeback and output-data checking before product-top signoff.
+4. Broaden product-top output checking beyond the current directed dense-QK
+   fixed-point stream.

@@ -409,6 +409,19 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("q_tile_m_state_r[q_tile_in_group_idx_r] <= micro_snapshot_m_state_w", text)
         self.assertIn("q_tile_o_state_r[q_tile_in_group_idx_r] <= o_block_flat", text)
 
+    def test_optim_windowed_loop_exposes_group_o_dump_stream(self):
+        text = read_rtl("fa_optim_4x4_windowed_loop.v")
+
+        self.assertIn("output wire         o_dump_valid", text)
+        self.assertIn("input  wire         o_dump_ready", text)
+        self.assertIn("output wire [1:0]   o_dump_group_idx", text)
+        self.assertIn("output wire [10:0]  o_dump_word_idx", text)
+        self.assertIn("output wire [31:0]  o_dump_word", text)
+        self.assertIn("output wire         o_dump_last", text)
+        self.assertIn("ST_DUMP_GROUP", text)
+        self.assertIn("wire o_dump_fire_w = o_dump_valid && o_dump_ready", text)
+        self.assertIn("q_tile_o_state_r[o_dump_q_tile_idx_w]", text)
+
     def test_optim_windowed_real_core_smoke_checks_s256(self):
         smoke_path = RTL_SMOKE_DIR / "fa_optim_4x4_windowed_loop_tb.v"
         self.assertTrue(smoke_path.exists(), "fa_optim_4x4_windowed_loop_tb.v must exist")
@@ -578,8 +591,13 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn(".rd_beat_valid(top_rd_beat_valid_w)", text)
         self.assertIn("assign m_axi_arvalid = top_axi_arvalid_w", text)
         self.assertNotIn("assign m_axi_arvalid = 1'b0", text)
-        self.assertIn("assign m_axi_awvalid = 1'b0", text)
-        self.assertIn("assign m_axi_wvalid = 1'b0", text)
+        self.assertIn("FA_AXI_WR_MASTER u_axi_wr", text)
+        self.assertIn(".wr_desc_valid(top_wr_desc_valid_w)", text)
+        self.assertIn(".wr_data_valid(top_wr_data_valid_w)", text)
+        self.assertIn("assign m_axi_awvalid = top_axi_awvalid_w", text)
+        self.assertIn("assign m_axi_wvalid = top_axi_wvalid_w", text)
+        self.assertNotIn("assign m_axi_awvalid = 1'b0", text)
+        self.assertNotIn("assign m_axi_wvalid = 1'b0", text)
 
     def test_optim_windowed_top_smoke_checks_csr_cycles(self):
         text = read_rtl_smoke("fa_top_optim_windowed_tb.v")
@@ -588,12 +606,18 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("FA_TOP_OPTIM_WINDOWED dut", text)
         self.assertIn("axil_write(7'h00, 32'h0000_0001)", text)
         self.assertIn("axil_read(7'h40, read_data)", text)
-        self.assertIn("32'd155013", text)
+        self.assertIn("32'd165509", text)
         self.assertIn("task drive_axi_read_channel", text)
+        self.assertIn("task drive_axi_write_channel", text)
         self.assertIn("make_axi_read_word", text)
+        self.assertIn("expected_o_word_dense_qk", text)
         self.assertIn("expect32(ar_count, 32'd1536", text)
         self.assertIn("expect32(r_beat_count, 32'd24576", text)
+        self.assertIn("expect32(aw_count, 32'd128", text)
+        self.assertIn("expect32(w_beat_count, 32'd2048", text)
+        self.assertIn("32'd32768", text)
         self.assertNotIn("windowed top should keep AXI master idle", text)
+        self.assertNotIn("windowed top should keep AXI write master idle", text)
         self.assertIn("numeric=dense_qk_reference", text)
 
     def test_optim_packed_negative_smoke_covers_pv_feeder_reuse(self):

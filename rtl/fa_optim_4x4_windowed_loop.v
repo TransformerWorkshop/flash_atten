@@ -50,6 +50,12 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     output wire [31:0]  qk_task_count,
     output wire [31:0]  pv_task_count,
     output wire [31:0]  oacc_task_count,
+    output wire         o_dump_valid,
+    input  wire         o_dump_ready,
+    output wire [1:0]   o_dump_group_idx,
+    output wire [10:0]  o_dump_word_idx,
+    output wire [31:0]  o_dump_word,
+    output wire         o_dump_last,
     output wire [4095:0] o_block_flat
 );
 
@@ -67,6 +73,7 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     localparam integer V_TILE_BEATS = 256;
     localparam integer K_SRAM_BANK_COUNT = 16;
     localparam integer V_SRAM_BANK_COUNT = 16;
+    localparam integer O_DUMP_WORDS_PER_GROUP = 2048;
 
     localparam [3:0] ST_IDLE        = 4'd0;
     localparam [3:0] ST_GROUP_START = 4'd1;
@@ -78,7 +85,8 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     localparam [3:0] ST_Q_LOAD_WAIT = 4'd7;
     localparam [3:0] ST_START_TILE  = 4'd8;
     localparam [3:0] ST_WAIT_TILE   = 4'd9;
-    localparam [3:0] ST_DONE        = 4'd10;
+    localparam [3:0] ST_DUMP_GROUP  = 4'd10;
+    localparam [3:0] ST_DONE        = 4'd11;
 
     reg [3:0] state_r;
     reg [3:0] state_n;
@@ -89,6 +97,8 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     reg [6:0] q_tile_load_count_r;
     reg [8:0] k_tile_load_count_r;
     reg [8:0] v_tile_load_count_r;
+    reg [1:0] o_dump_group_idx_r;
+    reg [10:0] o_dump_word_idx_r;
     reg busy_r;
     reg done_r;
     reg error_r;
@@ -127,6 +137,10 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     wire window_is_last_q_tile_w = (q_tile_in_group_idx_r == (Q_TILES_PER_GROUP - 1));
     wire group_is_last_window_w = (kv_window_idx_r == (KV_WINDOWS_PER_GROUP - 1));
     wire group_is_last_group_w = (q_group_idx_r == (Q_GROUP_COUNT - 1));
+    wire o_dump_fire_w = o_dump_valid && o_dump_ready;
+    wire o_dump_last_word_w = (o_dump_word_idx_r == (O_DUMP_WORDS_PER_GROUP - 1));
+    wire [3:0] o_dump_q_tile_idx_w = o_dump_word_idx_r[10:7];
+    wire [6:0] o_dump_word_in_tile_w = o_dump_word_idx_r[6:0];
 
     wire q_tile_req_fire_w = q_tile_req_valid && q_tile_req_ready;
     wire q_tile_beat_fire_w = q_tile_beat_valid && q_tile_beat_ready;
@@ -300,6 +314,12 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
     assign micro_k_rd_resp_valid_w = &k_sram_selected_rd_valid_w;
     assign micro_v_rd_req_ready_w = (state_r == ST_WAIT_TILE) && current_v_rd_resident_w;
     assign micro_v_rd_resp_valid_w = &v_sram_selected_rd_valid_w;
+    assign o_dump_valid = (state_r == ST_DUMP_GROUP);
+    assign o_dump_group_idx = o_dump_group_idx_r;
+    assign o_dump_word_idx = o_dump_word_idx_r;
+    assign o_dump_word = q_tile_o_state_r[o_dump_q_tile_idx_w]
+                       [(o_dump_word_in_tile_w * 32) +: 32];
+    assign o_dump_last = o_dump_last_word_w;
     assign k_sram_rd_fire_w = micro_k_rd_req_valid_w && micro_k_rd_req_ready_w;
     assign v_sram_rd_fire_w = micro_v_rd_req_valid_w && micro_v_rd_req_ready_w;
 
@@ -441,16 +461,21 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
                         state_n = ST_DONE;
                     end else if (window_is_last_q_tile_w) begin
                         if (group_is_last_window_w) begin
-                            if (group_is_last_group_w) begin
-                                state_n = ST_DONE;
-                            end else begin
-                                state_n = ST_GROUP_START;
-                            end
+                            state_n = ST_DUMP_GROUP;
                         end else begin
                             state_n = ST_K_LOAD_REQ;
                         end
                     end else begin
                         state_n = ST_Q_LOAD_REQ;
+                    end
+                end
+            end
+            ST_DUMP_GROUP: begin
+                if (o_dump_fire_w && o_dump_last_word_w) begin
+                    if (group_is_last_group_w) begin
+                        state_n = ST_DONE;
+                    end else begin
+                        state_n = ST_GROUP_START;
                     end
                 end
             end
@@ -502,6 +527,8 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
             q_tile_load_count_r <= 7'd0;
             k_tile_load_count_r <= 9'd0;
             v_tile_load_count_r <= 9'd0;
+            o_dump_group_idx_r <= 2'd0;
+            o_dump_word_idx_r <= 11'd0;
             core_start_r <= 1'b0;
             q_block_flat_r <= 4096'd0;
             kv_window_resident_valid_r <= {KV_WINDOW_TILES{1'b0}};
@@ -541,6 +568,8 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
             q_tile_load_count_r <= 7'd0;
             k_tile_load_count_r <= 9'd0;
             v_tile_load_count_r <= 9'd0;
+            o_dump_group_idx_r <= 2'd0;
+            o_dump_word_idx_r <= 11'd0;
             core_start_r <= 1'b0;
             q_block_flat_r <= 4096'd0;
             kv_window_resident_valid_r <= {KV_WINDOW_TILES{1'b0}};
@@ -595,6 +624,8 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
                 q_tile_load_count_r <= 7'd0;
                 k_tile_load_count_r <= 9'd0;
                 v_tile_load_count_r <= 9'd0;
+                o_dump_group_idx_r <= 2'd0;
+                o_dump_word_idx_r <= 11'd0;
                 kv_window_resident_valid_r <= {KV_WINDOW_TILES{1'b0}};
                 for (q_tile_state_i = 0; q_tile_state_i < Q_TILES_PER_GROUP; q_tile_state_i = q_tile_state_i + 1) begin
                     q_tile_m_state_r[q_tile_state_i] <= 512'd0;
@@ -704,15 +735,25 @@ module FA_OPTIM_4X4_WINDOWED_LOOP (
                         kv_window_resident_valid_r <= {KV_WINDOW_TILES{1'b0}};
                         if (group_is_last_window_w) begin
                             kv_window_idx_r <= 2'd0;
-                            if (!group_is_last_group_w) begin
-                                q_group_idx_r <= q_group_idx_r + 1'b1;
-                            end
+                            o_dump_group_idx_r <= q_group_idx_r;
+                            o_dump_word_idx_r <= 11'd0;
                         end else begin
                             kv_window_idx_r <= kv_window_idx_r + 1'b1;
                         end
                     end else begin
                         q_tile_in_group_idx_r <= q_tile_in_group_idx_r + 1'b1;
                     end
+                end
+            end
+
+            if (state_r == ST_DUMP_GROUP && o_dump_fire_w) begin
+                if (o_dump_last_word_w) begin
+                    o_dump_word_idx_r <= 11'd0;
+                    if (!group_is_last_group_w) begin
+                        q_group_idx_r <= q_group_idx_r + 1'b1;
+                    end
+                end else begin
+                    o_dump_word_idx_r <= o_dump_word_idx_r + 11'd1;
                 end
             end
 

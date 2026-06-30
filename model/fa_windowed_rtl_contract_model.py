@@ -67,6 +67,13 @@ class WindowedTopAxiReadMetrics:
 
 
 @dataclass(frozen=True)
+class WindowedTopAxiWriteMetrics:
+    aw_count: int
+    w_beat_count: int
+    wr_bytes: int
+
+
+@dataclass(frozen=True)
 class WindowedRtlCounters:
     q_group_count: int
     kv_window_count: int
@@ -206,6 +213,23 @@ def axi_read_metrics_for_windowed_contract(
     )
 
 
+def axi_write_metrics_for_windowed_contract(
+    contract: WindowedRtlContract,
+    layout: WindowedTopAxiLayoutConfig = WindowedTopAxiLayoutConfig(),
+) -> WindowedTopAxiWriteMetrics:
+    cfg = contract.config
+    q_group_count = cfg.seq_len // cfg.q_group_rows
+    words_per_group = (cfg.q_group_rows * cfg.head_dim) // 2
+    beats_per_group = _ceil_div(words_per_group, layout.axi_beat_bytes // 4)
+    aw_per_group = _ceil_div(beats_per_group, layout.max_burst_beats)
+    w_beat_count = q_group_count * beats_per_group
+    return WindowedTopAxiWriteMetrics(
+        aw_count=q_group_count * aw_per_group,
+        w_beat_count=w_beat_count,
+        wr_bytes=w_beat_count * layout.axi_beat_bytes,
+    )
+
+
 def dense_qk_direct_tile_beat64(
     kind: str, tile_idx: int, row_idx: int, chunk_idx: int
 ) -> int:
@@ -274,6 +298,26 @@ def dense_qk_axi_word32(layout: WindowedTopAxiLayoutConfig, addr: int) -> int:
     lo_word = _dense_qk_word(kind, tile_idx, row_idx, col_idx)
     hi_word = _dense_qk_word(kind, tile_idx, row_idx, col_idx + 1)
     return (hi_word << 16) | lo_word
+
+
+def dense_qk_o_write_word32(
+    layout: WindowedTopAxiLayoutConfig,
+    q_tile_idx: int,
+    row_idx: int,
+    col_pair_idx: int,
+    o_word_fn,
+) -> Tuple[int, int]:
+    q_tiles_per_group = 16
+    words_per_tile = 128
+    group_idx = q_tile_idx // q_tiles_per_group
+    tile_in_group_idx = q_tile_idx % q_tiles_per_group
+    word_in_tile = (row_idx * 32) + col_pair_idx
+    group_word_idx = (tile_in_group_idx * words_per_tile) + word_in_tile
+    addr = layout.o_base + (group_idx * 8192) + (group_word_idx * 4)
+    col_idx = col_pair_idx * 2
+    lo_word = o_word_fn(q_tile_idx, row_idx, col_idx)
+    hi_word = o_word_fn(q_tile_idx, row_idx, col_idx + 1)
+    return addr, (hi_word << 16) | lo_word
 
 
 def count_k_layout_roundtrip_errors(cfg: WindowedRtlContractConfig) -> int:

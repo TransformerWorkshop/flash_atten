@@ -299,14 +299,14 @@ def fixed_dense_qk_score_q16(
     return _sat_signed(acc_q16, 32)
 
 
-def expected_dense_qk_fixed_o_word(row: int, col: int) -> int:
+def expected_dense_qk_fixed_o_word_for_tile(q_tile_idx: int, row: int, col: int) -> int:
     old_m_q16 = _to_signed(0xFFC0_0000, 32)
     old_l_q16 = 0
     old_o_q412 = 0
 
     for kv_idx in range(16):
         scores_q16 = [
-            fixed_dense_qk_score_q16(63, row, kv_idx, key_col_idx)
+            fixed_dense_qk_score_q16(q_tile_idx, row, kv_idx, key_col_idx)
             for key_col_idx in range(16)
         ]
         new_m_q16 = max(scores_q16)
@@ -343,9 +343,13 @@ def expected_dense_qk_fixed_o_word(row: int, col: int) -> int:
     return _to_unsigned(old_o_q412, 16)
 
 
-def fixed_dense_qk_window_output() -> List[List[int]]:
+def expected_dense_qk_fixed_o_word(row: int, col: int) -> int:
+    return expected_dense_qk_fixed_o_word_for_tile(63, row, col)
+
+
+def fixed_dense_qk_window_output(q_tile_idx: int = 63) -> List[List[int]]:
     return [
-        [expected_dense_qk_fixed_o_word(row, col) for col in range(64)]
+        [expected_dense_qk_fixed_o_word_for_tile(q_tile_idx, row, col) for col in range(64)]
         for row in range(4)
     ]
 
