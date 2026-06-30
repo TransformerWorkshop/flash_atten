@@ -25,8 +25,15 @@ Local evidence:
 
 ```text
 python -m unittest discover model -v
-30 tests OK
+31 tests OK
 ```
+
+The correctness regression includes one negative-control check:
+`test_streaming_state_must_survive_across_kv_windows`. The golden windowed
+model matches dense attention with `max_abs < 1.0e-12`, while a forbidden model
+that drops all previous KV-window row-state/OACC and keeps only the final
+window differs from dense attention by more than `1.0e-4`. This proves the
+model-level requirement that row-state and OACC must survive across KV windows.
 
 ## RTL Landing Status
 
@@ -96,8 +103,10 @@ anchor.
 Remaining RTL landing items:
 
 1. Replace the contract-only compute event with the real 4x4 staggered core.
-2. Add `kv_base_idx`, `kv_count`, `first_window`, and `last_window` controls to
-   the core.
+2. Complete row-state/OACC restore and spill around `first_kv_window` and
+   `last_kv_window`. The core now exposes `kv_base_idx`, `kv_count`,
+   `first_kv_window`, and `last_kv_window`, but only the KV range and first
+   window row-state init control are landed.
 3. Add row-state/OACC fill and spill storage for the 64-row Q group lifetime.
 4. Rework K/V SRAM addressing so resident slots carry `{window_slot, local row,
    chunk}` rather than full-matrix resident coverage.

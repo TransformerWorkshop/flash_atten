@@ -232,6 +232,19 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("pv_can_issue_w", text)
         self.assertIn("qk_can_issue_w", text)
         self.assertIn("KV_TILE_COUNT_W = 5'd16", text)
+        self.assertIn("input  wire [4:0]    kv_base_idx", text)
+        self.assertIn("input  wire [4:0]    kv_count", text)
+        self.assertIn("input  wire          first_kv_window", text)
+        self.assertIn("input  wire          last_kv_window", text)
+        self.assertIn("wire [4:0] kv_end_idx_w", text)
+        self.assertIn("wire run_full_kv_range_w", text)
+        self.assertIn("wire full_range_flag_invalid_w", text)
+        self.assertIn("row_init_valid_r <= first_kv_window", text)
+        self.assertIn("qk_issue_kv_idx_r <= kv_base_idx_w", text)
+        self.assertIn("row_next_kv_idx_r <= kv_base_idx_w", text)
+        self.assertIn("pv_next_kv_idx_r <= kv_base_idx_w", text)
+        self.assertIn("oacc_next_kv_idx_r <= kv_base_idx_w", text)
+        self.assertIn("if (oacc_next_kv_idx_r == (kv_end_idx_w - 5'd1))", text)
 
     def test_optim_windowed_scheduler_contract_exists(self):
         rtl_path = RTL_DIR / "fa_optim_windowed_sched_contract.v"

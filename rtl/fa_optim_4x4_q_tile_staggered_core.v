@@ -4,6 +4,10 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
     input  wire          clear,
     input  wire          start,
     input  wire [4095:0] q_block_flat,
+    input  wire [4:0]    kv_base_idx,
+    input  wire [4:0]    kv_count,
+    input  wire          first_kv_window,
+    input  wire          last_kv_window,
     output wire          k_rd_req_valid,
     input  wire          k_rd_req_ready,
     output wire [4:0]    k_rd_req_kv_idx,
@@ -130,9 +134,15 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
     reg [1:0] pv_issue_slot_w;
     reg oacc_issue_valid_w;
     reg [1:0] oacc_issue_slot_w;
+    wire run_full_kv_range_w = (kv_count == 5'd0);
+    wire [4:0] kv_base_idx_w = run_full_kv_range_w ? 5'd0 : kv_base_idx;
+    wire [4:0] kv_count_w = run_full_kv_range_w ? KV_TILE_COUNT_W : kv_count;
+    wire [4:0] kv_end_idx_w = kv_base_idx_w + kv_count_w;
+    wire kv_range_invalid_w = (kv_end_idx_w > KV_TILE_COUNT_W);
+    wire full_range_flag_invalid_w = run_full_kv_range_w && (!first_kv_window || !last_kv_window);
     wire qk_can_issue_w = (core_state_r == CORE_RUN) &&
                           (gemm_state_r == GEMM_IDLE) &&
-                          (qk_issue_kv_idx_r < KV_TILE_COUNT_W) &&
+                          (qk_issue_kv_idx_r < kv_end_idx_w) &&
                           qk_free_slot_valid_w;
     wire pv_can_issue_w = (core_state_r == CORE_RUN) &&
                           (gemm_state_r == GEMM_IDLE) &&
@@ -190,7 +200,7 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
     wire [511:0] unused_m_state_flat_w;
     wire [511:0] unused_l_state_flat_w;
     wire [15:0] unused_row_seen_w;
-    wire row_update_valid_w = score_active_valid_r && score_resp_valid_w;
+    wire row_update_valid_w = score_active_valid_r && score_resp_valid_w && !kv_range_invalid_w;
     wire row_update_fire_w = row_update_valid_w && row_update_ready_w;
 
     wire [1:0] oacc_selected_slot_w = oacc_active_valid_r ?
@@ -314,19 +324,19 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
     always @(*) begin
         score_issue_valid_w = 1'b0;
         score_issue_slot_w = 2'd0;
-        if ((core_state_r == CORE_RUN) && (row_next_kv_idx_r < KV_TILE_COUNT_W) &&
+        if ((core_state_r == CORE_RUN) && (row_next_kv_idx_r < kv_end_idx_w) &&
             slot_busy_r[0] && score_ready_r[0] && (slot_kv_idx_r[0] == row_next_kv_idx_r)) begin
             score_issue_valid_w = 1'b1;
             score_issue_slot_w = 2'd0;
-        end else if ((core_state_r == CORE_RUN) && (row_next_kv_idx_r < KV_TILE_COUNT_W) &&
+        end else if ((core_state_r == CORE_RUN) && (row_next_kv_idx_r < kv_end_idx_w) &&
             slot_busy_r[1] && score_ready_r[1] && (slot_kv_idx_r[1] == row_next_kv_idx_r)) begin
             score_issue_valid_w = 1'b1;
             score_issue_slot_w = 2'd1;
-        end else if ((core_state_r == CORE_RUN) && (row_next_kv_idx_r < KV_TILE_COUNT_W) &&
+        end else if ((core_state_r == CORE_RUN) && (row_next_kv_idx_r < kv_end_idx_w) &&
             slot_busy_r[2] && score_ready_r[2] && (slot_kv_idx_r[2] == row_next_kv_idx_r)) begin
             score_issue_valid_w = 1'b1;
             score_issue_slot_w = 2'd2;
-        end else if ((core_state_r == CORE_RUN) && (row_next_kv_idx_r < KV_TILE_COUNT_W) &&
+        end else if ((core_state_r == CORE_RUN) && (row_next_kv_idx_r < kv_end_idx_w) &&
             slot_busy_r[3] && score_ready_r[3] && (slot_kv_idx_r[3] == row_next_kv_idx_r)) begin
             score_issue_valid_w = 1'b1;
             score_issue_slot_w = 2'd3;
@@ -336,19 +346,19 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
     always @(*) begin
         pv_issue_valid_w = 1'b0;
         pv_issue_slot_w = 2'd0;
-        if ((pv_next_kv_idx_r < KV_TILE_COUNT_W) &&
+        if ((pv_next_kv_idx_r < kv_end_idx_w) &&
             slot_busy_r[0] && p_ready_r[0] && (slot_kv_idx_r[0] == pv_next_kv_idx_r)) begin
             pv_issue_valid_w = 1'b1;
             pv_issue_slot_w = 2'd0;
-        end else if ((pv_next_kv_idx_r < KV_TILE_COUNT_W) &&
+        end else if ((pv_next_kv_idx_r < kv_end_idx_w) &&
             slot_busy_r[1] && p_ready_r[1] && (slot_kv_idx_r[1] == pv_next_kv_idx_r)) begin
             pv_issue_valid_w = 1'b1;
             pv_issue_slot_w = 2'd1;
-        end else if ((pv_next_kv_idx_r < KV_TILE_COUNT_W) &&
+        end else if ((pv_next_kv_idx_r < kv_end_idx_w) &&
             slot_busy_r[2] && p_ready_r[2] && (slot_kv_idx_r[2] == pv_next_kv_idx_r)) begin
             pv_issue_valid_w = 1'b1;
             pv_issue_slot_w = 2'd2;
-        end else if ((pv_next_kv_idx_r < KV_TILE_COUNT_W) &&
+        end else if ((pv_next_kv_idx_r < kv_end_idx_w) &&
             slot_busy_r[3] && p_ready_r[3] && (slot_kv_idx_r[3] == pv_next_kv_idx_r)) begin
             pv_issue_valid_w = 1'b1;
             pv_issue_slot_w = 2'd3;
@@ -358,19 +368,19 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
     always @(*) begin
         oacc_issue_valid_w = 1'b0;
         oacc_issue_slot_w = 2'd0;
-        if ((oacc_next_kv_idx_r < KV_TILE_COUNT_W) &&
+        if ((oacc_next_kv_idx_r < kv_end_idx_w) &&
             slot_busy_r[0] && partial_ready_r[0] && (slot_kv_idx_r[0] == oacc_next_kv_idx_r)) begin
             oacc_issue_valid_w = 1'b1;
             oacc_issue_slot_w = 2'd0;
-        end else if ((oacc_next_kv_idx_r < KV_TILE_COUNT_W) &&
+        end else if ((oacc_next_kv_idx_r < kv_end_idx_w) &&
             slot_busy_r[1] && partial_ready_r[1] && (slot_kv_idx_r[1] == oacc_next_kv_idx_r)) begin
             oacc_issue_valid_w = 1'b1;
             oacc_issue_slot_w = 2'd1;
-        end else if ((oacc_next_kv_idx_r < KV_TILE_COUNT_W) &&
+        end else if ((oacc_next_kv_idx_r < kv_end_idx_w) &&
             slot_busy_r[2] && partial_ready_r[2] && (slot_kv_idx_r[2] == oacc_next_kv_idx_r)) begin
             oacc_issue_valid_w = 1'b1;
             oacc_issue_slot_w = 2'd2;
-        end else if ((oacc_next_kv_idx_r < KV_TILE_COUNT_W) &&
+        end else if ((oacc_next_kv_idx_r < kv_end_idx_w) &&
             slot_busy_r[3] && partial_ready_r[3] && (slot_kv_idx_r[3] == oacc_next_kv_idx_r)) begin
             oacc_issue_valid_w = 1'b1;
             oacc_issue_slot_w = 2'd3;
@@ -719,7 +729,7 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
                 oacc_active_valid_r <= 1'b0;
                 oacc_next_kv_idx_r <= oacc_next_kv_idx_r + 5'd1;
                 micro_tile_count <= micro_tile_count + 32'd1;
-                if (oacc_next_kv_idx_r == (KV_TILE_COUNT_W - 5'd1)) begin
+                if (oacc_next_kv_idx_r == (kv_end_idx_w - 5'd1)) begin
                     core_state_r <= CORE_DONE;
                 end
             end
@@ -730,7 +740,7 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
                         core_state_r <= CORE_INIT;
                         gemm_state_r <= GEMM_IDLE;
                         busy <= 1'b1;
-                        error <= 1'b0;
+                        error <= kv_range_invalid_w || full_range_flag_invalid_w;
                         cycles <= 32'd0;
                         micro_tile_count <= 32'd0;
                         kv_block_issue_count <= 32'd0;
@@ -743,10 +753,10 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
                             o_tile_row_r[o_row_i] <= 1024'd0;
                         end
                         feed_count_r <= 6'd0;
-                        qk_issue_kv_idx_r <= 5'd0;
-                        row_next_kv_idx_r <= 5'd0;
-                        pv_next_kv_idx_r <= 5'd0;
-                        oacc_next_kv_idx_r <= 5'd0;
+                        qk_issue_kv_idx_r <= kv_base_idx_w;
+                        row_next_kv_idx_r <= kv_base_idx_w;
+                        pv_next_kv_idx_r <= kv_base_idx_w;
+                        oacc_next_kv_idx_r <= kv_base_idx_w;
                         slot_busy_r <= {SLOT_COUNT{1'b0}};
                         score_ready_r <= {SLOT_COUNT{1'b0}};
                         p_ready_r <= {SLOT_COUNT{1'b0}};
@@ -757,14 +767,14 @@ module FA_OPTIM_4X4_Q_TILE_STAGGERED_CORE (
                         p_feed_valid_r <= 1'b0;
                         v_feed_valid_r <= 1'b0;
                         k_feed_valid_r <= 1'b0;
-                        row_init_valid_r <= 1'b1;
+                        row_init_valid_r <= first_kv_window;
                     end
                 end
                 CORE_INIT: begin
                     if (row_init_valid_r && row_init_ready_w) begin
                         row_init_valid_r <= 1'b0;
                     end
-                    if (row_init_done_pulse_w) begin
+                    if (row_init_done_pulse_w || !first_kv_window) begin
                         core_state_r <= CORE_RUN;
                     end
                 end

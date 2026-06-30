@@ -1,7 +1,10 @@
+import math
 import unittest
 
 from model.fa_windowed_attention_model import (
     WindowedAttentionConfig,
+    AttentionResult,
+    WindowedAttentionCounters,
     compare_outputs,
     dense_attention,
     make_qkv,
@@ -59,6 +62,27 @@ class WindowedAttentionModelTest(unittest.TestCase):
         self.assertEqual(actual.counters.kv_tile_compute_count, 544)
         self.assertEqual(actual.counters.skipped_future_kv_tiles, 480)
 
+    def test_streaming_state_must_survive_across_kv_windows(self):
+        cfg = WindowedAttentionConfig(
+            seq_len=256,
+            head_dim=64,
+            q_group_rows=64,
+            q_tile_rows=4,
+            kv_tile_rows=16,
+            kv_window_tiles=4,
+            oacc_slice_cols=16,
+            score_slice_cols=4,
+            causal=False,
+        )
+        q, k, v = make_qkv(cfg, seed=37, amplitude=31)
+
+        expected = dense_attention(q, k, v, cfg)
+        actual = windowed_attention(q, k, v, cfg)
+        reset_each_window = _last_window_only_attention(q, k, v, cfg)
+
+        self.assertLess(compare_outputs(actual, expected).max_abs, 1.0e-12)
+        self.assertGreater(compare_outputs(reset_each_window, expected).max_abs, 1.0e-4)
+
     def test_bad_window_shape_is_rejected(self):
         cfg = WindowedAttentionConfig(
             seq_len=256,
@@ -74,6 +98,40 @@ class WindowedAttentionModelTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             cfg.validate()
+
+
+def _last_window_only_attention(q_matrix, k_matrix, v_matrix, cfg):
+    """Negative-control model for the forbidden per-window state reset."""
+    output = [[0.0 for _ in range(cfg.head_dim)] for _ in range(cfg.seq_len)]
+    kv_tile_count = cfg.seq_len // cfg.kv_tile_rows
+    kv_window_count = kv_tile_count // cfg.kv_window_tiles
+    last_kv_base = (kv_window_count - 1) * cfg.kv_window_tiles * cfg.kv_tile_rows
+    for qi in range(cfg.seq_len):
+        scores = []
+        for kj in range(last_kv_base, cfg.seq_len):
+            dot = sum(qv * kv for qv, kv in zip(q_matrix[qi], k_matrix[kj]))
+            scores.append(dot * cfg.scale)
+        row_max = max(scores)
+        exp_values = [math.exp(score - row_max) for score in scores]
+        exp_sum = sum(exp_values)
+        for local_k, exp_value in enumerate(exp_values):
+            prob = exp_value / exp_sum
+            for col in range(cfg.head_dim):
+                output[qi][col] += prob * v_matrix[last_kv_base + local_k][col]
+    return AttentionResult(
+        output=output,
+        counters=WindowedAttentionCounters(
+            q_group_count=0,
+            kv_window_count=kv_window_count,
+            q_tile_visit_count=0,
+            kv_tile_compute_count=0,
+            skipped_future_kv_tiles=0,
+            score_slice_count=0,
+            oacc_slice_count=0,
+            state_spill_count=0,
+            state_fill_count=0,
+        ),
+    )
 
 
 if __name__ == "__main__":
