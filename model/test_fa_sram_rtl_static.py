@@ -573,7 +573,11 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertRegex(text, r"module\s+FA_TOP_OPTIM_WINDOWED\b")
         self.assertIn("FA_CSR u_fa_csr", text)
         self.assertIn("FA_OPTIM_4X4_WINDOWED_LOOP u_windowed_loop", text)
-        self.assertIn("assign m_axi_arvalid = 1'b0", text)
+        self.assertIn("FA_AXI_RD_MASTER u_axi_rd", text)
+        self.assertIn(".rd_desc_valid(top_rd_desc_valid_w)", text)
+        self.assertIn(".rd_beat_valid(top_rd_beat_valid_w)", text)
+        self.assertIn("assign m_axi_arvalid = top_axi_arvalid_w", text)
+        self.assertNotIn("assign m_axi_arvalid = 1'b0", text)
         self.assertIn("assign m_axi_awvalid = 1'b0", text)
         self.assertIn("assign m_axi_wvalid = 1'b0", text)
 
@@ -584,7 +588,12 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("FA_TOP_OPTIM_WINDOWED dut", text)
         self.assertIn("axil_write(7'h00, 32'h0000_0001)", text)
         self.assertIn("axil_read(7'h40, read_data)", text)
-        self.assertIn("32'd154245", text)
+        self.assertIn("32'd155013", text)
+        self.assertIn("task drive_axi_read_channel", text)
+        self.assertIn("make_axi_read_word", text)
+        self.assertIn("expect32(ar_count, 32'd1536", text)
+        self.assertIn("expect32(r_beat_count, 32'd24576", text)
+        self.assertNotIn("windowed top should keep AXI master idle", text)
         self.assertIn("numeric=dense_qk_reference", text)
 
     def test_optim_packed_negative_smoke_covers_pv_feeder_reuse(self):

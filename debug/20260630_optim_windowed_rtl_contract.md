@@ -25,7 +25,7 @@ Local evidence:
 
 ```text
 python -m unittest discover model -v
-48 tests OK
+50 tests OK
 ```
 
 The correctness regression includes one negative-control check:
@@ -38,9 +38,15 @@ model-level requirement that row-state and OACC must survive across KV windows.
 The RTL-contract model in `model/fa_windowed_rtl_contract_model.py` now also
 checks the non-numerical RTL correctness surface that the dense math model does
 not see: Q/K/V request order, fixed S=256,d=64 counters, core restore starts,
-and K/V window-local SRAM layout roundtrips. It includes a negative-control for
-the V SRAM packing bug found by VCS: forcing the V write bank high bit to zero
-must produce layout roundtrip errors for resident slots 2 and 3.
+and K/V window-local SRAM layout roundtrips. It also models the current
+`FA_TOP_OPTIM_WINDOWED` AXI-read layout: Q tiles occupy 512 B each, K/V tiles
+occupy 2048 B each, the external AXI read beat is 128 b, and each AXI beat is
+split into two 64 b tile beats for the existing Q/K/V interfaces. The model
+checks that the AXI memory layout roundtrips to the original dense-QK tile
+stream and that the top-level read traffic is `1536` AR bursts, `24576` R
+beats, and `393216` read bytes. It includes a negative-control for the V SRAM
+packing bug found by VCS: forcing the V write bank high bit to zero must
+produce layout roundtrip errors for resident slots 2 and 3.
 
 ## RTL Landing Status
 
@@ -74,8 +80,8 @@ This is still not a complete numerical product RTL claim. The model proves the
 math contract, and the RTL structural contract is now present. The windowed
 real-core top now has fixed-point directed numerical proof for both the earlier
 `Q=0` uniform-softmax case and a nonzero-Q/K dense-reference case. It still
-needs randomized/causal coverage and real AXI DMA fill/writeback before
-claiming general end-to-end product RTL signoff.
+needs randomized/causal coverage and AXI O writeback before claiming general
+end-to-end product RTL signoff.
 
 Remote VCS now proves the fixed-shape windowed real-core schedule smoke:
 
@@ -164,18 +170,23 @@ PASS: fa_optim_4x4_windowed_loop_tb shape=S256_D64_B1_H1 numeric=dense_qk_refere
 ```
 
 `FA_TOP_OPTIM_WINDOWED` now wraps the windowed loop with the existing
-`FA_CSR` AXI-Lite control/status plane. This is a product-lifecycle scaffold:
-CSR start, sticky done/error, cycles, and byte counters are observable at the
-top, while a deterministic internal feeder supplies the same dense-QK Q/K/V
-tile stream used by the directed numerical bench. The AXI master remains
-intentionally idle, so this is not yet a real DMA product top.
+`FA_CSR` AXI-Lite control/status plane and uses `FA_AXI_RD_MASTER` to fetch
+Q/K/V tiles from the external 128-bit AXI read channel. The top converts each
+128-bit AXI beat into two 64-bit tile-interface beats, preserving the dense-QK
+Q/K/V stream already checked by the lower-level numerical bench. AXI writeback
+remains intentionally idle, so this is an AXI-read functional top anchor, not a
+complete product DMA signoff.
 
 ```text
-RUN=/home/host/codex_runs/fa_top_optim_windowed_20260630_143135
+RUN=/home/host/codex_runs/fa_top_optim_windowed_axi_read_20260630_151634
 VCS compile: CODEX_VCS_COMPILE_STATUS=0
 VCS run: CODEX_VCS_RUN_STATUS=0
-PASS: fa_top_optim_windowed_tb numeric=dense_qk_reference cycles=154245 rd_bytes=393216
+PASS: fa_top_optim_windowed_tb numeric=dense_qk_reference cycles=155013 rd_bytes=393216 ar_count=1536 r_beat_count=24576
 ```
+
+The `768` cycle delta versus the `FA_OPTIM_4X4_WINDOWED_LOOP` direct-feed
+anchor (`154245` cycles) is the current serialized AXI-read feeder overhead for
+this smoke. It is a measured current-RTL cost, not a model rejection.
 
 TABLE I
 Module Parameters
@@ -244,5 +255,4 @@ Remaining RTL landing items:
 2. Convert score post and OACC update to the sliced widths used by the contract.
 3. Decide whether the q4 snapshot table remains flops for the first functional
    anchor or is moved into small SRAM/RF storage before area work.
-4. Replace the `FA_TOP_OPTIM_WINDOWED` deterministic feeder with real AXI DMA
-   Q/K/V fill and O writeback before product-top signoff.
+4. Add AXI O writeback and output-data checking before product-top signoff.

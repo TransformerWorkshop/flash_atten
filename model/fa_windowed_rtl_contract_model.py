@@ -48,6 +48,25 @@ class WindowedRtlContractConfig:
 
 
 @dataclass(frozen=True)
+class WindowedTopAxiLayoutConfig:
+    q_base: int = 0x0000_1000
+    k_base: int = 0x0001_0000
+    v_base: int = 0x0002_0000
+    o_base: int = 0x0003_0000
+    q_tile_bytes: int = 512
+    kv_tile_bytes: int = 2048
+    axi_beat_bytes: int = 16
+    max_burst_beats: int = 16
+
+
+@dataclass(frozen=True)
+class WindowedTopAxiReadMetrics:
+    ar_count: int
+    r_beat_count: int
+    rd_bytes: int
+
+
+@dataclass(frozen=True)
 class WindowedRtlCounters:
     q_group_count: int
     kv_window_count: int
@@ -157,6 +176,106 @@ def build_windowed_rtl_contract(
     )
 
 
+def axi_read_metrics_for_windowed_contract(
+    contract: WindowedRtlContract,
+    layout: WindowedTopAxiLayoutConfig = WindowedTopAxiLayoutConfig(),
+) -> WindowedTopAxiReadMetrics:
+    cfg = contract.config
+    q_axi_beats_per_tile = _ceil_div(cfg.q_tile_beat_count, 2)
+    k_axi_beats_per_tile = _ceil_div(cfg.k_tile_beat_count, 2)
+    v_axi_beats_per_tile = _ceil_div(cfg.v_tile_beat_count, 2)
+
+    q_ar_per_tile = _ceil_div(q_axi_beats_per_tile, layout.max_burst_beats)
+    k_ar_per_tile = _ceil_div(k_axi_beats_per_tile, layout.max_burst_beats)
+    v_ar_per_tile = _ceil_div(v_axi_beats_per_tile, layout.max_burst_beats)
+
+    ar_count = (
+        len(contract.q_tile_requests) * q_ar_per_tile
+        + len(contract.k_tile_requests) * k_ar_per_tile
+        + len(contract.v_tile_requests) * v_ar_per_tile
+    )
+    r_beat_count = (
+        len(contract.q_tile_requests) * q_axi_beats_per_tile
+        + len(contract.k_tile_requests) * k_axi_beats_per_tile
+        + len(contract.v_tile_requests) * v_axi_beats_per_tile
+    )
+    return WindowedTopAxiReadMetrics(
+        ar_count=ar_count,
+        r_beat_count=r_beat_count,
+        rd_bytes=r_beat_count * layout.axi_beat_bytes,
+    )
+
+
+def dense_qk_direct_tile_beat64(
+    kind: str, tile_idx: int, row_idx: int, chunk_idx: int
+) -> int:
+    base_col = chunk_idx * 4
+    words = [
+        _dense_qk_word(kind, tile_idx, row_idx, base_col + lane)
+        for lane in range(4)
+    ]
+    return (
+        (words[3] << 48)
+        | (words[2] << 32)
+        | (words[1] << 16)
+        | words[0]
+    )
+
+
+def dense_qk_axi_tile_beat64(
+    layout: WindowedTopAxiLayoutConfig,
+    kind: str,
+    tile_idx: int,
+    row_idx: int,
+    chunk_idx: int,
+) -> int:
+    if kind == "q":
+        tile_base = layout.q_base + (tile_idx * layout.q_tile_bytes)
+    elif kind == "k":
+        tile_base = layout.k_base + (tile_idx * layout.kv_tile_bytes)
+    elif kind == "v":
+        tile_base = layout.v_base + (tile_idx * layout.kv_tile_bytes)
+    else:
+        raise ValueError(f"unknown dense-QK operand kind: {kind}")
+
+    axi_beat_idx = (row_idx * 8) + (chunk_idx // 2)
+    axi_addr = tile_base + (axi_beat_idx * layout.axi_beat_bytes)
+    axi_beat = dense_qk_axi_beat128(layout, axi_addr)
+    shift = 64 if (chunk_idx & 0x1) else 0
+    return (axi_beat >> shift) & ((1 << 64) - 1)
+
+
+def dense_qk_axi_beat128(layout: WindowedTopAxiLayoutConfig, addr: int) -> int:
+    words = [dense_qk_axi_word32(layout, addr + byte_offset) for byte_offset in (0, 4, 8, 12)]
+    return (words[3] << 96) | (words[2] << 64) | (words[1] << 32) | words[0]
+
+
+def dense_qk_axi_word32(layout: WindowedTopAxiLayoutConfig, addr: int) -> int:
+    if layout.q_base <= addr < layout.k_base:
+        kind = "q"
+        byte_offset = addr - layout.q_base
+        tile_bytes = layout.q_tile_bytes
+    elif layout.k_base <= addr < layout.v_base:
+        kind = "k"
+        byte_offset = addr - layout.k_base
+        tile_bytes = layout.kv_tile_bytes
+    elif layout.v_base <= addr < layout.o_base:
+        kind = "v"
+        byte_offset = addr - layout.v_base
+        tile_bytes = layout.kv_tile_bytes
+    else:
+        raise ValueError(f"AXI read address outside Q/K/V regions: 0x{addr:016x}")
+
+    tile_idx = byte_offset // tile_bytes
+    word_in_tile = (byte_offset % tile_bytes) // 4
+    row_idx = word_in_tile // 32
+    col_pair_idx = word_in_tile % 32
+    col_idx = col_pair_idx * 2
+    lo_word = _dense_qk_word(kind, tile_idx, row_idx, col_idx)
+    hi_word = _dense_qk_word(kind, tile_idx, row_idx, col_idx + 1)
+    return (hi_word << 16) | lo_word
+
+
 def count_k_layout_roundtrip_errors(cfg: WindowedRtlContractConfig) -> int:
     cfg.validate()
     error_count = 0
@@ -219,6 +338,22 @@ def k_sram_write_address(slot_idx: int, row_idx: int, chunk_idx: int) -> Tuple[i
     bank = row_idx & 0xF
     addr = ((slot_idx & 0x3) << 4) | (chunk_idx & 0xF)
     return bank, addr
+
+
+def _dense_qk_word(kind: str, tile_idx: int, row_idx: int, col_idx: int) -> int:
+    if kind == "q":
+        row_tile_sum = ((row_idx & 0x3) + (tile_idx & 0x3)) & 0x3
+        return 1 + row_tile_sum + (col_idx & 0x3)
+    if kind == "k":
+        row_tile_sum = ((row_idx & 0x3) + (tile_idx & 0x3)) & 0x3
+        return 1 + row_tile_sum + (col_idx & 0x3)
+    if kind == "v":
+        return 0x0010 + ((tile_idx & 0xF) << 4) + (row_idx & 0xF) + (col_idx & 0x3F)
+    raise ValueError(f"unknown dense-QK operand kind: {kind}")
+
+
+def _ceil_div(numerator: int, denominator: int) -> int:
+    return (numerator + denominator - 1) // denominator
 
 
 def k_sram_read_address(slot_idx: int, row_idx: int, pair_idx: int) -> Tuple[int, int]:

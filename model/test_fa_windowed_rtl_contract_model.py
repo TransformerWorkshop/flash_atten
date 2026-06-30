@@ -2,9 +2,13 @@ import unittest
 
 from model.fa_windowed_rtl_contract_model import (
     WindowedRtlContractConfig,
+    WindowedTopAxiLayoutConfig,
+    axi_read_metrics_for_windowed_contract,
     build_windowed_rtl_contract,
     count_k_layout_roundtrip_errors,
     count_v_layout_roundtrip_errors,
+    dense_qk_axi_tile_beat64,
+    dense_qk_direct_tile_beat64,
 )
 
 
@@ -64,6 +68,37 @@ class WindowedRtlContractModelTest(unittest.TestCase):
         cfg = WindowedRtlContractConfig()
 
         self.assertEqual(count_k_layout_roundtrip_errors(cfg), 0)
+
+    def test_windowed_top_axi_read_metrics_match_tile_stream_volume(self):
+        contract = build_windowed_rtl_contract(WindowedRtlContractConfig())
+
+        metrics = axi_read_metrics_for_windowed_contract(contract)
+
+        self.assertEqual(metrics.ar_count, 1536)
+        self.assertEqual(metrics.r_beat_count, 24576)
+        self.assertEqual(metrics.rd_bytes, 393216)
+
+    def test_dense_qk_axi_memory_layout_roundtrips_to_tile_beats(self):
+        layout = WindowedTopAxiLayoutConfig()
+
+        for q_tile_idx in range(64):
+            for row_idx in range(4):
+                for chunk_idx in range(16):
+                    self.assertEqual(
+                        dense_qk_axi_tile_beat64(layout, "q", q_tile_idx, row_idx, chunk_idx),
+                        dense_qk_direct_tile_beat64("q", q_tile_idx, row_idx, chunk_idx),
+                    )
+
+        for kind in ("k", "v"):
+            for kv_tile_idx in range(16):
+                for row_idx in range(16):
+                    for chunk_idx in range(16):
+                        self.assertEqual(
+                            dense_qk_axi_tile_beat64(
+                                layout, kind, kv_tile_idx, row_idx, chunk_idx
+                            ),
+                            dense_qk_direct_tile_beat64(kind, kv_tile_idx, row_idx, chunk_idx),
+                        )
 
 
 if __name__ == "__main__":

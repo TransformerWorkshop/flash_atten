@@ -138,10 +138,26 @@ module FA_TOP_OPTIM_WINDOWED #(
 
     reg         windowed_done_sticky_r;
     reg         windowed_error_sticky_r;
+    reg         top_axi_error_sticky_r;
     reg [1:0]   feeder_state_r;
     reg [8:0]   feeder_beat_idx_r;
     reg [5:0]   feeder_q_idx_r;
     reg [4:0]   feeder_kv_idx_r;
+    reg [127:0] feeder_axi_data_r;
+    reg         feeder_upper_half_r;
+
+    wire        top_rd_desc_valid_w;
+    wire        top_rd_desc_ready_w;
+    wire [63:0] top_rd_desc_addr_w;
+    wire [15:0] top_rd_desc_words_w;
+    wire [3:0]  top_rd_desc_tag_w;
+    wire        top_rd_beat_valid_w;
+    wire        top_rd_beat_ready_w;
+    wire [127:0] top_rd_beat_data_w;
+    wire [2:0]  top_rd_beat_word_count_w;
+    wire        top_rd_beat_last_w;
+    wire        top_axi_arvalid_w;
+    wire        top_axi_error_pulse_w;
 
     wire feeder_idle_w = (feeder_state_r == FEED_IDLE);
     wire q_tile_req_fire_w = q_tile_req_valid_w && q_tile_req_ready_w;
@@ -152,6 +168,10 @@ module FA_TOP_OPTIM_WINDOWED #(
     wire v_tile_beat_fire_w = v_tile_beat_valid_w && v_tile_beat_ready_w;
     wire q_feed_last_w = (feeder_beat_idx_r == 9'd63);
     wire kv_feed_last_w = (feeder_beat_idx_r == 9'd255);
+    wire feeder_need_axi_beat_w = !feeder_upper_half_r;
+    wire feeder_axi_beat_accept_w = top_rd_beat_valid_w && top_rd_beat_ready_w;
+    wire [63:0] feeder_tile_beat_data_w =
+        feeder_upper_half_r ? feeder_axi_data_r[127:64] : top_rd_beat_data_w[63:0];
 
     wire [31:0] status_rd_bytes_w =
         (windowed_q_tile_beat_count + windowed_k_tile_beat_count +
@@ -182,11 +202,8 @@ module FA_TOP_OPTIM_WINDOWED #(
         | ((|windowed_pv_task_count) & 1'b0)
         | ((|windowed_oacc_task_count) & 1'b0)
         | ((|windowed_o_block_flat) & 1'b0)
-        | (m_axi_arready & 1'b0)
-        | ((|m_axi_rdata) & 1'b0)
-        | ((|m_axi_rresp) & 1'b0)
-        | (m_axi_rlast & 1'b0)
-        | (m_axi_rvalid & 1'b0)
+        | ((|top_rd_beat_word_count_w) & 1'b0)
+        | (top_rd_beat_last_w & 1'b0)
         | (m_axi_awready & 1'b0)
         | (m_axi_wready & 1'b0)
         | ((|m_axi_bresp) & 1'b0)
@@ -209,27 +226,44 @@ module FA_TOP_OPTIM_WINDOWED #(
         | ((|S_AXIS_CHANNEL_WIDTH) & 1'b0)
         | ((|M_AXIS_CHANNEL_WIDTH) & 1'b0);
 
-    assign q_tile_req_ready_w = feeder_idle_w;
-    assign k_tile_req_ready_w = feeder_idle_w;
-    assign v_tile_req_ready_w = feeder_idle_w;
-    assign q_tile_beat_valid_w = (feeder_state_r == FEED_Q);
-    assign k_tile_beat_valid_w = (feeder_state_r == FEED_K);
-    assign v_tile_beat_valid_w = (feeder_state_r == FEED_V);
+    assign q_tile_req_ready_w = feeder_idle_w && top_rd_desc_ready_w;
+    assign k_tile_req_ready_w = feeder_idle_w && top_rd_desc_ready_w;
+    assign v_tile_req_ready_w = feeder_idle_w && top_rd_desc_ready_w;
+    assign q_tile_beat_valid_w = (feeder_state_r == FEED_Q) &&
+                                 (feeder_upper_half_r || top_rd_beat_valid_w);
+    assign k_tile_beat_valid_w = (feeder_state_r == FEED_K) &&
+                                 (feeder_upper_half_r || top_rd_beat_valid_w);
+    assign v_tile_beat_valid_w = (feeder_state_r == FEED_V) &&
+                                 (feeder_upper_half_r || top_rd_beat_valid_w);
     assign q_tile_beat_row_idx_w = feeder_beat_idx_r[5:4];
     assign q_tile_beat_chunk_idx_w = feeder_beat_idx_r[3:0];
     assign k_tile_beat_row_idx_w = feeder_beat_idx_r[7:4];
     assign k_tile_beat_chunk_idx_w = feeder_beat_idx_r[3:0];
     assign v_tile_beat_row_idx_w = feeder_beat_idx_r[7:4];
     assign v_tile_beat_chunk_idx_w = feeder_beat_idx_r[3:0];
-    assign q_tile_beat_data_w = make_q_beat(feeder_q_idx_r, q_tile_beat_row_idx_w,
-                                            q_tile_beat_chunk_idx_w);
-    assign k_tile_beat_data_w = make_k_beat(feeder_kv_idx_r, k_tile_beat_row_idx_w,
-                                            k_tile_beat_chunk_idx_w);
-    assign v_tile_beat_data_w = make_v_beat(feeder_kv_idx_r, v_tile_beat_row_idx_w,
-                                            v_tile_beat_chunk_idx_w);
+    assign q_tile_beat_data_w = feeder_tile_beat_data_w;
+    assign k_tile_beat_data_w = feeder_tile_beat_data_w;
+    assign v_tile_beat_data_w = feeder_tile_beat_data_w;
     assign q_tile_beat_last_w = q_feed_last_w;
     assign k_tile_beat_last_w = kv_feed_last_w;
     assign v_tile_beat_last_w = kv_feed_last_w;
+
+    assign top_rd_desc_valid_w = q_tile_req_fire_w | k_tile_req_fire_w |
+                                 v_tile_req_fire_w;
+    assign top_rd_desc_words_w = (q_tile_req_fire_w) ? 16'd128 : 16'd512;
+    assign top_rd_desc_tag_w = q_tile_req_fire_w ? 4'd1 :
+                               k_tile_req_fire_w ? 4'd2 :
+                               v_tile_req_fire_w ? 4'd3 : 4'd0;
+    assign top_rd_desc_addr_w =
+        q_tile_req_fire_w ? (csr_q_base + ({58'd0, q_tile_req_q_idx_w} << 9)) :
+        k_tile_req_fire_w ? (csr_k_base + ({59'd0, k_tile_req_kv_idx_w} << 11)) :
+        v_tile_req_fire_w ? (csr_v_base + ({59'd0, v_tile_req_kv_idx_w} << 11)) :
+        64'd0;
+    assign top_rd_beat_ready_w = (feeder_state_r != FEED_IDLE) &&
+                                 feeder_need_axi_beat_w &&
+                                 ((feeder_state_r == FEED_Q) ? q_tile_beat_ready_w :
+                                  (feeder_state_r == FEED_K) ? k_tile_beat_ready_w :
+                                  v_tile_beat_ready_w);
 
     function [15:0] make_q_word;
         input [5:0] q_tile_idx;
@@ -337,7 +371,7 @@ module FA_TOP_OPTIM_WINDOWED #(
         .status_busy(windowed_busy),
         .status_done(windowed_done_sticky_r),
         .status_error(csr_config_error | windowed_error_sticky_r |
-                      windowed_top_unused_zero_w),
+                      top_axi_error_sticky_r | windowed_top_unused_zero_w),
         .status_cycles(windowed_cycles),
         .status_rd_bytes(status_rd_bytes_w),
         .status_wr_bytes(32'd0),
@@ -412,19 +446,52 @@ module FA_TOP_OPTIM_WINDOWED #(
         .o_block_flat(windowed_o_block_flat)
     );
 
+    FA_AXI_RD_MASTER u_axi_rd (
+        .clk(clk),
+        .rstn(rstn),
+        .clear(runtime_clear),
+        .rd_desc_valid(top_rd_desc_valid_w),
+        .rd_desc_ready(top_rd_desc_ready_w),
+        .rd_desc_addr(top_rd_desc_addr_w),
+        .rd_desc_words(top_rd_desc_words_w),
+        .rd_desc_tag(top_rd_desc_tag_w),
+        .rd_beat_valid(top_rd_beat_valid_w),
+        .rd_beat_ready(top_rd_beat_ready_w),
+        .rd_beat_data(top_rd_beat_data_w),
+        .rd_beat_word_count(top_rd_beat_word_count_w),
+        .rd_beat_last(top_rd_beat_last_w),
+        .axi_arvalid(top_axi_arvalid_w),
+        .axi_arready(m_axi_arready),
+        .axi_araddr(m_axi_araddr),
+        .axi_arlen(m_axi_arlen),
+        .axi_arsize(m_axi_arsize),
+        .axi_arburst(m_axi_arburst),
+        .axi_rdata(m_axi_rdata),
+        .axi_rresp(m_axi_rresp),
+        .axi_rlast(m_axi_rlast),
+        .axi_rvalid(m_axi_rvalid),
+        .axi_rready(m_axi_rready),
+        .error_pulse(top_axi_error_pulse_w)
+    );
+
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
             windowed_done_sticky_r <= 1'b0;
             windowed_error_sticky_r <= 1'b0;
+            top_axi_error_sticky_r <= 1'b0;
         end else if (runtime_clear || csr_start_pulse) begin
             windowed_done_sticky_r <= 1'b0;
             windowed_error_sticky_r <= 1'b0;
+            top_axi_error_sticky_r <= 1'b0;
         end else begin
             if (windowed_done_pulse) begin
                 windowed_done_sticky_r <= 1'b1;
             end
             if (windowed_error) begin
                 windowed_error_sticky_r <= 1'b1;
+            end
+            if (top_axi_error_pulse_w) begin
+                top_axi_error_sticky_r <= 1'b1;
             end
         end
     end
@@ -435,15 +502,20 @@ module FA_TOP_OPTIM_WINDOWED #(
             feeder_beat_idx_r <= 9'd0;
             feeder_q_idx_r <= 6'd0;
             feeder_kv_idx_r <= 5'd0;
+            feeder_axi_data_r <= 128'd0;
+            feeder_upper_half_r <= 1'b0;
         end else if (runtime_clear) begin
             feeder_state_r <= FEED_IDLE;
             feeder_beat_idx_r <= 9'd0;
             feeder_q_idx_r <= 6'd0;
             feeder_kv_idx_r <= 5'd0;
+            feeder_axi_data_r <= 128'd0;
+            feeder_upper_half_r <= 1'b0;
         end else begin
             case (feeder_state_r)
                 FEED_IDLE: begin
                     feeder_beat_idx_r <= 9'd0;
+                    feeder_upper_half_r <= 1'b0;
                     if (k_tile_req_fire_w) begin
                         feeder_state_r <= FEED_K;
                         feeder_kv_idx_r <= k_tile_req_kv_idx_w;
@@ -456,49 +528,68 @@ module FA_TOP_OPTIM_WINDOWED #(
                     end
                 end
                 FEED_Q: begin
+                    if (feeder_axi_beat_accept_w) begin
+                        feeder_axi_data_r <= top_rd_beat_data_w;
+                    end
                     if (q_tile_beat_fire_w) begin
                         if (q_feed_last_w) begin
                             feeder_state_r <= FEED_IDLE;
                             feeder_beat_idx_r <= 9'd0;
+                            feeder_upper_half_r <= 1'b0;
+                        end else if (feeder_upper_half_r) begin
+                            feeder_beat_idx_r <= feeder_beat_idx_r + 9'd1;
+                            feeder_upper_half_r <= 1'b0;
                         end else begin
                             feeder_beat_idx_r <= feeder_beat_idx_r + 9'd1;
+                            feeder_upper_half_r <= 1'b1;
                         end
                     end
                 end
                 FEED_K: begin
+                    if (feeder_axi_beat_accept_w) begin
+                        feeder_axi_data_r <= top_rd_beat_data_w;
+                    end
                     if (k_tile_beat_fire_w) begin
                         if (kv_feed_last_w) begin
                             feeder_state_r <= FEED_IDLE;
                             feeder_beat_idx_r <= 9'd0;
+                            feeder_upper_half_r <= 1'b0;
+                        end else if (feeder_upper_half_r) begin
+                            feeder_beat_idx_r <= feeder_beat_idx_r + 9'd1;
+                            feeder_upper_half_r <= 1'b0;
                         end else begin
                             feeder_beat_idx_r <= feeder_beat_idx_r + 9'd1;
+                            feeder_upper_half_r <= 1'b1;
                         end
                     end
                 end
                 FEED_V: begin
+                    if (feeder_axi_beat_accept_w) begin
+                        feeder_axi_data_r <= top_rd_beat_data_w;
+                    end
                     if (v_tile_beat_fire_w) begin
                         if (kv_feed_last_w) begin
                             feeder_state_r <= FEED_IDLE;
                             feeder_beat_idx_r <= 9'd0;
+                            feeder_upper_half_r <= 1'b0;
+                        end else if (feeder_upper_half_r) begin
+                            feeder_beat_idx_r <= feeder_beat_idx_r + 9'd1;
+                            feeder_upper_half_r <= 1'b0;
                         end else begin
                             feeder_beat_idx_r <= feeder_beat_idx_r + 9'd1;
+                            feeder_upper_half_r <= 1'b1;
                         end
                     end
                 end
                 default: begin
                     feeder_state_r <= FEED_IDLE;
                     feeder_beat_idx_r <= 9'd0;
+                    feeder_upper_half_r <= 1'b0;
                 end
             endcase
         end
     end
 
-    assign m_axi_araddr = 64'd0;
-    assign m_axi_arlen = 8'd0;
-    assign m_axi_arsize = 3'd4;
-    assign m_axi_arburst = 2'b01;
-    assign m_axi_arvalid = 1'b0;
-    assign m_axi_rready = 1'b0;
     assign m_axi_awaddr = 64'd0;
     assign m_axi_awlen = 8'd0;
     assign m_axi_awsize = 3'd4;
@@ -509,6 +600,7 @@ module FA_TOP_OPTIM_WINDOWED #(
     assign m_axi_wlast = 1'b0;
     assign m_axi_wvalid = 1'b0;
     assign m_axi_bready = 1'b0;
+    assign m_axi_arvalid = top_axi_arvalid_w;
     assign irq = csr_irq_en && (windowed_done_sticky_r ||
                                 windowed_error_sticky_r ||
                                 csr_config_error);
