@@ -16,6 +16,9 @@ module fa_optim_4x4_windowed_loop_tb;
     localparam integer EXPECTED_PV_TASKS = 131072;
     localparam integer EXPECTED_OACC_TASKS = 1024;
     localparam integer MAX_EXPECTED_CYCLES = 600000;
+    localparam integer NUMERIC_MODE_UNIFORM_Q = 0;
+    localparam integer NUMERIC_MODE_DENSE_QK = 1;
+    localparam integer NUMERIC_MODE = NUMERIC_MODE_DENSE_QK;
 
     reg clk;
     reg rstn;
@@ -206,10 +209,16 @@ module fa_optim_4x4_windowed_loop_tb;
         input [3:0] row_idx;
         input integer col_idx;
         begin
-            make_k_word = 16'h2000
-                        + ({12'd0, kv_tile_idx[3:0]} << 10)
-                        + ({12'd0, row_idx} << 6)
-                        + col_idx[15:0];
+            if (NUMERIC_MODE == NUMERIC_MODE_DENSE_QK) begin
+                make_k_word = 16'h0001
+                            + {13'd0, (row_idx[1:0] + kv_tile_idx[1:0])}
+                            + {13'd0, col_idx[1:0]};
+            end else begin
+                make_k_word = 16'h2000
+                            + ({12'd0, kv_tile_idx[3:0]} << 10)
+                            + ({12'd0, row_idx} << 6)
+                            + col_idx[15:0];
+            end
         end
     endfunction
 
@@ -261,6 +270,37 @@ module fa_optim_4x4_windowed_loop_tb;
         input integer unused_chunk_idx;
         begin
             make_zero_q_beat = 64'd0;
+        end
+    endfunction
+
+    function [15:0] make_q_word;
+        input [5:0] q_tile_idx;
+        input integer row_idx;
+        input integer col_idx;
+        begin
+            if (NUMERIC_MODE == NUMERIC_MODE_DENSE_QK) begin
+                make_q_word = 16'h0001
+                            + {13'd0, (row_idx[1:0] + q_tile_idx[1:0])}
+                            + {13'd0, col_idx[1:0]};
+            end else begin
+                make_q_word = 16'd0;
+            end
+        end
+    endfunction
+
+    function [63:0] make_q_beat;
+        input [5:0] q_tile_idx;
+        input integer row_idx;
+        input [3:0] chunk_idx;
+        integer base_col;
+        begin
+            base_col = chunk_idx * 4;
+            make_q_beat = {
+                make_q_word(q_tile_idx, row_idx, base_col + 3),
+                make_q_word(q_tile_idx, row_idx, base_col + 2),
+                make_q_word(q_tile_idx, row_idx, base_col + 1),
+                make_q_word(q_tile_idx, row_idx, base_col + 0)
+            };
         end
     endfunction
 
@@ -334,7 +374,11 @@ module fa_optim_4x4_windowed_loop_tb;
                     q_tile_beat_valid = 1'b1;
                     q_tile_beat_row_idx = drive_row_i[1:0];
                     q_tile_beat_chunk_idx = drive_chunk_i[3:0];
-                    q_tile_beat_data = make_zero_q_beat(req_q_idx, drive_row_i, drive_chunk_i);
+                    if (NUMERIC_MODE == NUMERIC_MODE_DENSE_QK) begin
+                        q_tile_beat_data = make_q_beat(req_q_idx, drive_row_i, drive_chunk_i[3:0]);
+                    end else begin
+                        q_tile_beat_data = make_zero_q_beat(req_q_idx, drive_row_i, drive_chunk_i);
+                    end
                     q_tile_beat_last = (drive_row_i == 3) && (drive_chunk_i == 15);
                     while (q_tile_beat_ready !== 1'b1) begin
                         tick();
@@ -491,6 +535,48 @@ module fa_optim_4x4_windowed_loop_tb;
         end
     endfunction
 
+    function signed [31:0] tb_q16_clamp_nonpos_neg8;
+        input signed [31:0] value;
+        begin
+            if (value > 32'sd0) begin
+                tb_q16_clamp_nonpos_neg8 = 32'sd0;
+            end else if (value < -32'sd524288) begin
+                tb_q16_clamp_nonpos_neg8 = -32'sd524288;
+            end else begin
+                tb_q16_clamp_nonpos_neg8 = value;
+            end
+        end
+    endfunction
+
+    function [8:0] tb_q16_delta_to_exp_idx;
+        input signed [31:0] delta;
+        reg signed [31:0] clamped;
+        reg [31:0] abs_mag;
+        reg [31:0] rounded;
+        reg [31:0] shifted;
+        begin
+            clamped = tb_q16_clamp_nonpos_neg8(delta);
+            abs_mag = -clamped;
+            rounded = abs_mag + 32'd1024;
+            shifted = rounded >> 11;
+            if (shifted > 32'd256) begin
+                tb_q16_delta_to_exp_idx = 9'd256;
+            end else begin
+                tb_q16_delta_to_exp_idx = shifted[8:0];
+            end
+        end
+    endfunction
+
+    function [31:0] fa_exp_lut_q16_16;
+        input [8:0] idx;
+        begin
+            case (idx)
+`include "fa_exp_lut_q16_16.vh"
+                default: fa_exp_lut_q16_16 = 32'h00000016;
+            endcase
+        end
+    endfunction
+
     function signed [15:0] tb_q16_to_q88_rn_sat;
         input signed [31:0] value;
         reg signed [31:0] rounded;
@@ -606,6 +692,32 @@ module fa_optim_4x4_windowed_loop_tb;
         end
     endfunction
 
+    function signed [31:0] expected_score_q16;
+        input integer q_tile_idx;
+        input integer q_row;
+        input integer kv_tile_idx;
+        input integer kv_col;
+        integer dim_i;
+        reg signed [15:0] q_q88;
+        reg signed [15:0] k_q88;
+        reg signed [127:0] acc_q16;
+        begin
+            acc_q16 = 128'sd0;
+            for (dim_i = 0; dim_i < 64; dim_i = dim_i + 1) begin
+                q_q88 = make_q_word(q_tile_idx[5:0], q_row, dim_i);
+                k_q88 = make_k_word(kv_tile_idx[4:0], kv_col[3:0], dim_i);
+                acc_q16 = acc_q16 + ($signed(q_q88) * $signed(k_q88));
+            end
+            if (acc_q16 > 128'sh0000000000000000000000007FFF_FFFF) begin
+                expected_score_q16 = 32'sh7FFF_FFFF;
+            end else if (acc_q16 < -128'sh0000000000000000000000008000_0000) begin
+                expected_score_q16 = -32'sh8000_0000;
+            end else begin
+                expected_score_q16 = acc_q16[31:0];
+            end
+        end
+    endfunction
+
     function [15:0] expected_o_word_all_tiles;
         input integer col;
         integer kv_i;
@@ -646,6 +758,83 @@ module fa_optim_4x4_windowed_loop_tb;
         end
     endfunction
 
+    function [15:0] expected_o_word_dense_qk;
+        input integer row;
+        input integer col;
+        integer kv_i;
+        integer key_col_i;
+        reg signed [31:0] old_m_q16;
+        reg signed [31:0] old_l_q16;
+        reg signed [31:0] new_m_q16;
+        reg signed [31:0] old_score_q16;
+        reg signed [31:0] score_q16;
+        reg signed [31:0] alpha_q16;
+        reg signed [31:0] alpha_l_old_q16;
+        reg signed [31:0] beta_q16 [0:15];
+        reg signed [31:0] beta_sum_q16;
+        reg signed [31:0] new_l_q16;
+        reg signed [31:0] recip_q16;
+        reg signed [31:0] scale_q16;
+        reg signed [31:0] p_q16;
+        reg signed [15:0] p_q88;
+        reg signed [15:0] v_q88;
+        reg signed [15:0] partial_q88;
+        reg signed [15:0] old_o_q412;
+        reg signed [127:0] partial_acc_q16;
+        begin
+            old_m_q16 = 32'hffc0_0000;
+            old_l_q16 = 32'sd0;
+            old_o_q412 = 16'sd0;
+            for (kv_i = 0; kv_i < 16; kv_i = kv_i + 1) begin
+                new_m_q16 = expected_score_q16(63, row, kv_i, 0);
+                for (key_col_i = 1; key_col_i < 16; key_col_i = key_col_i + 1) begin
+                    score_q16 = expected_score_q16(63, row, kv_i, key_col_i);
+                    if (score_q16 > new_m_q16) begin
+                        new_m_q16 = score_q16;
+                    end
+                end
+                if (old_l_q16 != 32'sd0) begin
+                    if (old_m_q16 > new_m_q16) begin
+                        new_m_q16 = old_m_q16;
+                    end
+                    alpha_q16 = fa_exp_lut_q16_16(
+                        tb_q16_delta_to_exp_idx(old_m_q16 - new_m_q16));
+                    alpha_l_old_q16 = tb_q16_mul_rn_sat(alpha_q16, old_l_q16);
+                end else begin
+                    alpha_l_old_q16 = 32'sd0;
+                end
+
+                beta_sum_q16 = 32'sd0;
+                for (key_col_i = 0; key_col_i < 16; key_col_i = key_col_i + 1) begin
+                    old_score_q16 = expected_score_q16(63, row, kv_i, key_col_i);
+                    beta_q16[key_col_i] = fa_exp_lut_q16_16(
+                        tb_q16_delta_to_exp_idx(old_score_q16 - new_m_q16));
+                    beta_sum_q16 = tb_q16_add_sat(beta_sum_q16, beta_q16[key_col_i]);
+                end
+                new_l_q16 = tb_q16_add_sat(alpha_l_old_q16, beta_sum_q16);
+                recip_q16 = tb_recip_q16_16(new_l_q16);
+
+                if (old_l_q16 == 32'sd0) begin
+                    scale_q16 = 32'sd0;
+                end else begin
+                    scale_q16 = tb_q16_mul_rn_sat(alpha_l_old_q16, recip_q16);
+                end
+                partial_acc_q16 = 128'sd0;
+                for (key_col_i = 0; key_col_i < 16; key_col_i = key_col_i + 1) begin
+                    p_q16 = tb_q16_mul_rn_sat(beta_q16[key_col_i], recip_q16);
+                    p_q88 = tb_q16_to_q88_rn_sat(p_q16);
+                    v_q88 = make_v_word(kv_i, key_col_i[3:0], col);
+                    partial_acc_q16 = partial_acc_q16 + ($signed(p_q88) * $signed(v_q88));
+                end
+                partial_q88 = tb_q16_16_to_q88_sat128(partial_acc_q16);
+                old_o_q412 = tb_update_oacc_elem(old_o_q412, scale_q16, partial_q88);
+                old_m_q16 = new_m_q16;
+                old_l_q16 = new_l_q16;
+            end
+            expected_o_word_dense_qk = old_o_q412;
+        end
+    endfunction
+
     task expect_o_word_all_tiles;
         input integer row;
         input integer col;
@@ -653,7 +842,11 @@ module fa_optim_4x4_windowed_loop_tb;
         reg [15:0] expected;
         begin
             actual = get_o_word(row, col);
-            expected = expected_o_word_all_tiles(col);
+            if (NUMERIC_MODE == NUMERIC_MODE_DENSE_QK) begin
+                expected = expected_o_word_dense_qk(row, col);
+            end else begin
+                expected = expected_o_word_all_tiles(col);
+            end
             if (actual !== expected) begin
                 if (error_count < 16) begin
                     $display("FAIL: full-window O[%0d,%0d] expected 0x%04h got 0x%04h at %0t",
@@ -833,13 +1026,23 @@ module fa_optim_4x4_windowed_loop_tb;
         end
 
         if (error_count == 0) begin
-            $display("PASS: fa_optim_4x4_windowed_loop_tb shape=S256_D64_B1_H1 numeric=uniform_q_mean_v perf_max_cycles=%0d cycles=%0d q_groups=%0d kv_windows=%0d micro_tiles=%0d q_visits=%0d kv_tiles=%0d q_reqs=%0d q_beats=%0d k_reqs=%0d k_beats=%0d v_reqs=%0d v_beats=%0d qk_tasks=%0d pv_tasks=%0d restore_starts=%0d",
-                     MAX_EXPECTED_CYCLES, cycles, q_group_count, kv_window_count,
-                     micro_tile_count, q_tile_visit_count, kv_tile_count,
-                     q_tile_req_count, q_tile_beat_count,
-                     k_tile_req_count, k_tile_beat_count,
-                     v_tile_req_count, v_tile_beat_count,
-                     qk_task_count, pv_task_count, restore_start_count);
+            if (NUMERIC_MODE == NUMERIC_MODE_DENSE_QK) begin
+                $display("PASS: fa_optim_4x4_windowed_loop_tb shape=S256_D64_B1_H1 numeric=dense_qk_reference perf_max_cycles=%0d cycles=%0d q_groups=%0d kv_windows=%0d micro_tiles=%0d q_visits=%0d kv_tiles=%0d q_reqs=%0d q_beats=%0d k_reqs=%0d k_beats=%0d v_reqs=%0d v_beats=%0d qk_tasks=%0d pv_tasks=%0d restore_starts=%0d",
+                         MAX_EXPECTED_CYCLES, cycles, q_group_count, kv_window_count,
+                         micro_tile_count, q_tile_visit_count, kv_tile_count,
+                         q_tile_req_count, q_tile_beat_count,
+                         k_tile_req_count, k_tile_beat_count,
+                         v_tile_req_count, v_tile_beat_count,
+                         qk_task_count, pv_task_count, restore_start_count);
+            end else begin
+                $display("PASS: fa_optim_4x4_windowed_loop_tb shape=S256_D64_B1_H1 numeric=uniform_q_mean_v perf_max_cycles=%0d cycles=%0d q_groups=%0d kv_windows=%0d micro_tiles=%0d q_visits=%0d kv_tiles=%0d q_reqs=%0d q_beats=%0d k_reqs=%0d k_beats=%0d v_reqs=%0d v_beats=%0d qk_tasks=%0d pv_tasks=%0d restore_starts=%0d",
+                         MAX_EXPECTED_CYCLES, cycles, q_group_count, kv_window_count,
+                         micro_tile_count, q_tile_visit_count, kv_tile_count,
+                         q_tile_req_count, q_tile_beat_count,
+                         k_tile_req_count, k_tile_beat_count,
+                         v_tile_req_count, v_tile_beat_count,
+                         qk_task_count, pv_task_count, restore_start_count);
+            end
             $finish;
         end
 

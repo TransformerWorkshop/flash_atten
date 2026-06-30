@@ -452,6 +452,16 @@ class FaSramRtlStaticTest(unittest.TestCase):
         self.assertIn("expect_o_word_all_tiles(row_i, col_i)", text)
         self.assertIn("numeric=uniform_q_mean_v", text)
 
+    def test_optim_windowed_real_core_smoke_checks_dense_nonzero_qk(self):
+        text = read_rtl_smoke("fa_optim_4x4_windowed_loop_tb.v")
+
+        self.assertIn("localparam integer NUMERIC_MODE_DENSE_QK = 1", text)
+        self.assertIn("function [15:0] make_q_word", text)
+        self.assertIn("function signed [31:0] expected_score_q16", text)
+        self.assertIn("function [15:0] expected_o_word_dense_qk", text)
+        self.assertIn("expected_o_word_dense_qk(row, col)", text)
+        self.assertIn("numeric=dense_qk_reference", text)
+
     def test_optim_windowed_rtl_contract_model_checks_layout_negative_control(self):
         model_path = REPO_ROOT / "model" / "fa_windowed_rtl_contract_model.py"
         test_path = REPO_ROOT / "model" / "test_fa_windowed_rtl_contract_model.py"
